@@ -23,6 +23,7 @@ import (
 
 func main() {
 	_ = godotenv.Load()
+	_ = godotenv.Load("../.env") // при запуске из backend/
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {

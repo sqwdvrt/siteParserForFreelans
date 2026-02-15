@@ -1,0 +1,14 @@
+package port
+
+import (
+	"context"
+
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
+)
+
+// UserRepository — репозиторий пользователей.
+type UserRepository interface {
+	Save(ctx context.Context, telegramID int64) (int64, error)
+	GetByTelegramID(ctx context.Context, telegramID int64) (*domain.User, error)
+	UpdateProfile(ctx context.Context, userID int64, profileText string) error
+}
