@@ -1,5 +1,7 @@
 .env
 *.log
+rules/
+.cursor/
 __pycache__/
 .venv/
 venv/
