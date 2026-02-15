@@ -1,0 +1,55 @@
+"""Тест consumer loop с моком очереди."""
+
+from __future__ import annotations
+
+import threading
+from unittest.mock import MagicMock
+
+import pytest
+
+from ai_service.port.queue import JobQueueConsumer
+from ai_service.usecase.consumer_loop import run_consumer
+from ai_service.usecase.process_job import ProcessJobUseCase
+
+
+class FakeQueueConsumer(JobQueueConsumer):
+    """Очередь с заданными job_id. При pop возвращает по одному, затем None."""
+
+    def __init__(self, job_ids: list[int], timeout_sec: int = 1) -> None:
+        self._job_ids = list(job_ids)
+        self._timeout = timeout_sec
+
+    def pop_blocking(self, timeout_sec: int = 5) -> int | None:
+        if self._job_ids:
+            return self._job_ids.pop(0)
+        return None
+
+
+def test_run_consumer_calls_process_job() -> None:
+    import time
+
+    process_job = MagicMock(spec=ProcessJobUseCase)
+    queue = FakeQueueConsumer([42])
+    stop = threading.Event()
+
+    def run() -> None:
+        run_consumer(queue, process_job, timeout_sec=1, stop_event=stop)
+
+    t = threading.Thread(target=run)
+    t.start()
+    time.sleep(0.2)
+    stop.set()
+    t.join(timeout=3)
+
+    process_job.execute.assert_called_once_with(42)
+
+
+def test_run_consumer_stops_on_event() -> None:
+    process_job = MagicMock(spec=ProcessJobUseCase)
+    queue = FakeQueueConsumer([1])
+    stop = threading.Event()
+    stop.set()
+
+    run_consumer(queue, process_job, timeout_sec=1, stop_event=stop)
+
+    process_job.execute.assert_not_called()
