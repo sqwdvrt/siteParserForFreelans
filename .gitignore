@@ -1,5 +1,6 @@
 .env
 *.log
+backend/bin/
 rules/
 .cursor/
 __pycache__/
