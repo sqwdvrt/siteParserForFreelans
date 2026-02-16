@@ -12,6 +12,9 @@ DB_URL="${DATABASE_URL:-postgres://site_parser:site_parser@localhost:5432/site_p
 REDIS_URL="${REDIS_URL:-redis://localhost:6379/0}"
 AUTH_TOKEN="${API_AUTH_TOKEN:-}"
 USER_HMAC_SECRET="${API_USER_HMAC_SECRET:-}"
+PGUSER="${POSTGRES_USER:-site_parser}"
+PGDB="${POSTGRES_DB:-site_parser}"
+PGPASS="${POSTGRES_PASSWORD:-site_parser}"
 
 if [ -z "$AUTH_TOKEN" ]; then
   echo "API_AUTH_TOKEN не задан. Загрузите .env или export API_AUTH_TOKEN=..."
@@ -52,6 +55,10 @@ ${body_hash}"
   printf '%s' "$payload" | openssl dgst -sha256 -hmac "$USER_HMAC_SECRET" -binary | xxd -p -c 256
 }
 
+psql_compose() {
+  docker compose exec -T -e PGPASSWORD="$PGPASS" postgres psql -U "$PGUSER" -d "$PGDB" "$@"
+}
+
 echo "=== E2E: Запуск docker compose ==="
 docker compose up -d
 echo "Ожидание сервисов (30 сек)..."
@@ -83,8 +90,7 @@ USER_ID=$(echo "$BODY" | grep -o '"user_id":[0-9]*' | cut -d: -f2)
 echo "User создан: user_id=$USER_ID"
 
 # Проверка в БД
-PGPASS="${POSTGRES_PASSWORD:-site_parser}"
-USER_COUNT=$(docker compose exec -T -e PGPASSWORD="$PGPASS" postgres psql -U site_parser -d site_parser -t -c "SELECT COUNT(*) FROM users WHERE telegram_id=$TELEGRAM_ID" 2>/dev/null | tr -d ' \n' || echo "0")
+USER_COUNT=$(psql_compose -t -c "SELECT COUNT(*) FROM users WHERE telegram_id=$TELEGRAM_ID" 2>/dev/null | tr -d ' \n' || echo "0")
 if [ "${USER_COUNT:-0}" -lt 1 ]; then
   echo "Проверка: User не найден в БД"
   exit 1
@@ -111,8 +117,7 @@ echo "✓ PUT /profile"
 
 # Вставка тестового job и отправка в ai-process (имитация crawl)
 JOB_SQL="INSERT INTO jobs (source, url, title, description, raw_html) VALUES ('kwork', 'https://kwork.ru/projects/e2e-test-'||floor(random()*1e9)||'/view', 'E2E Test Job', 'Python project', '<p>test</p>') RETURNING id"
-JOB_ID=$(docker compose exec -T -e PGPASSWORD="$PGPASS" postgres \
-  psql -U site_parser -d site_parser -qAt -c "$JOB_SQL" 2>/dev/null | head -n1 | tr -d '\r')
+JOB_ID=$(psql_compose -qAt -c "$JOB_SQL" 2>/dev/null | head -n1 | tr -d '\r')
 JOB_ID=$(echo "$JOB_ID" | grep -Eo '^[0-9]+$' || true)
 if [ -z "$JOB_ID" ]; then
   echo "Не удалось вставить job"
@@ -129,7 +134,7 @@ echo "✓ Job в очереди ai-process"
 echo "Ожидание AI (до 180 сек)..."
 EMB_COUNT="0"
 for _ in $(seq 1 18); do
-  EMB_COUNT=$(docker compose exec -T -e PGPASSWORD="$PGPASS" postgres psql -U site_parser -d site_parser -t -c "SELECT COUNT(*) FROM job_embeddings WHERE job_id=$JOB_ID" 2>/dev/null | tr -d ' \n' || echo "0")
+  EMB_COUNT=$(psql_compose -t -c "SELECT COUNT(*) FROM job_embeddings WHERE job_id=$JOB_ID" 2>/dev/null | tr -d ' \n' || echo "0")
   if [ "${EMB_COUNT:-0}" -ge 1 ]; then
     break
   fi
