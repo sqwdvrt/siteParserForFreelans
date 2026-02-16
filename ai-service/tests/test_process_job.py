@@ -8,6 +8,7 @@ import pytest
 
 from ai_service.adapter.rule_based import RuleBasedClassifier
 from ai_service.domain.job import Job
+from ai_service.port.match_repository import MatchCandidate
 from ai_service.usecase.process_job import ProcessJobUseCase
 
 
@@ -53,3 +54,52 @@ def test_execute_saves_embedding_with_classification() -> None:
     assert "text_length" in meta
     assert "classification" in meta
     assert meta["classification"].get("project_type") == "web"
+
+
+def test_execute_calls_matching_after_save() -> None:
+    """После save_embedding вызывается find_users_for_job при наличии match_repo."""
+    job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
+    repo = MagicMock()
+    repo.get.return_value = job
+    repo.has_embedding.return_value = False
+    emb = MagicMock()
+    emb.encode.return_value = [0.1] * 384
+    emb.model_name = "test"
+    match_repo = MagicMock()
+    match_repo.find_users_for_job.return_value = []
+    uc = ProcessJobUseCase(repo, emb, match_repo=match_repo)
+    assert uc.execute(1) is True
+    match_repo.find_users_for_job.assert_called_once()
+    call = match_repo.find_users_for_job.call_args
+    assert call[0][0] == [0.1] * 384
+    assert call[0][1] == 1
+    assert call[0][2] == 0.7
+    assert call[0][3] == 20
+
+
+def test_execute_enqueues_candidates_to_match_notify() -> None:
+    """При match_notify_queue кандидаты добавляются в очередь."""
+    job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
+    repo = MagicMock()
+    repo.get.return_value = job
+    repo.has_embedding.return_value = False
+    emb = MagicMock()
+    emb.encode.return_value = [0.1] * 384
+    emb.model_name = "test"
+    match_repo = MagicMock()
+    candidates = [
+        MatchCandidate(user_id=10, job_id=1, match_score=0.85),
+        MatchCandidate(user_id=20, job_id=1, match_score=0.72),
+    ]
+    match_repo.find_users_for_job.return_value = candidates
+    match_notify_queue = MagicMock()
+    uc = ProcessJobUseCase(
+        repo, emb, match_repo=match_repo, match_notify_queue=match_notify_queue
+    )
+    assert uc.execute(1) is True
+    assert match_notify_queue.enqueue.call_count == 2
+    calls = match_notify_queue.enqueue.call_args_list
+    assert calls[0][0][0].user_id == 10
+    assert calls[0][0][0].match_score == 0.85
+    assert calls[1][0][0].user_id == 20
+    assert calls[1][0][0].match_score == 0.72

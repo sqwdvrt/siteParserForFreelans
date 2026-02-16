@@ -6,14 +6,11 @@ import pytest
 
 from ai_service.adapter.postgres import PostgresJobRepository
 
-pytestmark = pytest.mark.skipif(
-    not os.getenv("DATABASE_URL"),
-    reason="DATABASE_URL not set",
-)
-
 
 @pytest.fixture
 def repo() -> PostgresJobRepository:
+    if not os.getenv("DATABASE_URL"):
+        pytest.fail("DATABASE_URL not set; integration tests require Postgres (docker compose up -d postgres)")
     return PostgresJobRepository(os.environ["DATABASE_URL"])
 
 

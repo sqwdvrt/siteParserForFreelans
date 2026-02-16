@@ -14,8 +14,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-from ai_service.adapter.postgres import PostgresJobRepository
-from ai_service.adapter.redis import RedisQueueConsumer
+from ai_service.adapter.postgres import PostgresJobRepository, PostgresMatchRepository
+from ai_service.adapter.redis import RedisMatchNotifyQueue, RedisQueueConsumer
 from ai_service.adapter.rule_based import RuleBasedClassifier
 from ai_service.adapter.sentence_transformers import SentenceTransformerEmbedding
 from ai_service.usecase.consumer_loop import run_consumer
@@ -37,11 +37,19 @@ def main() -> None:
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     queue_name = os.getenv("AI_QUEUE", "ai-process")
     model_name = os.getenv("EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")
+    threshold = float(os.getenv("SIMILARITY_THRESHOLD", "0.7"))
+    max_matches = int(os.getenv("MAX_MATCHES_PER_JOB", "20"))
 
     repo = PostgresJobRepository(db_url)
+    match_repo = PostgresMatchRepository(db_url)
+    match_notify_queue = RedisMatchNotifyQueue(redis_url)
     embedding = SentenceTransformerEmbedding(model_name)
     classifier = RuleBasedClassifier()
-    process_job = ProcessJobUseCase(repo, embedding, classifier)
+    process_job = ProcessJobUseCase(
+        repo, embedding, classifier, match_repo,
+        match_notify_queue=match_notify_queue,
+        similarity_threshold=threshold, max_matches_per_job=max_matches,
+    )
     queue = RedisQueueConsumer(redis_url, queue_name)
 
     stop_event = threading.Event()
