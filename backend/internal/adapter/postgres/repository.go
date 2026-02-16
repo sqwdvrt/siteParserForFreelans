@@ -2,7 +2,9 @@ package postgres
 
 import (
 	"context"
+	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 )
@@ -40,6 +42,24 @@ func (r *JobRepository) Save(ctx context.Context, job *domain.Job) (int64, error
 		return 0, err
 	}
 	return id, nil
+}
+
+// GetByID возвращает job по id. nil при отсутствии.
+func (r *JobRepository) GetByID(ctx context.Context, id int64) (*domain.Job, error) {
+	var j domain.Job
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, source, url, COALESCE(external_id, ''), title, COALESCE(description, ''),
+			COALESCE(budget, ''), skills, posted_at, raw_html, created_at
+		FROM jobs WHERE id = $1
+	`, id).Scan(&j.ID, &j.Source, &j.URL, &j.ExternalID, &j.Title, &j.Description,
+		&j.Budget, &j.Skills, &j.PostedAt, &j.RawHTML, &j.CreatedAt)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &j, nil
 }
 
 // ExistsByURL проверяет наличие job по URL.

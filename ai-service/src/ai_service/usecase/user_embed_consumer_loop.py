@@ -21,7 +21,11 @@ def run_user_embed_consumer(
     """Цикл: BRPOP user-embed → ProcessUserEmbed. Выход по stop_event.set()."""
     stop = stop_event or threading.Event()
     while not stop.is_set():
-        user_id = queue.pop_blocking(timeout_sec=timeout_sec)
+        try:
+            user_id = queue.pop_blocking(timeout_sec=timeout_sec)
+        except Exception as e:
+            logger.exception("user-embed queue pop failed: %s", e)
+            continue
         if user_id is not None:
             try:
                 process_user_embed.execute(user_id)

@@ -52,6 +52,30 @@ func TestExtractList_BrokenHTML(t *testing.T) {
 	}
 }
 
+func TestExtractList_SkipsExternalAbsoluteURLs(t *testing.T) {
+	html := []byte(`
+		<html><body>
+			<a href="https://evil.example/projects/123/view">bad</a>
+			<a href="https://kwork.ru/projects/456/view">ok-abs</a>
+			<a href="/projects/789/view">ok-rel</a>
+		</body></html>
+	`)
+	ext := NewExtractor()
+	urls, err := ext.ExtractList(html)
+	if err != nil {
+		t.Fatalf("ExtractList: %v", err)
+	}
+	if len(urls) != 2 {
+		t.Fatalf("want 2 kwork URLs, got %d: %v", len(urls), urls)
+	}
+	if urls[0] != "https://kwork.ru/projects/456/view" {
+		t.Errorf("urls[0]: got %q", urls[0])
+	}
+	if urls[1] != "https://kwork.ru/projects/789/view" {
+		t.Errorf("urls[1]: got %q", urls[1])
+	}
+}
+
 func TestExtractDetail(t *testing.T) {
 	html, err := os.ReadFile("../../../testdata/kwork_detail.html")
 	if err != nil {

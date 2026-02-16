@@ -81,6 +81,31 @@ func TestQueue_Enqueue_RejectsNegative(t *testing.T) {
 	}
 }
 
+func TestQueue_NewDefaultQueue(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	q := NewQueue(client, "")
+	if q == nil {
+		t.Fatal("NewQueue returned nil")
+	}
+	// Проверяем что использует default
+	ctx := context.Background()
+	if err := q.Enqueue(ctx, 1); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	val, _ := client.LPop(ctx, "ai-process").Result()
+	if val == "" {
+		t.Error("expected data in ai-process queue")
+	}
+}
+
 func TestQueue_Ping(t *testing.T) {
 	mr, err := miniredis.Run()
 	if err != nil {

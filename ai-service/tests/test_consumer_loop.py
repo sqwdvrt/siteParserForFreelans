@@ -25,6 +25,19 @@ class FakeQueueConsumer(JobQueueConsumer):
         return None
 
 
+class FlakyQueueConsumer(JobQueueConsumer):
+    """Первая попытка pop — исключение, затем возвращается job_id."""
+
+    def __init__(self) -> None:
+        self._raised = False
+
+    def pop_blocking(self, timeout_sec: int = 5) -> int | None:
+        if not self._raised:
+            self._raised = True
+            raise RuntimeError("redis temporary error")
+        return 42
+
+
 def test_run_consumer_calls_process_job() -> None:
     import time
 
@@ -53,3 +66,18 @@ def test_run_consumer_stops_on_event() -> None:
     run_consumer(queue, process_job, timeout_sec=1, stop_event=stop)
 
     process_job.execute.assert_not_called()
+
+
+def test_run_consumer_recovers_after_pop_error() -> None:
+    process_job = MagicMock(spec=ProcessJobUseCase)
+    queue = FlakyQueueConsumer()
+    stop = threading.Event()
+
+    def _execute(job_id: int) -> None:
+        stop.set()
+
+    process_job.execute.side_effect = _execute
+
+    run_consumer(queue, process_job, timeout_sec=1, stop_event=stop)
+
+    process_job.execute.assert_called_once_with(42)

@@ -1,24 +1,65 @@
 package api
 
 import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 )
 
 const maxProfileTextLen = 5000
+const maxJSONBodyBytes int64 = 16 << 10 // 16 KiB
+const authHeaderPrefix = "Bearer "
+const headerTelegramID = "X-Telegram-ID"
+const headerRequestTimestamp = "X-Request-Timestamp"
+const headerRequestNonce = "X-Request-Nonce"
+const headerRequestSignature = "X-Request-Signature"
+const internalErrorMessage = "internal error"
+const maxRequestSkew = 5 * time.Minute
+const defaultNonceTTL = 10 * time.Minute
+const defaultRateLimitWindow = time.Minute
+const defaultIPRateLimit = 120
+const defaultTelegramRateLimit = 60
 
 var errTelegramIDInvalid = errors.New("telegram_id must be positive integer")
 
+// NonceStore — хранилище одноразовых nonce для anti-replay.
+type NonceStore interface {
+	Use(ctx context.Context, key string, ttl time.Duration) (bool, error)
+}
+
+// RequestRateLimiter — rate limiter для ключей (IP, telegram id).
+type RequestRateLimiter interface {
+	Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error)
+}
+
 // Handlers — HTTP handlers для API.
 type Handlers struct {
-	UserRepo       port.UserRepository
-	UserEmbedQueue port.UserEmbedQueue // nil — очередь не используется
+	UserRepo          port.UserRepository
+	UserEmbedQueue    port.UserEmbedQueue // nil — очередь не используется
+	AuthToken         string              // обязательный bearer token для API
+	UserHMACSecret    string              // обязательный секрет подписи user-level запросов
+	NonceStore        NonceStore          // optional: anti-replay (nonce)
+	RateLimiter       RequestRateLimiter  // optional: rate limit (per ip/per telegram id)
+	NonceTTL          time.Duration
+	RateLimitWindow   time.Duration
+	IPRateLimit       int
+	TelegramRateLimit int
 }
 
 // PostUsersRequest — тело POST /users.
@@ -59,19 +100,47 @@ type PostUsersResponse struct {
 
 // PostUsers создаёт пользователя по telegram_id.
 func (h *Handlers) PostUsers(w http.ResponseWriter, r *http.Request) {
+	if !h.authorize(w, r) {
+		return
+	}
 	var req PostUsersRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	rawBody, err := decodeJSONBody(w, r, &req)
+	if err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	callerTelegramID, err := parseTelegramIDHeader(r.Header.Get(headerTelegramID))
+	if err != nil {
+		http.Error(w, "invalid x-telegram-id header", http.StatusBadRequest)
+		return
+	}
+	if callerTelegramID != int64(req.TelegramID) {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if !h.enforceIPRateLimit(w, r) {
+		return
+	}
+	if !h.authorizeUserRequest(w, r, callerTelegramID, rawBody) {
+		return
+	}
+	if !h.enforceTelegramRateLimit(w, r, callerTelegramID) {
 		return
 	}
 	userID, err := h.UserRepo.Save(r.Context(), int64(req.TelegramID))
 	if err != nil {
 		log.Printf("POST /users error: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(PostUsersResponse{UserID: userID})
+	if err := json.NewEncoder(w).Encode(PostUsersResponse{UserID: userID}); err != nil {
+		log.Printf("POST /users encode response: %v", err)
+	}
 }
 
 // PutUserProfileRequest — тело PUT /users/:id/profile.
@@ -81,14 +150,27 @@ type PutUserProfileRequest struct {
 
 // PutUserProfile обновляет profile_text пользователя.
 func (h *Handlers) PutUserProfile(w http.ResponseWriter, r *http.Request) {
+	if !h.authorize(w, r) {
+		return
+	}
 	idStr := chi.URLParam(r, "id")
 	userID, err := strconv.ParseInt(idStr, 10, 64)
 	if err != nil || userID <= 0 {
 		http.Error(w, "invalid user id", http.StatusBadRequest)
 		return
 	}
+	callerTelegramID, err := parseTelegramIDHeader(r.Header.Get(headerTelegramID))
+	if err != nil {
+		http.Error(w, "invalid x-telegram-id header", http.StatusBadRequest)
+		return
+	}
 	var req PutUserProfileRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	rawBody, err := decodeJSONBody(w, r, &req)
+	if err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, "invalid JSON", http.StatusBadRequest)
 		return
 	}
@@ -96,12 +178,278 @@ func (h *Handlers) PutUserProfile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "profile_text too long", http.StatusBadRequest)
 		return
 	}
+	if !h.enforceIPRateLimit(w, r) {
+		return
+	}
+	if !h.authorizeUserRequest(w, r, callerTelegramID, rawBody) {
+		return
+	}
+	if !h.enforceTelegramRateLimit(w, r, callerTelegramID) {
+		return
+	}
+	user, err := h.UserRepo.GetByID(r.Context(), userID)
+	if err != nil {
+		log.Printf("PUT /users/%d/profile get user: %v", userID, err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	if user == nil {
+		http.Error(w, "user not found", http.StatusNotFound)
+		return
+	}
+	if user.TelegramID != callerTelegramID {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
 	if err := h.UserRepo.UpdateProfile(r.Context(), userID, req.ProfileText); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Printf("PUT /users/%d/profile update: %v", userID, err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
 		return
 	}
 	if h.UserEmbedQueue != nil {
-		_ = h.UserEmbedQueue.Enqueue(r.Context(), userID)
+		if err := h.UserEmbedQueue.Enqueue(r.Context(), userID); err != nil {
+			log.Printf("PUT /users/%d/profile enqueue user-embed: %v", userID, err)
+		}
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+var errBodyTooLarge = errors.New("body too large")
+var errInvalidTelegramHeader = errors.New("invalid telegram header")
+
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst interface{}) ([]byte, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return nil, errBodyTooLarge
+		}
+		return nil, err
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if err := dec.Decode(dst); err != nil {
+		return nil, err
+	}
+	if err := dec.Decode(&struct{}{}); err != nil && !errors.Is(err, io.EOF) {
+		return nil, fmt.Errorf("trailing data: %w", err)
+	}
+	return body, nil
+}
+
+func (h *Handlers) authorize(w http.ResponseWriter, r *http.Request) bool {
+	if h.AuthToken == "" {
+		http.Error(w, "server auth is not configured", http.StatusInternalServerError)
+		return false
+	}
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(auth, authHeaderPrefix) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(auth, authHeaderPrefix))
+	if token == "" || subtle.ConstantTimeCompare([]byte(token), []byte(h.AuthToken)) != 1 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+
+func (h *Handlers) authorizeUserRequest(w http.ResponseWriter, r *http.Request, telegramID int64, body []byte) bool {
+	if h.UserHMACSecret == "" {
+		http.Error(w, "server user auth is not configured", http.StatusInternalServerError)
+		return false
+	}
+	tsRaw := strings.TrimSpace(r.Header.Get(headerRequestTimestamp))
+	if tsRaw == "" {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	ts, err := strconv.ParseInt(tsRaw, 10, 64)
+	if err != nil || ts <= 0 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	reqTime := time.Unix(ts, 0)
+	now := time.Now()
+	if reqTime.Before(now.Add(-maxRequestSkew)) || reqTime.After(now.Add(maxRequestSkew)) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	nonce := strings.TrimSpace(r.Header.Get(headerRequestNonce))
+	if !isValidNonce(nonce) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+
+	givenHex := strings.TrimSpace(r.Header.Get(headerRequestSignature))
+	givenSig, err := hex.DecodeString(givenHex)
+	if err != nil || len(givenSig) != sha256.Size {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	expectedSig := signUserRequest(h.UserHMACSecret, r.Method, r.URL.EscapedPath(), telegramID, tsRaw, nonce, body)
+	if subtle.ConstantTimeCompare(givenSig, expectedSig) != 1 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	if h.NonceStore != nil {
+		nonceKey := fmt.Sprintf("tg:%d:%s", telegramID, nonce)
+		ok, err := h.NonceStore.Use(r.Context(), nonceKey, h.nonceTTL())
+		if err != nil {
+			log.Printf("nonce store error: %v", err)
+			http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+			return false
+		}
+		if !ok {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return false
+		}
+	}
+	return true
+}
+
+func signUserRequest(secret, method, path string, telegramID int64, timestamp, nonce string, body []byte) []byte {
+	bodyHash := sha256.Sum256(body)
+	payload := strings.Join([]string{
+		strings.ToUpper(strings.TrimSpace(method)),
+		strings.TrimSpace(path),
+		strconv.FormatInt(telegramID, 10),
+		strings.TrimSpace(timestamp),
+		strings.TrimSpace(nonce),
+		hex.EncodeToString(bodyHash[:]),
+	}, "\n")
+	mac := hmac.New(sha256.New, []byte(secret))
+	_, _ = mac.Write([]byte(payload))
+	return mac.Sum(nil)
+}
+
+func parseTelegramIDHeader(raw string) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, errInvalidTelegramHeader
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		return 0, errInvalidTelegramHeader
+	}
+	return id, nil
+}
+
+func (h *Handlers) nonceTTL() time.Duration {
+	if h.NonceTTL > 0 {
+		return h.NonceTTL
+	}
+	return defaultNonceTTL
+}
+
+func (h *Handlers) rateLimitWindow() time.Duration {
+	if h.RateLimitWindow > 0 {
+		return h.RateLimitWindow
+	}
+	return defaultRateLimitWindow
+}
+
+func (h *Handlers) ipRateLimit() int {
+	if h.IPRateLimit > 0 {
+		return h.IPRateLimit
+	}
+	return defaultIPRateLimit
+}
+
+func (h *Handlers) telegramRateLimit() int {
+	if h.TelegramRateLimit > 0 {
+		return h.TelegramRateLimit
+	}
+	return defaultTelegramRateLimit
+}
+
+func (h *Handlers) enforceIPRateLimit(w http.ResponseWriter, r *http.Request) bool {
+	if h.RateLimiter == nil {
+		return true
+	}
+	ip := clientIP(r)
+	if ip == "" {
+		return true
+	}
+	allowed, err := h.RateLimiter.Allow(r.Context(), "ip:"+ip, h.ipRateLimit(), h.rateLimitWindow())
+	if err != nil {
+		log.Printf("ip rate-limit error: %v", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return false
+	}
+	if !allowed {
+		http.Error(w, "too many requests", http.StatusTooManyRequests)
+		return false
+	}
+	return true
+}
+
+func (h *Handlers) enforceTelegramRateLimit(w http.ResponseWriter, r *http.Request, telegramID int64) bool {
+	if h.RateLimiter == nil {
+		return true
+	}
+	allowed, err := h.RateLimiter.Allow(
+		r.Context(),
+		"tg:"+strconv.FormatInt(telegramID, 10),
+		h.telegramRateLimit(),
+		h.rateLimitWindow(),
+	)
+	if err != nil {
+		log.Printf("telegram rate-limit error: %v", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return false
+	}
+	if !allowed {
+		http.Error(w, "too many requests", http.StatusTooManyRequests)
+		return false
+	}
+	return true
+}
+
+func isValidNonce(nonce string) bool {
+	if len(nonce) < 16 || len(nonce) > 128 {
+		return false
+	}
+	for _, r := range nonce {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func clientIP(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+		parts := strings.Split(xff, ",")
+		first := strings.TrimSpace(parts[0])
+		if ip := net.ParseIP(first); ip != nil {
+			return ip.String()
+		}
+	}
+	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+		if ip := net.ParseIP(realIP); ip != nil {
+			return ip.String()
+		}
+	}
+	remote := strings.TrimSpace(r.RemoteAddr)
+	if remote == "" {
+		return ""
+	}
+	if ip := net.ParseIP(remote); ip != nil {
+		return ip.String()
+	}
+	host, _, err := net.SplitHostPort(remote)
+	if err != nil {
+		return ""
+	}
+	host = strings.TrimSpace(host)
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.String()
+	}
+	return ""
 }

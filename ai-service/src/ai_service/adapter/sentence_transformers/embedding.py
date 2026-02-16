@@ -24,5 +24,6 @@ class SentenceTransformerEmbedding(EmbeddingService):
             return [0.0] * EMBEDDING_DIM
         embedding = self._model.encode(text, convert_to_numpy=True)
         vec = embedding.tolist()
-        assert len(vec) == EMBEDDING_DIM, f"expected {EMBEDDING_DIM}, got {len(vec)}"
+        if len(vec) != EMBEDDING_DIM:
+            raise ValueError(f"expected {EMBEDDING_DIM}, got {len(vec)}")
         return vec

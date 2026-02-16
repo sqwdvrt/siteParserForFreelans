@@ -2,7 +2,9 @@ package postgres
 
 import (
 	"context"
+	"errors"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 )
@@ -29,6 +31,21 @@ func (r *UserRepository) Save(ctx context.Context, telegramID int64) (int64, err
 	return id, err
 }
 
+// GetByID возвращает пользователя по id. nil если не найден.
+func (r *UserRepository) GetByID(ctx context.Context, userID int64) (*domain.User, error) {
+	var u domain.User
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, telegram_id, profile_text FROM users WHERE id = $1
+	`, userID).Scan(&u.ID, &u.TelegramID, &u.ProfileText)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &u, nil
+}
+
 // GetByTelegramID возвращает пользователя по telegram_id. nil если не найден.
 func (r *UserRepository) GetByTelegramID(ctx context.Context, telegramID int64) (*domain.User, error) {
 	var u domain.User
@@ -36,7 +53,10 @@ func (r *UserRepository) GetByTelegramID(ctx context.Context, telegramID int64) 
 		SELECT id, telegram_id, profile_text FROM users WHERE telegram_id = $1
 	`, telegramID).Scan(&u.ID, &u.TelegramID, &u.ProfileText)
 	if err != nil {
-		return nil, err // pgx.ErrNoRows при отсутствии
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, err
 	}
 	return &u, nil
 }

@@ -38,6 +38,30 @@ func TestUserEmbedQueue_Enqueue(t *testing.T) {
 	}
 }
 
+func TestUserEmbedQueue_NewDefaultQueue(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	q := NewUserEmbedQueue(client, "")
+	if q == nil {
+		t.Fatal("NewUserEmbedQueue returned nil")
+	}
+	ctx := context.Background()
+	if err := q.Enqueue(ctx, 1); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+	val, _ := client.LPop(ctx, "user-embed").Result()
+	if val == "" {
+		t.Error("expected data in user-embed queue")
+	}
+}
+
 func TestUserEmbedQueue_EnqueueInvalid(t *testing.T) {
 	mr, _ := miniredis.Run()
 	defer mr.Close()

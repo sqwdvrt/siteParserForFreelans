@@ -25,6 +25,19 @@ class FakeUserEmbedQueueConsumer(UserEmbedQueueConsumer):
         return None
 
 
+class FlakyUserEmbedQueueConsumer(UserEmbedQueueConsumer):
+    """Первая попытка pop — исключение, затем возвращается user_id."""
+
+    def __init__(self) -> None:
+        self._raised = False
+
+    def pop_blocking(self, timeout_sec: int = 5) -> int | None:
+        if not self._raised:
+            self._raised = True
+            raise RuntimeError("redis temporary error")
+        return 42
+
+
 def test_run_user_embed_consumer_calls_process() -> None:
     import time
 
@@ -53,3 +66,18 @@ def test_run_user_embed_consumer_stops_on_event() -> None:
     run_user_embed_consumer(queue, process, timeout_sec=1, stop_event=stop)
 
     process.execute.assert_not_called()
+
+
+def test_run_user_embed_consumer_recovers_after_pop_error() -> None:
+    process = MagicMock(spec=ProcessUserEmbedUseCase)
+    queue = FlakyUserEmbedQueueConsumer()
+    stop = threading.Event()
+
+    def _execute(user_id: int) -> None:
+        stop.set()
+
+    process.execute.side_effect = _execute
+
+    run_user_embed_consumer(queue, process, timeout_sec=1, stop_event=stop)
+
+    process.execute.assert_called_once_with(42)

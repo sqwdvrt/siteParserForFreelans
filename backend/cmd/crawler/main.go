@@ -12,12 +12,13 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
-	"github.com/robfig/cron/v3"
 	redisclient "github.com/redis/go-redis/v9"
+	"github.com/robfig/cron/v3"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/http"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/kwork"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/postgres"
 	redisqueue "github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/redis"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/security"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/usecase"
 )
 
@@ -25,14 +26,32 @@ func main() {
 	_ = godotenv.Load()
 	_ = godotenv.Load("../.env") // при запуске из backend/
 
+	isProd := security.IsProductionEnv(os.Getenv("APP_ENV"))
+
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
 		slog.Error("DATABASE_URL not set")
 		os.Exit(1)
 	}
+	if err := security.ValidateURLPassword("DATABASE_URL", dbURL, 16); err != nil {
+		slog.Error("invalid DATABASE_URL secret policy", "err", err)
+		os.Exit(1)
+	}
+	if isProd {
+		if err := security.ValidatePostgresTLSForProduction("DATABASE_URL", dbURL); err != nil {
+			slog.Error("invalid DATABASE_URL transport policy", "err", err)
+			os.Exit(1)
+		}
+	}
 	redisURL := os.Getenv("REDIS_URL")
 	if redisURL == "" {
 		redisURL = "redis://localhost:6379/0"
+	}
+	if isProd {
+		if err := security.ValidateRedisTLSForProduction("REDIS_URL", redisURL, 16); err != nil {
+			slog.Error("invalid REDIS_URL transport policy", "err", err)
+			os.Exit(1)
+		}
 	}
 
 	rateSec, _ := strconv.Atoi(os.Getenv("CRAWL_RATE_SEC"))

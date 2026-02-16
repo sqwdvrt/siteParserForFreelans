@@ -16,50 +16,97 @@
 
 **Архитектура:** Core (Go) — парсинг, API, очереди, уведомления. AI Service (Python) — embeddings, matching. Crawler не вызывает LLM.
 
+## Требования
+
+- **Python:** `>=3.11` (для `ai-service`).
+- **Go (security baseline):** `>=1.25.7` (рекомендуется запускать команды через `GOTOOLCHAIN=go1.25.7`).
+
 ## Быстрый старт
 
 ```bash
 # 1. Скопировать конфиг и задать переменные
 cp .env.example .env
-# Отредактировать .env (DATABASE_URL, пароли и т.д.)
+# Отредактировать .env: POSTGRES_PASSWORD, DATABASE_URL, REDIS_URL, API_AUTH_TOKEN, API_USER_HMAC_SECRET, TELEGRAM_BOT_TOKEN
 
-# 2. Запустить PostgreSQL + Redis
+# 2. Запустить всё (PostgreSQL, Redis, API, Crawler, Notifier, AI Service, Telegram-бот)
 docker compose up -d
 
-# 3. Проверить миграции (опционально)
-./scripts/verify_migrations.sh
+# 3. Написать боту в Telegram: /start → /profile Ваш профиль
+# Уведомления придут на TELEGRAM_ID из .env
 
-# 4. Запустить Crawler (один проход)
-cd backend && go run ./cmd/crawler/
-# или собрать бинарник:
-cd backend && go build -o bin/crawler ./cmd/crawler/ && ./bin/crawler
+# 4. E2E-проверка (опционально)
+./scripts/e2e_test.sh
 ```
 
-Миграции применяются автоматически при первом запуске PostgreSQL (volume пустой).
+Миграции применяются автоматически при старте backend. Подробнее: `docs/e2e.md`.
 
-## Конфигурация (env)
+**Локальный запуск без Docker:**
+```bash
+# PostgreSQL + Redis
+docker compose up -d postgres redis
+
+# Backend API
+cd backend && go run ./cmd/api
+
+# Crawler (один проход)
+cd backend && go run ./cmd/crawler
+```
+
+## Конфигурация (.env)
 
 | Переменная | Описание |
 |------------|----------|
-| `DATABASE_URL` | Подключение к PostgreSQL (обязательно для crawler) |
-| `CRAWL_LIST_URL` | URL страницы со списком проектов (по умолчанию `KWORK_BASE_URL/projects`) |
-| `KWORK_BASE_URL` | Базовый URL Kwork (по умолчанию `https://kwork.ru`) |
-| `CRAWL_RATE_SEC` | Интервал между запросами в секундах (по умолчанию 15) |
+| `APP_ENV` | Режим приложения: `development` или `production` (в production включаются строгие transport-проверки) |
+| `POSTGRES_PASSWORD` | Пароль PostgreSQL (обязателен, не оставлять шаблонное значение) |
+| `DATABASE_URL` | Подключение к PostgreSQL (в production только `sslmode=require|verify-ca|verify-full`) |
+| `REDIS_URL` | Подключение к Redis (в production только `rediss://` + пароль) |
+| `API_AUTH_TOKEN` | Bearer token для API (обязателен) |
+| `API_USER_HMAC_SECRET` | HMAC-секрет подписи user-level API-запросов (обязателен) |
+| `API_NONCE_TTL_SEC` | TTL (сек) для `X-Request-Nonce` anti-replay; по умолчанию `600` |
+| `API_RATE_LIMIT_WINDOW_SEC` | Размер окна rate-limit (сек); по умолчанию `60` |
+| `API_RATE_LIMIT_IP_RPM` | Лимит API-запросов на IP в окне; по умолчанию `120` |
+| `API_RATE_LIMIT_TG_RPM` | Лимит API-запросов на Telegram ID в окне; по умолчанию `60` |
+| `API_TLS_CERT_FILE`/`API_TLS_KEY_FILE` | Путь к TLS-сертификату и ключу API (обязательны в `APP_ENV=production`) |
+| `TELEGRAM_BOT_TOKEN` | Токен бота для уведомлений |
+| `TELEGRAM_ID` | Ваш chat_id (уведомления придут сюда) |
+| `API_URL` | URL backend API (в production для telegram-bot только `https://`) |
+| `POSTGRES_BIND_IP`/`REDIS_BIND_IP`/`API_BIND_IP` | Привязка портов Docker к интерфейсу хоста (по умолчанию `127.0.0.1`) |
+| `POSTGRES_PORT`/`REDIS_PORT`/`API_PORT` | Порты публикации на хосте |
+| `CRAWL_LIST_URL` | URL страницы проектов (по умолчанию Kwork) |
+| `CRAWL_RATE_SEC` | Интервал между запросами (по умолчанию 15) |
+
+Полный список: `.env.example`. Документация: `docs/env_setup.md`.
 
 ## Тесты
 
 ```bash
+# Backend (Go) — покрытие ≥70% по internal/
 cd backend
-
-# Unit-тесты (http, kwork)
-go test ./internal/adapter/http/ ./internal/adapter/kwork/ -v -cover
-
-# Интеграционные тесты Postgres (без Docker — пропуск)
-source ../.env && go test ./internal/adapter/postgres/ -v
-
-# Интеграционные тесты Postgres (с Docker — testcontainers)
-go test -tags=integration ./internal/adapter/postgres/ -v -timeout 120s
-
-# Все тесты
+source ../.env  # для postgres-тестов
 go test ./... -cover
+# С DATABASE_URL: internal packages ~82%
+
+# AI Service (Python) — покрытие ≥70%
+cd ai-service
+python3 -m pytest --cov=src -q
+# ~84%
+
+# или из корня проекта (устойчиво, даже если pytest CLI не в PATH):
+./scripts/pytest_ai.sh --cov=src -q
+```
+
+## Security Baseline
+
+```bash
+# go mod verify
+cd backend && go mod verify
+
+# pip audit (требует Python ≥3.11)
+cd ai-service && pip-audit -r requirements.txt
+
+# Полная проверка (версии + govulncheck + pip-audit)
+./scripts/security_baseline_check.sh
+
+# Если Python 3.11 установлен не как python3.11:
+PYTHON_BIN=python3.12 ./scripts/security_baseline_check.sh
 ```

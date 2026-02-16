@@ -11,7 +11,7 @@ import (
 )
 
 // setupTestDB подключается к Postgres из DATABASE_URL.
-// Запуск: docker compose up -d && source .env && go test ./internal/adapter/postgres/ -v
+// Запуск: docker compose up -d && export DATABASE_URL=... && go test ./internal/adapter/postgres/ -v
 func setupTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	connStr := os.Getenv("DATABASE_URL")
@@ -58,11 +58,11 @@ func TestJobRepository_Save_Dedup(t *testing.T) {
 	ctx := context.Background()
 
 	job := &domain.Job{
-		Source:     "kwork",
-		URL:        "https://kwork.ru/projects/456/view",
-		Title:      "Dup Job",
-		RawHTML:    "<html>v1</html>",
-		CreatedAt:  time.Now(),
+		Source:    "kwork",
+		URL:       "https://kwork.ru/projects/456/view",
+		Title:     "Dup Job",
+		RawHTML:   "<html>v1</html>",
+		CreatedAt: time.Now(),
 	}
 	id1, err := repo.Save(ctx, job)
 	if err != nil {
@@ -94,11 +94,11 @@ func TestJobRepository_ExistsByURL(t *testing.T) {
 	}
 
 	job := &domain.Job{
-		Source:     "kwork",
-		URL:        uniqueURL,
-		Title:      "Exists Test",
-		RawHTML:    "<html></html>",
-		CreatedAt:  time.Now(),
+		Source:    "kwork",
+		URL:       uniqueURL,
+		Title:     "Exists Test",
+		RawHTML:   "<html></html>",
+		CreatedAt: time.Now(),
 	}
 	_, err = repo.Save(ctx, job)
 	if err != nil {
@@ -110,5 +110,48 @@ func TestJobRepository_ExistsByURL(t *testing.T) {
 	}
 	if !exists {
 		t.Error("want true after Save")
+	}
+}
+
+func TestJobRepository_GetByID_NotFound(t *testing.T) {
+	pool := setupTestDB(t)
+	repo := NewJobRepository(pool)
+	ctx := context.Background()
+
+	job, err := repo.GetByID(ctx, 9876543210)
+	if err != nil {
+		t.Fatalf("GetByID: unexpected error for non-existent job: %v", err)
+	}
+	if job != nil {
+		t.Fatalf("GetByID: want nil for non-existent job, got %+v", job)
+	}
+}
+
+func TestJobRepository_GetByID_Found(t *testing.T) {
+	pool := setupTestDB(t)
+	repo := NewJobRepository(pool)
+	ctx := context.Background()
+
+	job := &domain.Job{
+		Source:    "kwork",
+		URL:      "https://kwork.ru/projects/getbyid-" + time.Now().Format("20060102150405") + "/view",
+		Title:    "GetByID Test",
+		RawHTML:  "<html>found</html>",
+		CreatedAt: time.Now(),
+	}
+	id, err := repo.Save(ctx, job)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, id)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetByID: want job, got nil")
+	}
+	if got.ID != id || got.Title != "GetByID Test" || got.RawHTML != "<html>found</html>" {
+		t.Errorf("GetByID: got %+v", got)
 	}
 }

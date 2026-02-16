@@ -20,7 +20,11 @@ def run_consumer(
     """Цикл: BRPOP → ProcessJob. Выход по stop_event.set()."""
     stop = stop_event or threading.Event()
     while not stop.is_set():
-        job_id = queue.pop_blocking(timeout_sec=timeout_sec)
+        try:
+            job_id = queue.pop_blocking(timeout_sec=timeout_sec)
+        except Exception as e:
+            logger.exception("queue pop failed: %s", e)
+            continue
         if job_id is not None:
             try:
                 process_job.execute(job_id)

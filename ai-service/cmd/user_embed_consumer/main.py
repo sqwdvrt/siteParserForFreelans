@@ -20,6 +20,11 @@ except ImportError:
 from ai_service.adapter.postgres import PostgresUserRepository
 from ai_service.adapter.redis import RedisUserEmbedQueueConsumer
 from ai_service.adapter.sentence_transformers import SentenceTransformerEmbedding
+from ai_service.util.transport_security import (
+    is_production_env,
+    validate_postgres_tls_for_production,
+    validate_redis_tls_for_production,
+)
 from ai_service.usecase.process_user_embed import ProcessUserEmbedUseCase
 from ai_service.usecase.user_embed_consumer_loop import run_user_embed_consumer
 
@@ -31,12 +36,21 @@ logger = logging.getLogger(__name__)
 
 
 def main() -> None:
+    app_env = os.getenv("APP_ENV", "development")
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
         logger.error("DATABASE_URL not set")
         sys.exit(1)
 
     redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+    if is_production_env(app_env):
+        try:
+            validate_postgres_tls_for_production("DATABASE_URL", db_url)
+            validate_redis_tls_for_production("REDIS_URL", redis_url)
+        except ValueError as e:
+            logger.error("%s", e)
+            sys.exit(1)
+
     queue_name = os.getenv("USER_EMBED_QUEUE", "user-embed")
     model_name = os.getenv("EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")
 

@@ -11,6 +11,7 @@ import (
 )
 
 const baseURL = "https://kwork.ru"
+const baseHost = "kwork.ru"
 
 // Extractor парсит HTML страниц Kwork.
 type Extractor struct{}
@@ -94,7 +95,14 @@ func (e *Extractor) ExtractDetail(html []byte, pageURL string) (*domain.Job, err
 
 func resolveURL(href string) (string, error) {
 	if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {
-		return href, nil
+		u, err := url.Parse(href)
+		if err != nil {
+			return "", err
+		}
+		if !isAllowedHost(u.Hostname()) {
+			return "", url.InvalidHostError(u.Hostname())
+		}
+		return u.String(), nil
 	}
 	base, err := url.Parse(baseURL)
 	if err != nil {
@@ -104,7 +112,16 @@ func resolveURL(href string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return base.ResolveReference(ref).String(), nil
+	resolved := base.ResolveReference(ref)
+	if !isAllowedHost(resolved.Hostname()) {
+		return "", url.InvalidHostError(resolved.Hostname())
+	}
+	return resolved.String(), nil
+}
+
+func isAllowedHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	return host == baseHost || strings.HasSuffix(host, "."+baseHost)
 }
 
 var externalIDRe = regexp.MustCompile(`/projects/(\d+)/`)
@@ -120,7 +137,6 @@ func extractExternalID(u string) string {
 var dateLayouts = []string{
 	"02.01.2006",
 	"2.1.2006",
-	"15.02.2025",
 }
 
 func parsePostedAt(s string) *time.Time {

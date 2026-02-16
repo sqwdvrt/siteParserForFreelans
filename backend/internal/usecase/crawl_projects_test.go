@@ -67,6 +67,10 @@ func (m *mockRepo) Save(ctx context.Context, job *domain.Job) (int64, error) {
 	return m.saveID, nil
 }
 
+func (m *mockRepo) GetByID(ctx context.Context, id int64) (*domain.Job, error) {
+	return nil, nil
+}
+
 func (m *mockRepo) ExistsByURL(ctx context.Context, url string) (bool, error) {
 	return m.exists[url], nil
 }

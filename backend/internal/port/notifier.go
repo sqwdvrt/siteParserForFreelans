@@ -1,0 +1,19 @@
+package port
+
+import (
+	"context"
+
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
+)
+
+// NotifyPayload — данные для уведомления о проекте.
+type NotifyPayload struct {
+	Job       *domain.Job
+	Score     float64
+	WhyItFits string // 1–2 фразы из ai_metadata, почему подходит (опционально)
+}
+
+// Notifier отправляет уведомления пользователям (например, в Telegram).
+type Notifier interface {
+	Send(ctx context.Context, telegramID int64, p NotifyPayload) error
+}

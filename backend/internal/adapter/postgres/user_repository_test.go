@@ -2,12 +2,9 @@ package postgres
 
 import (
 	"context"
-	"errors"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"os"
 	"testing"
-
-	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func setupTestDBForUser(t *testing.T) *pgxpool.Pool {
@@ -69,12 +66,12 @@ func TestUserRepository_GetByTelegramID(t *testing.T) {
 
 	telegramID := int64(9000000002 + (os.Getpid() % 100000))
 
-	_, err := repo.GetByTelegramID(ctx, telegramID)
-	if err == nil {
-		t.Fatal("want error for non-existent user")
+	u, err := repo.GetByTelegramID(ctx, telegramID)
+	if err != nil {
+		t.Fatalf("GetByTelegramID: unexpected error for non-existent user: %v", err)
 	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		t.Fatalf("GetByTelegramID: want ErrNoRows, got %v", err)
+	if u != nil {
+		t.Fatalf("GetByTelegramID: want nil for non-existent user, got %+v", u)
 	}
 
 	id, err := repo.Save(ctx, telegramID)
@@ -82,12 +79,26 @@ func TestUserRepository_GetByTelegramID(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	u, err := repo.GetByTelegramID(ctx, telegramID)
+	u, err = repo.GetByTelegramID(ctx, telegramID)
 	if err != nil {
 		t.Fatalf("GetByTelegramID: %v", err)
 	}
 	if u.ID != id || u.TelegramID != telegramID {
 		t.Errorf("got user %+v", u)
+	}
+}
+
+func TestUserRepository_GetByID_NotFound(t *testing.T) {
+	pool := setupTestDBForUser(t)
+	repo := NewUserRepository(pool)
+	ctx := context.Background()
+
+	u, err := repo.GetByID(ctx, 9876543210)
+	if err != nil {
+		t.Fatalf("GetByID: unexpected error for non-existent user: %v", err)
+	}
+	if u != nil {
+		t.Fatalf("GetByID: want nil for non-existent user, got %+v", u)
 	}
 }
 
