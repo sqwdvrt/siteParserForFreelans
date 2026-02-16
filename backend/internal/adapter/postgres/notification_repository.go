@@ -68,7 +68,7 @@ func (r *NotificationRepository) CountToday(ctx context.Context, userID int64) (
 	var n int
 	err := r.pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM notifications
-		WHERE user_id = $1 AND sent_at::date = CURRENT_DATE
+		WHERE user_id = $1 AND sent_at >= CURRENT_DATE AND sent_at < CURRENT_DATE + INTERVAL '1 day'
 	`, userID).Scan(&n)
 	return n, err
 }

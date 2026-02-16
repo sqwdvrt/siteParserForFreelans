@@ -40,6 +40,16 @@ FORBIDDEN_SECRET_PREFIXES = (
     "dummy_",
     "test_",
 )
+ALLOWED_OUTBOUND_SCHEMES = {"http", "https"}
+_OUTBOUND_HOST_ALLOWLIST = {"api.telegram.org"}
+_HTTP_ONLY_OPENER = urllib.request.build_opener(
+    urllib.request.HTTPHandler(),
+    urllib.request.HTTPSHandler(),
+)
+
+
+def _safe_open(url_or_request, timeout: int):
+    return _HTTP_ONLY_OPENER.open(url_or_request, timeout=timeout)
 
 
 def _shannon_entropy_bits(secret: str) -> float:
@@ -85,6 +95,25 @@ def _validate_api_url_for_production(api_url: str) -> None:
         raise ValueError("API_URL must include host in production")
 
 
+def _register_allowed_host(url: str) -> None:
+    parsed = urllib.parse.urlsplit((url or "").strip())
+    host = (parsed.hostname or "").strip().lower()
+    if host:
+        _OUTBOUND_HOST_ALLOWLIST.add(host)
+
+
+def _validate_outbound_url(url: str) -> None:
+    parsed = urllib.parse.urlsplit((url or "").strip())
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ALLOWED_OUTBOUND_SCHEMES:
+        raise ValueError("Outbound URL must use http:// or https://")
+    host = (parsed.hostname or "").lower()
+    if not host:
+        raise ValueError("Outbound URL must include host")
+    if host not in _OUTBOUND_HOST_ALLOWLIST:
+        raise ValueError(f"Outbound URL host '{host}' is not in allowlist")
+
+
 def _json_body(data: dict) -> bytes:
     return json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
@@ -97,7 +126,8 @@ def _http_post(url: str, data: dict, headers: dict[str, str] | None = None) -> t
     for k, v in (headers or {}).items():
         req.add_header(k, v)
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        _validate_outbound_url(url)
+        with _safe_open(req, timeout=10) as r:
             return r.status, json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
         err_body = e.read().decode() if e.fp else ""
@@ -117,7 +147,8 @@ def _http_put(url: str, data: dict, headers: dict[str, str] | None = None) -> in
     for k, v in (headers or {}).items():
         req.add_header(k, v)
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        _validate_outbound_url(url)
+        with _safe_open(req, timeout=10) as r:
             return r.status
     except urllib.error.HTTPError as e:
         return e.code
@@ -130,7 +161,8 @@ def _http_get(url: str, params: dict) -> dict | None:
     qs = urllib.parse.urlencode(params)
     full_url = f"{url}?{qs}" if qs else url
     try:
-        with urllib.request.urlopen(full_url, timeout=35) as r:
+        _validate_outbound_url(full_url)
+        with _safe_open(full_url, timeout=35) as r:
             return json.loads(r.read().decode())
     except Exception as e:
         logger.warning("HTTP GET failed: %s", e)
@@ -294,6 +326,7 @@ def main() -> None:
         _validate_secret("API_USER_HMAC_SECRET", api_user_hmac_secret or "", 32)
         if _is_production_env(app_env):
             _validate_api_url_for_production(api_url)
+        _register_allowed_host(api_url)
     except ValueError as e:
         logger.error("%s", e)
         sys.exit(1)

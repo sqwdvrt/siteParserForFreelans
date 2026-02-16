@@ -41,6 +41,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /home/app:mode=0700,size=16m
 
   backend-crawler:
     build:
@@ -56,6 +64,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /home/app:mode=0700,size=16m
 
   backend-notifier:
     build:
@@ -71,6 +87,14 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /home/app:mode=0700,size=16m
 
   ai-service:
     build:
@@ -86,6 +110,37 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+      - /home/app:mode=0700,size=64m
+
+  ai-user-embed:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    command: ["python", "cmd/user_embed_consumer/main.py"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+      - /home/app:mode=0700,size=64m
 
   telegram-bot:
     build:
@@ -97,6 +152,14 @@ services:
     depends_on:
       backend-api:
         condition: service_started
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=32m
+      - /home/app:mode=0700,size=16m
 
 volumes:
   postgres_data:

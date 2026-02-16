@@ -14,14 +14,20 @@ import (
 // Запуск: docker compose up -d && export DATABASE_URL=... && go test ./internal/adapter/postgres/ -v
 func setupTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
+	if os.Getenv("INTEGRATION_TESTS") != "1" {
+		t.Skip("INTEGRATION_TESTS!=1, skip integration tests")
+	}
 	connStr := os.Getenv("DATABASE_URL")
 	if connStr == "" {
-		t.Skip("DATABASE_URL not set, skip integration tests")
+		t.Fatal("DATABASE_URL not set")
 	}
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, connStr)
 	if err != nil {
 		t.Fatalf("pgxpool: %v", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("postgres ping: %v", err)
 	}
 	t.Cleanup(pool.Close)
 	return pool
@@ -134,9 +140,9 @@ func TestJobRepository_GetByID_Found(t *testing.T) {
 
 	job := &domain.Job{
 		Source:    "kwork",
-		URL:      "https://kwork.ru/projects/getbyid-" + time.Now().Format("20060102150405") + "/view",
-		Title:    "GetByID Test",
-		RawHTML:  "<html>found</html>",
+		URL:       "https://kwork.ru/projects/getbyid-" + time.Now().Format("20060102150405") + "/view",
+		Title:     "GetByID Test",
+		RawHTML:   "<html>found</html>",
 		CreatedAt: time.Now(),
 	}
 	id, err := repo.Save(ctx, job)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -14,6 +15,21 @@ from ai_service.util.sanitize import sanitize_for_classifier
 logger = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT_SEC = 30
+DEFAULT_OLLAMA_ALLOWED_HOSTS = {
+    "localhost",
+    "127.0.0.1",
+    "::1",
+    "ollama",
+    "host.docker.internal",
+}
+_HTTP_ONLY_OPENER = urllib.request.build_opener(
+    urllib.request.HTTPHandler(),
+    urllib.request.HTTPSHandler(),
+)
+
+
+def _safe_open(request: urllib.request.Request, timeout: int):
+    return _HTTP_ONLY_OPENER.open(request, timeout=timeout)
 
 OLLAMA_PROMPT = """Classify this freelance project description. Reply ONLY with valid JSON, no other text.
 Schema: {"project_type": "web|mobile|bot|other", "seniority": "junior|middle|senior|unknown", "technologies": ["tech1","tech2"], "complexity": "low|medium|high", "budget_level": "low|medium|high|unknown", "is_spam": false}
@@ -35,12 +51,26 @@ class OllamaClassifier(Classifier):
         self._model = model
         self._timeout = timeout_sec
 
+    @staticmethod
+    def _validate_ollama_url(url: str) -> None:
+        parsed = urllib.parse.urlsplit((url or "").strip())
+        scheme = (parsed.scheme or "").lower()
+        if scheme not in {"http", "https"}:
+            raise ValueError("Ollama URL must use http:// or https://")
+        host = (parsed.hostname or "").lower()
+        if not host:
+            raise ValueError("Ollama URL must include host")
+        if host not in DEFAULT_OLLAMA_ALLOWED_HOSTS:
+            raise ValueError(f"Ollama URL host '{host}' is not in allowlist")
+
     def classify(self, text: str) -> ClassificationResult:
         text = sanitize_for_classifier(text or "")
         if not text:
             return {"is_spam": False}
 
         try:
+            target_url = f"{self._base_url}/api/generate"
+            self._validate_ollama_url(target_url)
             payload = {
                 "model": self._model,
                 "prompt": OLLAMA_PROMPT + text,
@@ -48,12 +78,12 @@ class OllamaClassifier(Classifier):
             }
             body = json.dumps(payload).encode("utf-8")
             req = urllib.request.Request(
-                f"{self._base_url}/api/generate",
+                target_url,
                 data=body,
                 headers={"Content-Type": "application/json"},
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=self._timeout) as resp:
+            with _safe_open(req, timeout=self._timeout) as resp:
                 data = json.loads(resp.read().decode())
             raw = data.get("response", "{}")
             if isinstance(raw, str):
@@ -64,7 +94,7 @@ class OllamaClassifier(Classifier):
                         raw = raw[4:]
                 return self._parse_response(raw)
             return {}
-        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+        except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as e:
             logger.warning("Ollama classify failed: %s", e)
             return {}
         except (json.JSONDecodeError, KeyError, TypeError) as e:

@@ -111,7 +111,9 @@ echo "✓ PUT /profile"
 
 # Вставка тестового job и отправка в ai-process (имитация crawl)
 JOB_SQL="INSERT INTO jobs (source, url, title, description, raw_html) VALUES ('kwork', 'https://kwork.ru/projects/e2e-test-'||floor(random()*1e9)||'/view', 'E2E Test Job', 'Python project', '<p>test</p>') RETURNING id"
-JOB_ID=$(docker compose exec -T -e PGPASSWORD="$PGPASS" postgres psql -U site_parser -d site_parser -t -c "$JOB_SQL" 2>/dev/null | tr -d ' \n')
+JOB_ID=$(docker compose exec -T -e PGPASSWORD="$PGPASS" postgres \
+  psql -U site_parser -d site_parser -qAt -c "$JOB_SQL" 2>/dev/null | head -n1 | tr -d '\r')
+JOB_ID=$(echo "$JOB_ID" | grep -Eo '^[0-9]+$' || true)
 if [ -z "$JOB_ID" ]; then
   echo "Не удалось вставить job"
   exit 1
@@ -123,12 +125,18 @@ docker compose exec -T redis redis-cli LPUSH ai-process "{\"job_id\":$JOB_ID}" >
   redis-cli -u "$REDIS_URL" LPUSH ai-process "{\"job_id\":$JOB_ID}" >/dev/null 2>&1
 echo "✓ Job в очереди ai-process"
 
-# Ожидание обработки AI (модель загружается ~30–60 сек)
-echo "Ожидание AI (90 сек)..."
-sleep 90
+# Ожидание обработки AI (модель может загружаться дольше на холодном старте)
+echo "Ожидание AI (до 180 сек)..."
+EMB_COUNT="0"
+for _ in $(seq 1 18); do
+  EMB_COUNT=$(docker compose exec -T -e PGPASSWORD="$PGPASS" postgres psql -U site_parser -d site_parser -t -c "SELECT COUNT(*) FROM job_embeddings WHERE job_id=$JOB_ID" 2>/dev/null | tr -d ' \n' || echo "0")
+  if [ "${EMB_COUNT:-0}" -ge 1 ]; then
+    break
+  fi
+  sleep 10
+done
 
 # Проверка job_embeddings
-EMB_COUNT=$(docker compose exec -T -e PGPASSWORD="$PGPASS" postgres psql -U site_parser -d site_parser -t -c "SELECT COUNT(*) FROM job_embeddings WHERE job_id=$JOB_ID" 2>/dev/null | tr -d ' \n' || echo "0")
 if [ "${EMB_COUNT:-0}" -lt 1 ]; then
   echo "job_embeddings не создан для job_id=$JOB_ID (AI может ещё обрабатывать)"
   echo "Проверьте логи: docker compose logs ai-service"

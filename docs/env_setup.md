@@ -21,6 +21,22 @@
 
 **Важно:** `.env` в `.gitignore` — секреты не попадут в репозиторий.
 
+## Профили Deployment
+
+- `docker-compose.yml` — локальная разработка (dev).
+- `docker-compose.prod.yml` — production-профиль (требует `.env.production`).
+
+### Production запуск (Docker Compose)
+
+```bash
+cp .env.production.example .env.production
+# заполнить secure значения в .env.production
+
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+```
+
+Production compose не поднимает локальные PostgreSQL/Redis контейнеры — используй внешние TLS endpoints.
+
 ## Требования по версиям
 
 - **Python:** `>=3.11` (по `ai-service/pyproject.toml`).

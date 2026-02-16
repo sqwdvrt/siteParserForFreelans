@@ -12,14 +12,20 @@ import (
 
 func setupTestDBForNotification(t *testing.T) *pgxpool.Pool {
 	t.Helper()
+	if os.Getenv("INTEGRATION_TESTS") != "1" {
+		t.Skip("INTEGRATION_TESTS!=1, skip integration tests")
+	}
 	connStr := os.Getenv("DATABASE_URL")
 	if connStr == "" {
-		t.Skip("DATABASE_URL not set, skip integration tests")
+		t.Fatal("DATABASE_URL not set")
 	}
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, connStr)
 	if err != nil {
 		t.Fatalf("pgxpool: %v", err)
+	}
+	if err := pool.Ping(ctx); err != nil {
+		t.Fatalf("postgres ping: %v", err)
 	}
 	t.Cleanup(pool.Close)
 	return pool

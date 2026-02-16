@@ -108,10 +108,16 @@ func main() {
 	repo := postgres.NewJobRepository(pool)
 	crawl := usecase.NewCrawlProjects(fetcher, extractor, repo, queue)
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
 	runCrawl := func() {
-		crawlCtx := context.Background()
-		saved, err := crawl.Execute(crawlCtx, listURL)
+		saved, err := crawl.Execute(ctx, listURL)
 		if err != nil {
+			if ctx.Err() != nil {
+				slog.Info("crawl interrupted by shutdown")
+				return
+			}
 			slog.Error("crawl failed", "err", err)
 			return
 		}
@@ -135,6 +141,7 @@ func main() {
 	<-sigCh
 	signal.Stop(sigCh)
 	slog.Info("shutdown signal received, stopping")
+	cancel()
 	drainCtx := c.Stop()
 	<-drainCtx.Done()
 	slog.Info("shutdown complete")

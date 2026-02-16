@@ -3,9 +3,12 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
+PY_USER_BASE="${ROOT_DIR}/.pyuserbase"
 
 PYTHON_BIN="${PYTHON_BIN:-}"
 GO_TOOLCHAIN="${GO_TOOLCHAIN:-go1.25.7}"
+PY_MODE="local"
+PIP_AUDIT_REQ_PATH="ai-service/requirements.txt"
 
 echo "[security] Validating pinned baseline versions"
 
@@ -15,20 +18,20 @@ if ! grep -qE '^toolchain go1\.25\.7$' backend/go.mod; then
 fi
 
 is_python_ge_311() {
-  local py_bin="$1"
-  "$py_bin" - <<'PY' >/dev/null 2>&1
+  "$@" - <<'PY' >/dev/null 2>&1
 import sys
 raise SystemExit(0 if sys.version_info >= (3, 11) else 1)
 PY
 }
 
 python_version() {
-  local py_bin="$1"
-  "$py_bin" - <<'PY' 2>/dev/null
+  "$@" - <<'PY' 2>/dev/null
 import sys
 print(".".join(map(str, sys.version_info[:3])))
 PY
 }
+
+PY_CMD=()
 
 if [[ -n "$PYTHON_BIN" ]]; then
   if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
@@ -39,40 +42,40 @@ if [[ -n "$PYTHON_BIN" ]]; then
     echo "ERROR: PYTHON_BIN=$PYTHON_BIN has version $(python_version "$PYTHON_BIN"), need >=3.11"
     exit 1
   fi
+  PY_CMD=("$PYTHON_BIN")
 else
   for candidate in python3.13 python3.12 python3.11 python3; do
     if command -v "$candidate" >/dev/null 2>&1 && is_python_ge_311 "$candidate"; then
-      PYTHON_BIN="$candidate"
+      PY_CMD=("$candidate")
       break
     fi
   done
-  if [[ -z "$PYTHON_BIN" ]]; then
-    echo "ERROR: Python >=3.11 not found. Install Python >=3.11 or set PYTHON_BIN."
+  if [[ ${#PY_CMD[@]} -eq 0 ]]; then
+    if command -v docker >/dev/null 2>&1 && docker image inspect siteparserforfreelans-ai-service >/dev/null 2>&1 && \
+      is_python_ge_311 docker run --rm -i --entrypoint python siteparserforfreelans-ai-service; then
+      PY_MODE="docker"
+      PY_CMD=(docker run --rm -i --entrypoint python siteparserforfreelans-ai-service)
+      PIP_AUDIT_REQ_PATH="/app/requirements.txt"
+    fi
+  fi
+  if [[ ${#PY_CMD[@]} -eq 0 ]]; then
+    echo "ERROR: Python >=3.11 not found (and docker ai-service image fallback is unavailable)."
+    echo "Install Python >=3.11 or build image: docker compose build ai-service."
     exit 1
   fi
 fi
 
-echo "[security] Using Python interpreter: ${PYTHON_BIN} (version $(python_version "$PYTHON_BIN"))"
+echo "[security] Using Python interpreter ($(printf '%s ' "${PY_CMD[@]}")) version $(python_version "${PY_CMD[@]}") [mode=${PY_MODE}]"
 
-"$PYTHON_BIN" - <<'PY'
-import pathlib
-import sys
-import tomllib
+if ! grep -qE '^requires-python = ">=3\.11"$' ai-service/pyproject.toml; then
+  echo "ERROR: ai-service/pyproject.toml must contain: requires-python = \">=3.11\""
+  exit 1
+fi
 
-pyproject_path = pathlib.Path("ai-service/pyproject.toml")
-data = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
-project = data.get("project", {})
-
-requires_python = str(project.get("requires-python", "")).strip()
-if requires_python != ">=3.11":
-    print(f"ERROR: requires-python must be '>=3.11', got: {requires_python!r}")
-    sys.exit(1)
-
-deps = [str(d) for d in project.get("dependencies", [])]
-if not any(dep.lower().startswith("pillow>=12.1.1") for dep in deps):
-    print("ERROR: pyproject dependencies must include pillow>=12.1.1")
-    sys.exit(1)
-PY
+if ! grep -qiE '"pillow>=12\.1\.1"' ai-service/pyproject.toml; then
+  echo "ERROR: ai-service/pyproject.toml must include pillow>=12.1.1 in [project].dependencies"
+  exit 1
+fi
 
 if ! grep -qiE '^pillow>=12\.1\.1$' ai-service/requirements.txt; then
   echo "ERROR: ai-service/requirements.txt must pin pillow>=12.1.1"
@@ -83,7 +86,14 @@ echo "[security] Running govulncheck with ${GO_TOOLCHAIN}"
 (cd backend && GOTOOLCHAIN="${GO_TOOLCHAIN}" go run golang.org/x/vuln/cmd/govulncheck@latest ./...)
 
 echo "[security] Running pip-audit"
-"$PYTHON_BIN" -m pip install --upgrade pip pip-audit >/dev/null
-"$PYTHON_BIN" -m pip_audit -r ai-service/requirements.txt
+if [[ "$PY_MODE" == "docker" ]]; then
+  docker run --rm --entrypoint sh siteparserforfreelans-ai-service -lc \
+    'python -m pip install --upgrade pip pip-audit >/dev/null && python -m pip_audit -r /app/requirements.txt'
+else
+  PIP_DISABLE_PIP_VERSION_CHECK=1 PYTHONUSERBASE="$PY_USER_BASE" HOME="$ROOT_DIR" \
+    "${PY_CMD[@]}" -m pip install --upgrade --user pip pip-audit >/dev/null
+  PYTHONUSERBASE="$PY_USER_BASE" HOME="$ROOT_DIR" \
+    "${PY_CMD[@]}" -m pip_audit -r "$PIP_AUDIT_REQ_PATH"
+fi
 
 echo "[security] Baseline checks passed"

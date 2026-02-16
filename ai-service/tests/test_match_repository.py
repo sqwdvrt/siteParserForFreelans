@@ -8,6 +8,8 @@ import pytest
 
 from ai_service.adapter.postgres import PostgresMatchRepository
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def repo() -> PostgresMatchRepository:

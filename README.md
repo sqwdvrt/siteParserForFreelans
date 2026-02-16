@@ -40,6 +40,25 @@ docker compose up -d
 
 Миграции применяются автоматически при старте backend. Подробнее: `docs/e2e.md`.
 
+## Deployment Profiles
+
+- `docker-compose.yml` — локальный dev-профиль (включает локальные PostgreSQL/Redis и допускает `sslmode=disable`, `redis://`, `http://`).
+- `docker-compose.prod.yml` — production-профиль (только внешние TLS endpoints, `APP_ENV=production`).
+
+### Production (Docker Compose)
+
+```bash
+# 1. Подготовить production env
+cp .env.production.example .env.production
+# Отредактировать .env.production: DATABASE_URL (sslmode=require), REDIS_URL (rediss://), API_URL (https://),
+# API_TLS_CERT_HOST_PATH/API_TLS_KEY_HOST_PATH и секреты.
+
+# 2. Запуск production-профиля
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+```
+
+В production compose **не** поднимает локальные PostgreSQL/Redis контейнеры: используются внешние managed endpoints.
+
 **Локальный запуск без Docker:**
 ```bash
 # PostgreSQL + Redis

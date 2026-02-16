@@ -1,0 +1,111 @@
+services:
+  backend-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["./api"]
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
+      REDIS_URL: ${REDIS_URL:?set_REDIS_URL_in_.env.production}
+      API_ADDR: ${API_ADDR:-:8443}
+      API_TLS_CERT_FILE: ${API_TLS_CERT_FILE:-/run/secrets/api_tls_cert.pem}
+      API_TLS_KEY_FILE: ${API_TLS_KEY_FILE:-/run/secrets/api_tls_key.pem}
+    ports:
+      - "${API_BIND_IP:-0.0.0.0}:${API_PORT:-8443}:8443"
+    volumes:
+      - "${API_TLS_CERT_HOST_PATH:?set_API_TLS_CERT_HOST_PATH}:/run/secrets/api_tls_cert.pem:ro"
+      - "${API_TLS_KEY_HOST_PATH:?set_API_TLS_KEY_HOST_PATH}:/run/secrets/api_tls_key.pem:ro"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /home/app:mode=0700,size=16m
+    restart: unless-stopped
+
+  backend-crawler:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["./crawler"]
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
+      REDIS_URL: ${REDIS_URL:?set_REDIS_URL_in_.env.production}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /home/app:mode=0700,size=16m
+    restart: unless-stopped
+
+  backend-notifier:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["./notifier"]
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
+      REDIS_URL: ${REDIS_URL:?set_REDIS_URL_in_.env.production}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /home/app:mode=0700,size=16m
+    restart: unless-stopped
+
+  ai-service:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    command: ["python", "cmd/consumer/main.py"]
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
+      REDIS_URL: ${REDIS_URL:?set_REDIS_URL_in_.env.production}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+      - /home/app:mode=0700,size=64m
+    restart: unless-stopped
+
+  telegram-bot:
+    build:
+      context: ./telegram-bot
+      dockerfile: Dockerfile
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      API_URL: ${API_URL:?set_HTTPS_API_URL_in_.env.production}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=32m
+      - /home/app:mode=0700,size=16m
+    restart: unless-stopped

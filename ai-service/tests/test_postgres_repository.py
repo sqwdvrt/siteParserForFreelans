@@ -6,6 +6,8 @@ import pytest
 
 from ai_service.adapter.postgres import PostgresJobRepository
 
+pytestmark = pytest.mark.integration
+
 
 @pytest.fixture
 def repo() -> PostgresJobRepository:
