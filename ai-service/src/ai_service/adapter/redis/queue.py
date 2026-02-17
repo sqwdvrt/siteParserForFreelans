@@ -1,4 +1,4 @@
-"""Redis adapter: BRPOP из ai-process, парсинг JSON {"job_id": N}."""
+"""Redis adapter: BRPOPLPUSH из ai-process в processing, ack/nack по payload {"job_id": N}."""
 
 from __future__ import annotations
 

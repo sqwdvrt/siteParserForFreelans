@@ -23,7 +23,7 @@ end
 return 0
 `)
 
-// MatchNotifyConsumer реализует port.MatchNotifyConsumer через Redis BRPOP.
+// MatchNotifyConsumer реализует port.MatchNotifyConsumer через Redis BRPOPLPUSH + processing queue.
 type MatchNotifyConsumer struct {
 	client          *redis.Client
 	queue           string

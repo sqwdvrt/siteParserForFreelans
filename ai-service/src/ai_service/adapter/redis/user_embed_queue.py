@@ -1,4 +1,4 @@
-"""Redis adapter: BRPOP из user-embed, парсинг JSON {"user_id": N}."""
+"""Redis adapter: BRPOPLPUSH из user-embed в processing, ack/nack по payload {"user_id": N}."""
 
 from __future__ import annotations
 
