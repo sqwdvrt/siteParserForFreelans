@@ -9,8 +9,21 @@ type MatchNotifyPayload struct {
 	MatchScore float64 `json:"match_score"`
 }
 
-// MatchNotifyConsumer — consumer очереди match-notify (BRPOP).
+// MatchNotifyMessage — доставленное сообщение из match-notify.
+// Receipt — внутренний маркер доставки (raw payload) для Ack/Nack.
+type MatchNotifyMessage struct {
+	Payload MatchNotifyPayload
+	Receipt string
+}
+
+// MatchNotifyConsumer — надёжный consumer очереди match-notify.
 type MatchNotifyConsumer interface {
-	// Pop блокирует до получения сообщения или отмены ctx. nil при shutdown.
-	Pop(ctx context.Context) (*MatchNotifyPayload, error)
+	// Recover возвращает сообщения, застрявшие в processing-очереди после рестарта.
+	Recover(ctx context.Context) error
+	// Pop атомарно переносит сообщение из основной очереди в processing и возвращает delivery.
+	Pop(ctx context.Context) (*MatchNotifyMessage, error)
+	// Ack подтверждает успешную обработку delivery (удаляет его из processing).
+	Ack(ctx context.Context, msg *MatchNotifyMessage) error
+	// Nack отклоняет delivery и возвращает его в основную очередь для повторной обработки.
+	Nack(ctx context.Context, msg *MatchNotifyMessage) error
 }

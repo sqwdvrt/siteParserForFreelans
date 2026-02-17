@@ -11,6 +11,24 @@ from ai_service.usecase.process_user_embed import ProcessUserEmbedUseCase
 logger = logging.getLogger(__name__)
 
 
+def _maybe_reclaim(queue: UserEmbedQueueConsumer) -> None:
+    reclaim = getattr(queue, "reclaim_stuck", None)
+    if callable(reclaim):
+        reclaim()
+
+
+def _maybe_ack(queue: UserEmbedQueueConsumer, user_id: int) -> None:
+    ack = getattr(queue, "ack", None)
+    if callable(ack):
+        ack(user_id)
+
+
+def _maybe_nack(queue: UserEmbedQueueConsumer, user_id: int) -> None:
+    nack = getattr(queue, "nack", None)
+    if callable(nack):
+        nack(user_id)
+
+
 def run_user_embed_consumer(
     queue: UserEmbedQueueConsumer,
     process_user_embed: ProcessUserEmbedUseCase,
@@ -20,6 +38,7 @@ def run_user_embed_consumer(
 ) -> None:
     """Цикл: BRPOP user-embed → ProcessUserEmbed. Выход по stop_event.set()."""
     stop = stop_event or threading.Event()
+    _maybe_reclaim(queue)
     while not stop.is_set():
         try:
             user_id = queue.pop_blocking(timeout_sec=timeout_sec)
@@ -31,4 +50,13 @@ def run_user_embed_consumer(
                 process_user_embed.execute(user_id)
             except Exception as e:
                 logger.exception("process user_id=%s failed: %s", user_id, e)
+                try:
+                    _maybe_nack(queue, user_id)
+                except Exception as nack_err:
+                    logger.exception("nack user_id=%s failed: %s", user_id, nack_err)
+            else:
+                try:
+                    _maybe_ack(queue, user_id)
+                except Exception as ack_err:
+                    logger.exception("ack user_id=%s failed: %s", user_id, ack_err)
     logger.info("user-embed consumer loop stopped")

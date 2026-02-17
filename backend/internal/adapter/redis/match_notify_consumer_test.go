@@ -57,15 +57,19 @@ func TestMatchNotifyConsumer_Pop(t *testing.T) {
 	consumer := NewMatchNotifyConsumer(client, "match-notify")
 	ctx := context.Background()
 
-	p, err := consumer.Pop(ctx)
+	msg, err := consumer.Pop(ctx)
 	if err != nil {
 		t.Fatalf("Pop: %v", err)
 	}
-	if p == nil {
+	if msg == nil {
 		t.Fatal("Pop: want payload, got nil")
 	}
+	p := msg.Payload
 	if p.UserID != 10 || p.JobID != 20 || p.MatchScore != 0.9 {
 		t.Errorf("Pop: got %+v", p)
+	}
+	if err := consumer.Ack(ctx, msg); err != nil {
+		t.Fatalf("Ack: %v", err)
 	}
 }
 
@@ -86,12 +90,12 @@ func TestMatchNotifyConsumer_Pop_InvalidPayload_Skip(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	p, err := consumer.Pop(ctx)
+	msg, err := consumer.Pop(ctx)
 	if err != nil {
 		t.Fatalf("Pop: %v", err)
 	}
-	if p != nil {
-		t.Errorf("Pop: want nil for invalid payload (user_id=0), got %+v", p)
+	if msg != nil {
+		t.Errorf("Pop: want nil for invalid payload (user_id=0), got %+v", msg)
 	}
 }
 
@@ -110,12 +114,12 @@ func TestMatchNotifyConsumer_Pop_InvalidJSON(t *testing.T) {
 	consumer := NewMatchNotifyConsumer(client, "match-notify")
 	ctx := context.Background()
 
-	p, err := consumer.Pop(ctx)
+	msg, err := consumer.Pop(ctx)
 	if err == nil {
 		t.Error("Pop: want error for invalid JSON")
 	}
-	if p != nil {
-		t.Errorf("Pop: want nil on error, got %+v", p)
+	if msg != nil {
+		t.Errorf("Pop: want nil on error, got %+v", msg)
 	}
 }
 
@@ -133,12 +137,90 @@ func TestMatchNotifyConsumer_Pop_EmptyQueue_Timeout(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	p, err := consumer.Pop(ctx)
-	// На пустой очереди: nil,nil (context) или nil,redis.Nil (timeout)
-	if err != nil && err != redis.Nil {
+	msg, err := consumer.Pop(ctx)
+	if err != nil {
 		t.Fatalf("Pop: %v", err)
 	}
-	if p != nil {
-		t.Errorf("Pop on empty queue: want nil, got %+v", p)
+	if msg != nil {
+		t.Errorf("Pop on empty queue: want nil, got %+v", msg)
+	}
+}
+
+func TestMatchNotifyConsumer_Nack_RequeuesMessage(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	payload := port.MatchNotifyPayload{UserID: 10, JobID: 20, MatchScore: 0.9}
+	b, _ := json.Marshal(payload)
+	client.LPush(context.Background(), "match-notify", string(b))
+
+	consumer := NewMatchNotifyConsumer(client, "match-notify")
+	ctx := context.Background()
+
+	msg, err := consumer.Pop(ctx)
+	if err != nil {
+		t.Fatalf("Pop: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("Pop: want message, got nil")
+	}
+	if err := consumer.Nack(ctx, msg); err != nil {
+		t.Fatalf("Nack: %v", err)
+	}
+
+	got, err := client.LLen(ctx, "match-notify").Result()
+	if err != nil {
+		t.Fatalf("LLen queue: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("expected 1 message in source queue after nack, got %d", got)
+	}
+	gotProcessing, err := client.LLen(ctx, "match-notify:processing").Result()
+	if err != nil {
+		t.Fatalf("LLen processing: %v", err)
+	}
+	if gotProcessing != 0 {
+		t.Fatalf("expected empty processing queue after nack, got %d", gotProcessing)
+	}
+}
+
+func TestMatchNotifyConsumer_Recover_MovesProcessingToSource(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	defer mr.Close()
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	client.LPush(context.Background(), "match-notify:processing", `{"user_id":1,"job_id":2,"match_score":0.5}`)
+
+	consumer := NewMatchNotifyConsumer(client, "match-notify")
+	ctx := context.Background()
+
+	if err := consumer.Recover(ctx); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+
+	sourceLen, err := client.LLen(ctx, "match-notify").Result()
+	if err != nil {
+		t.Fatalf("LLen queue: %v", err)
+	}
+	if sourceLen != 1 {
+		t.Fatalf("expected 1 message in source queue after recover, got %d", sourceLen)
+	}
+	procLen, err := client.LLen(ctx, "match-notify:processing").Result()
+	if err != nil {
+		t.Fatalf("LLen processing: %v", err)
+	}
+	if procLen != 0 {
+		t.Fatalf("expected empty processing queue after recover, got %d", procLen)
 	}
 }

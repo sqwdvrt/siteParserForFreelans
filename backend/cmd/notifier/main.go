@@ -110,6 +110,10 @@ func main() {
 	sendNotif := usecase.NewSendNotification(notifRepo, userRepo, jobRepo, notifier, rateLimit, maxPerDay)
 
 	consumer := redisadapter.NewMatchNotifyConsumer(rdb, queueName)
+	if err := consumer.Recover(ctx); err != nil {
+		slog.Error("recover processing queue failed", "queue", queueName, "err", err)
+		os.Exit(1)
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -132,7 +136,7 @@ func main() {
 			slog.Info("notifier stopped")
 			return
 		default:
-			p, err := consumer.Pop(ctx)
+			msg, err := consumer.Pop(ctx)
 			if err != nil {
 				popErrBackoff = nextPopErrorBackoff(popErrBackoff)
 				slog.Error("pop failed", "err", err, "backoff", popErrBackoff)
@@ -143,11 +147,19 @@ func main() {
 				continue
 			}
 			popErrBackoff = 0 // reset after successful read path
-			if p == nil {
+			if msg == nil {
 				continue
 			}
+			p := msg.Payload
 			if err := sendNotif.Execute(ctx, p.UserID, p.JobID, p.MatchScore); err != nil {
 				slog.Error("send notification failed", "user_id", p.UserID, "job_id", p.JobID, "err", err)
+				if nackErr := consumer.Nack(ctx, msg); nackErr != nil {
+					slog.Error("nack failed", "user_id", p.UserID, "job_id", p.JobID, "err", nackErr)
+				}
+				continue
+			}
+			if ackErr := consumer.Ack(ctx, msg); ackErr != nil {
+				slog.Error("ack failed", "user_id", p.UserID, "job_id", p.JobID, "err", ackErr)
 			}
 		}
 	}

@@ -7,6 +7,7 @@ import json
 import logging
 import math
 import os
+import random
 import sys
 import time
 import secrets
@@ -46,10 +47,23 @@ _HTTP_ONLY_OPENER = urllib.request.build_opener(
     urllib.request.HTTPHandler(),
     urllib.request.HTTPSHandler(),
 )
+API_RETRY_ATTEMPTS = 4
+API_RETRY_BASE_DELAY_SEC = 0.4
+API_RETRY_MAX_DELAY_SEC = 3.0
+API_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 def _safe_open(url_or_request, timeout: int):
     return _HTTP_ONLY_OPENER.open(url_or_request, timeout=timeout)
+
+
+def _should_retry_status(status: int) -> bool:
+    return status in API_RETRYABLE_STATUS_CODES
+
+
+def _retry_delay_sec(attempt: int) -> float:
+    delay = min(API_RETRY_MAX_DELAY_SEC, API_RETRY_BASE_DELAY_SEC * (2 ** attempt))
+    return delay + random.uniform(0.0, 0.2)
 
 
 def _shannon_entropy_bits(secret: str) -> float:
@@ -125,18 +139,30 @@ def _http_post(url: str, data: dict, headers: dict[str, str] | None = None) -> t
     req.add_header("Content-Type", "application/json")
     for k, v in (headers or {}).items():
         req.add_header(k, v)
-    try:
-        _validate_outbound_url(url)
-        with _safe_open(req, timeout=10) as r:
-            return r.status, json.loads(r.read().decode())
-    except urllib.error.HTTPError as e:
-        err_body = e.read().decode() if e.fp else ""
-        if e.code >= 500 and err_body:
-            logger.warning("API error %s: %s", e.code, err_body[:200])
-        return e.code, None
-    except Exception as e:
-        logger.debug("HTTP error: %s", e)
-        return 0, None
+    _validate_outbound_url(url)
+    for attempt in range(API_RETRY_ATTEMPTS):
+        try:
+            with _safe_open(req, timeout=10) as r:
+                return r.status, json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode() if e.fp else ""
+            if _should_retry_status(e.code) and attempt < API_RETRY_ATTEMPTS - 1:
+                delay = _retry_delay_sec(attempt)
+                logger.warning("API POST retry after status=%s in %.2fs", e.code, delay)
+                time.sleep(delay)
+                continue
+            if e.code >= 500 and err_body:
+                logger.warning("API error %s: %s", e.code, err_body[:200])
+            return e.code, None
+        except Exception as e:
+            if attempt < API_RETRY_ATTEMPTS - 1:
+                delay = _retry_delay_sec(attempt)
+                logger.warning("API POST retry after network error in %.2fs: %s", delay, e)
+                time.sleep(delay)
+                continue
+            logger.debug("HTTP error: %s", e)
+            return 0, None
+    return 0, None
 
 
 def _http_put(url: str, data: dict, headers: dict[str, str] | None = None) -> int:
@@ -146,14 +172,26 @@ def _http_put(url: str, data: dict, headers: dict[str, str] | None = None) -> in
     req.add_header("Content-Type", "application/json")
     for k, v in (headers or {}).items():
         req.add_header(k, v)
-    try:
-        _validate_outbound_url(url)
-        with _safe_open(req, timeout=10) as r:
-            return r.status
-    except urllib.error.HTTPError as e:
-        return e.code
-    except Exception:
-        return 0
+    _validate_outbound_url(url)
+    for attempt in range(API_RETRY_ATTEMPTS):
+        try:
+            with _safe_open(req, timeout=10) as r:
+                return r.status
+        except urllib.error.HTTPError as e:
+            if _should_retry_status(e.code) and attempt < API_RETRY_ATTEMPTS - 1:
+                delay = _retry_delay_sec(attempt)
+                logger.warning("API PUT retry after status=%s in %.2fs", e.code, delay)
+                time.sleep(delay)
+                continue
+            return e.code
+        except Exception as e:
+            if attempt < API_RETRY_ATTEMPTS - 1:
+                delay = _retry_delay_sec(attempt)
+                logger.warning("API PUT retry after network error in %.2fs: %s", delay, e)
+                time.sleep(delay)
+                continue
+            return 0
+    return 0
 
 
 def _http_get(url: str, params: dict) -> dict | None:

@@ -38,6 +38,19 @@ class FlakyQueueConsumer(JobQueueConsumer):
         return 42
 
 
+class ReliableFakeQueueConsumer(FakeQueueConsumer):
+    def __init__(self, job_ids: list[int], timeout_sec: int = 1) -> None:
+        super().__init__(job_ids, timeout_sec=timeout_sec)
+        self.acked: list[int] = []
+        self.nacked: list[int] = []
+
+    def ack(self, job_id: int) -> None:
+        self.acked.append(job_id)
+
+    def nack(self, job_id: int) -> None:
+        self.nacked.append(job_id)
+
+
 def test_run_consumer_calls_process_job() -> None:
     import time
 
@@ -81,3 +94,44 @@ def test_run_consumer_recovers_after_pop_error() -> None:
     run_consumer(queue, process_job, timeout_sec=1, stop_event=stop)
 
     process_job.execute.assert_called_once_with(42)
+
+
+def test_run_consumer_acks_on_success() -> None:
+    import time
+
+    process_job = MagicMock(spec=ProcessJobUseCase)
+    queue = ReliableFakeQueueConsumer([42])
+    stop = threading.Event()
+
+    def run() -> None:
+        run_consumer(queue, process_job, timeout_sec=1, stop_event=stop)
+
+    t = threading.Thread(target=run)
+    t.start()
+    time.sleep(0.2)
+    stop.set()
+    t.join(timeout=3)
+
+    assert queue.acked == [42]
+    assert queue.nacked == []
+
+
+def test_run_consumer_nacks_on_process_error() -> None:
+    import time
+
+    process_job = MagicMock(spec=ProcessJobUseCase)
+    process_job.execute.side_effect = RuntimeError("boom")
+    queue = ReliableFakeQueueConsumer([42])
+    stop = threading.Event()
+
+    def run() -> None:
+        run_consumer(queue, process_job, timeout_sec=1, stop_event=stop)
+
+    t = threading.Thread(target=run)
+    t.start()
+    time.sleep(0.2)
+    stop.set()
+    t.join(timeout=3)
+
+    assert queue.acked == []
+    assert queue.nacked == [42]

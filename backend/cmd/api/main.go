@@ -18,6 +18,7 @@ import (
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/postgres"
 	redisqueue "github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/redis"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/api"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/security"
 )
 
@@ -71,22 +72,36 @@ func main() {
 
 	userRepo := postgres.NewUserRepository(pool)
 
+	var userEmbedQueue port.UserEmbedQueue
+	var nonceStore api.NonceStore
+	var rateLimiter api.RequestRateLimiter
+	var rdb *redisclient.Client
+	redisDegraded := false
+
 	opt, err := redisclient.ParseURL(redisURL)
 	if err != nil {
-		log.Fatalf("REDIS_URL: %v", err)
+		redisDegraded = true
+		log.Printf("REDIS_URL parse error (%v); starting API in degraded mode without redis-backed queue/rate-limit/nonce", err)
+	} else {
+		rdb = redisclient.NewClient(opt)
+		if err := rdb.Ping(context.Background()).Err(); err != nil {
+			redisDegraded = true
+			log.Printf("redis unavailable (%v); starting API in degraded mode without redis-backed queue/rate-limit/nonce", err)
+			_ = rdb.Close()
+			rdb = nil
+		} else {
+			queueName := os.Getenv("USER_EMBED_QUEUE")
+			if queueName == "" {
+				queueName = "user-embed"
+			}
+			userEmbedQueue = redisqueue.NewUserEmbedQueue(rdb, queueName)
+			nonceStore = redisqueue.NewNonceStore(rdb, "api:nonce")
+			rateLimiter = redisqueue.NewRateLimiter(rdb, "api:ratelimit")
+		}
 	}
-	rdb := redisclient.NewClient(opt)
-	defer rdb.Close()
-	if err := rdb.Ping(context.Background()).Err(); err != nil {
-		log.Fatalf("redis ping: %v", err)
+	if rdb != nil {
+		defer rdb.Close()
 	}
-	queueName := os.Getenv("USER_EMBED_QUEUE")
-	if queueName == "" {
-		queueName = "user-embed"
-	}
-	userEmbedQueue := redisqueue.NewUserEmbedQueue(rdb, queueName)
-	nonceStore := redisqueue.NewNonceStore(rdb, "api:nonce")
-	rateLimiter := redisqueue.NewRateLimiter(rdb, "api:ratelimit")
 
 	nonceTTLSec, _ := strconv.Atoi(os.Getenv("API_NONCE_TTL_SEC"))
 	if nonceTTLSec <= 0 {
@@ -119,6 +134,38 @@ func main() {
 	}
 
 	r := chi.NewRouter()
+	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	})
+	r.Get("/readyz", func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		defer cancel()
+		if err := pool.Ping(ctx); err != nil {
+			log.Printf("readyz db ping failed: %v", err)
+			http.Error(w, "not ready: database unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if redisDegraded {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("ready: degraded (redis unavailable)"))
+			return
+		}
+		if rdb != nil {
+			if err := rdb.Ping(ctx).Err(); err != nil {
+				log.Printf("readyz redis ping failed (degraded): %v", err)
+				w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write([]byte("ready: degraded (redis unavailable)"))
+				return
+			}
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ready"))
+	})
 	r.Post("/users", handlers.PostUsers)
 	r.Put("/users/{id}/profile", handlers.PutUserProfile)
 
