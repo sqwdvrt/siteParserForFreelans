@@ -166,7 +166,8 @@ func main() {
 		_, _ = w.Write([]byte("ok"))
 	})
 	r.Get("/readyz", func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Second)
+		// Keep readiness checks independent from probe request cancellation.
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 		if err := pool.Ping(ctx); err != nil {
 			log.Printf("readyz db ping failed: %v", err)
