@@ -1,5 +1,5 @@
 # Backend: Go API, Crawler, Notifier
-FROM golang:1.25-alpine AS builder
+FROM golang:1.25-alpine@sha256:f6751d823c26342f9506c03797d2527668d095b0a15f1862cddb4d927a7a4ced AS builder
 
 WORKDIR /build
 
@@ -11,7 +11,7 @@ RUN CGO_ENABLED=0 go build -o /app/api ./cmd/api && \
     CGO_ENABLED=0 go build -o /app/crawler ./cmd/crawler && \
     CGO_ENABLED=0 go build -o /app/notifier ./cmd/notifier
 
-FROM alpine:3.20
+FROM alpine:3.20@sha256:a4f4213abb84c497377b8544c81b3564f313746700372ec4fe84653e4fb03805
 
 RUN apk add --no-cache ca-certificates tzdata postgresql-client
 

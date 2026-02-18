@@ -5,16 +5,11 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/alicebob/miniredis/v2"
 	goredis "github.com/redis/go-redis/v9"
 )
 
 func TestQueue_Enqueue(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	defer mr.Close()
+	mr := mustRunMiniRedis(t)
 
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer client.Close()
@@ -22,7 +17,7 @@ func TestQueue_Enqueue(t *testing.T) {
 	queue := NewQueue(client, "ai-process")
 	ctx := context.Background()
 
-	err = queue.Enqueue(ctx, 42)
+	err := queue.Enqueue(ctx, 42)
 	if err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}
@@ -44,11 +39,7 @@ func TestQueue_Enqueue(t *testing.T) {
 }
 
 func TestQueue_Enqueue_RejectsZero(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	defer mr.Close()
+	mr := mustRunMiniRedis(t)
 
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer client.Close()
@@ -56,18 +47,14 @@ func TestQueue_Enqueue_RejectsZero(t *testing.T) {
 	queue := NewQueue(client, "ai-process")
 	ctx := context.Background()
 
-	err = queue.Enqueue(ctx, 0)
+	err := queue.Enqueue(ctx, 0)
 	if err == nil {
 		t.Fatal("want error for job_id=0")
 	}
 }
 
 func TestQueue_Enqueue_RejectsNegative(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	defer mr.Close()
+	mr := mustRunMiniRedis(t)
 
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer client.Close()
@@ -75,18 +62,14 @@ func TestQueue_Enqueue_RejectsNegative(t *testing.T) {
 	queue := NewQueue(client, "ai-process")
 	ctx := context.Background()
 
-	err = queue.Enqueue(ctx, -1)
+	err := queue.Enqueue(ctx, -1)
 	if err == nil {
 		t.Fatal("want error for job_id=-1")
 	}
 }
 
 func TestQueue_NewDefaultQueue(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	defer mr.Close()
+	mr := mustRunMiniRedis(t)
 
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer client.Close()
@@ -107,11 +90,7 @@ func TestQueue_NewDefaultQueue(t *testing.T) {
 }
 
 func TestQueue_Ping(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	defer mr.Close()
+	mr := mustRunMiniRedis(t)
 
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer client.Close()

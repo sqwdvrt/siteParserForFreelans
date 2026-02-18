@@ -5,16 +5,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	goredis "github.com/redis/go-redis/v9"
 )
 
 func TestNonceStore_Use(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	defer mr.Close()
+	mr := mustRunMiniRedis(t)
 
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer client.Close()
@@ -40,11 +35,7 @@ func TestNonceStore_Use(t *testing.T) {
 }
 
 func TestRateLimiter_Allow(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	defer mr.Close()
+	mr := mustRunMiniRedis(t)
 
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer client.Close()

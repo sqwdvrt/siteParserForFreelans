@@ -77,8 +77,8 @@ if ! grep -qiE '"pillow>=12\.1\.1"' ai-service/pyproject.toml; then
   exit 1
 fi
 
-if ! grep -qiE '^pillow>=12\.1\.1$' ai-service/requirements.txt; then
-  echo "ERROR: ai-service/requirements.txt must pin pillow>=12.1.1"
+if ! grep -qiE '^pillow==12\.1\.1$' ai-service/requirements.txt; then
+  echo "ERROR: ai-service/requirements.txt must pin pillow==12.1.1"
   exit 1
 fi
 

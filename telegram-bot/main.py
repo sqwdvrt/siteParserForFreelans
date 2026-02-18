@@ -57,6 +57,11 @@ def _safe_open(url_or_request, timeout: int):
     return _HTTP_ONLY_OPENER.open(url_or_request, timeout=timeout)
 
 
+def _exception_name(err: Exception) -> str:
+    """Безопасное имя ошибки для логов (без текста/URL/секретов)."""
+    return type(err).__name__
+
+
 def _should_retry_status(status: int) -> bool:
     return status in API_RETRYABLE_STATUS_CODES
 
@@ -157,10 +162,14 @@ def _http_post(url: str, data: dict, headers: dict[str, str] | None = None) -> t
         except Exception as e:
             if attempt < API_RETRY_ATTEMPTS - 1:
                 delay = _retry_delay_sec(attempt)
-                logger.warning("API POST retry after network error in %.2fs: %s", delay, e)
+                logger.warning(
+                    "API POST retry after network error (%s) in %.2fs",
+                    _exception_name(e),
+                    delay,
+                )
                 time.sleep(delay)
                 continue
-            logger.debug("HTTP error: %s", e)
+            logger.debug("HTTP POST failed: %s", _exception_name(e))
             return 0, None
     return 0, None
 
@@ -187,9 +196,14 @@ def _http_put(url: str, data: dict, headers: dict[str, str] | None = None) -> in
         except Exception as e:
             if attempt < API_RETRY_ATTEMPTS - 1:
                 delay = _retry_delay_sec(attempt)
-                logger.warning("API PUT retry after network error in %.2fs: %s", delay, e)
+                logger.warning(
+                    "API PUT retry after network error (%s) in %.2fs",
+                    _exception_name(e),
+                    delay,
+                )
                 time.sleep(delay)
                 continue
+            logger.debug("HTTP PUT failed: %s", _exception_name(e))
             return 0
     return 0
 
@@ -203,7 +217,7 @@ def _http_get(url: str, params: dict) -> dict | None:
         with _safe_open(full_url, timeout=35) as r:
             return json.loads(r.read().decode())
     except Exception as e:
-        logger.warning("HTTP GET failed: %s", e)
+        logger.warning("HTTP GET failed: %s", _exception_name(e))
         return None
 
 

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -629,5 +630,73 @@ func TestHandlers_PostUsers_RateLimitedByTelegramID(t *testing.T) {
 
 	if rr.Code != http.StatusTooManyRequests {
 		t.Errorf("status = %d, want 429", rr.Code)
+	}
+}
+
+func mustCIDRForTest(t *testing.T, raw string) *net.IPNet {
+	t.Helper()
+	_, n, err := net.ParseCIDR(raw)
+	if err != nil {
+		t.Fatalf("parse cidr %q: %v", raw, err)
+	}
+	return n
+}
+
+func TestClientIP_UntrustedRemote_IgnoresForwardedHeaders(t *testing.T) {
+	h := &Handlers{}
+	req := httptest.NewRequest(http.MethodGet, "/users", nil)
+	req.RemoteAddr = "203.0.113.10:34567"
+	req.Header.Set("X-Forwarded-For", "198.51.100.200")
+	req.Header.Set("X-Real-IP", "198.51.100.201")
+
+	ip := h.clientIP(req)
+	if ip != "203.0.113.10" {
+		t.Fatalf("client ip = %q, want remote addr ip", ip)
+	}
+}
+
+func TestClientIP_TrustedProxy_UsesForwardedFor(t *testing.T) {
+	h := &Handlers{
+		TrustedProxyCIDRs: []*net.IPNet{
+			mustCIDRForTest(t, "203.0.113.0/24"),
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/users", nil)
+	req.RemoteAddr = "203.0.113.10:34567"
+	req.Header.Set("X-Forwarded-For", "198.51.100.200, 10.0.0.1")
+
+	ip := h.clientIP(req)
+	if ip != "198.51.100.200" {
+		t.Fatalf("client ip = %q, want first forwarded ip", ip)
+	}
+}
+
+func TestHandlers_PostUsers_IPRateLimit_IgnoresSpoofedForwardedFor(t *testing.T) {
+	var gotKey string
+	h := &Handlers{
+		UserRepo:       &mockUserRepo{},
+		AuthToken:      testAuthToken,
+		UserHMACSecret: testUserHMACSecret,
+		RateLimiter: &mockRateLimiter{
+			allowFunc: func(ctx context.Context, key string, limit int, window time.Duration) (bool, error) {
+				gotKey = key
+				return false, nil
+			},
+		},
+	}
+
+	body := []byte(`{"telegram_id":123456789}`)
+	req := newJSONRequest(http.MethodPost, "/users", body, newAuthHeadersWithUserSign(http.MethodPost, "/users", 123456789, body))
+	req.RemoteAddr = "203.0.113.10:34567"
+	req.Header.Set("X-Forwarded-For", "198.51.100.200")
+	rr := httptest.NewRecorder()
+
+	h.PostUsers(rr, req)
+
+	if rr.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", rr.Code)
+	}
+	if gotKey != "ip:203.0.113.10" {
+		t.Fatalf("rate-limit key = %q, want remote addr key", gotKey)
 	}
 }

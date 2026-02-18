@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -12,12 +11,12 @@ import (
 )
 
 const defaultMatchNotifyQueue = "match-notify"
-const maxRecoverMessages = 1000
+const defaultMaxNackRetries = 5
 
-var nackScript = redis.NewScript(`
+var requeueScript = redis.NewScript(`
 local removed = redis.call("LREM", KEYS[1], 1, ARGV[1])
 if removed > 0 then
-  redis.call("LPUSH", KEYS[2], ARGV[1])
+  redis.call("RPUSH", KEYS[2], ARGV[2])
   return 1
 end
 return 0
@@ -28,6 +27,8 @@ type MatchNotifyConsumer struct {
 	client          *redis.Client
 	queue           string
 	processingQueue string
+	dlqQueue        string
+	maxNackRetries  int
 }
 
 // NewMatchNotifyConsumer создаёт consumer.
@@ -39,12 +40,14 @@ func NewMatchNotifyConsumer(client *redis.Client, queueName string) *MatchNotify
 		client:          client,
 		queue:           queueName,
 		processingQueue: queueName + ":processing",
+		dlqQueue:        queueName + ":dlq",
+		maxNackRetries:  defaultMaxNackRetries,
 	}
 }
 
 // Recover переносит застрявшие сообщения из processing обратно в основную очередь.
 func (c *MatchNotifyConsumer) Recover(ctx context.Context) error {
-	for i := 0; i < maxRecoverMessages; i++ {
+	for {
 		_, err := c.client.RPopLPush(ctx, c.processingQueue, c.queue).Result()
 		if err == nil {
 			continue
@@ -54,7 +57,6 @@ func (c *MatchNotifyConsumer) Recover(ctx context.Context) error {
 		}
 		return err
 	}
-	return fmt.Errorf("recover limit reached (%d messages), possible processing queue overflow", maxRecoverMessages)
 }
 
 // Pop атомарно переносит сообщение в processing (BRPOPLPUSH) и возвращает delivery.
@@ -92,16 +94,69 @@ func (c *MatchNotifyConsumer) Ack(ctx context.Context, msg *port.MatchNotifyMess
 	return c.ackRaw(ctx, msg.Receipt)
 }
 
-// Nack отклоняет доставку: атомарно удаляет payload из processing и возвращает в основную очередь.
+// Nack отклоняет доставку: атомарно удаляет payload из processing и перекидывает
+// в конец основной очереди, а при превышении лимита retry — в DLQ.
 func (c *MatchNotifyConsumer) Nack(ctx context.Context, msg *port.MatchNotifyMessage) error {
 	if msg == nil || msg.Receipt == "" {
 		return nil
 	}
-	_, err := nackScript.Run(ctx, c.client, []string{c.processingQueue, c.queue}, msg.Receipt).Int()
+	outRaw, toDLQ, err := c.prepareNackPayload(msg.Receipt)
+	if err != nil {
+		return err
+	}
+	targetQueue := c.queue
+	if toDLQ {
+		targetQueue = c.dlqQueue
+	}
+	_, err = requeueScript.Run(
+		ctx,
+		c.client,
+		[]string{c.processingQueue, targetQueue},
+		msg.Receipt,
+		outRaw,
+	).Int()
 	return err
 }
 
 func (c *MatchNotifyConsumer) ackRaw(ctx context.Context, raw string) error {
 	_, err := c.client.LRem(ctx, c.processingQueue, 1, raw).Result()
 	return err
+}
+
+func (c *MatchNotifyConsumer) prepareNackPayload(raw string) (string, bool, error) {
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return raw, true, nil
+	}
+	if payload == nil {
+		return raw, true, nil
+	}
+	retries := asInt(payload["_retry_count"])
+	if retries < 0 {
+		retries = 0
+	}
+	retries++
+	payload["_retry_count"] = retries
+	out, err := json.Marshal(payload)
+	if err != nil {
+		return "", false, err
+	}
+	return string(out), retries > c.maxNackRetries, nil
+}
+
+func asInt(v interface{}) int {
+	switch x := v.(type) {
+	case int:
+		return x
+	case int32:
+		return int(x)
+	case int64:
+		return int(x)
+	case float32:
+		return int(x)
+	case float64:
+		return int(x)
+	default:
+		return 0
+	}
 }

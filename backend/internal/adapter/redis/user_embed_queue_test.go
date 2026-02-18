@@ -4,16 +4,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/alicebob/miniredis/v2"
 	redis "github.com/redis/go-redis/v9"
 )
 
 func TestUserEmbedQueue_Enqueue(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	defer mr.Close()
+	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer client.Close()
@@ -39,11 +34,7 @@ func TestUserEmbedQueue_Enqueue(t *testing.T) {
 }
 
 func TestUserEmbedQueue_NewDefaultQueue(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	defer mr.Close()
+	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer client.Close()
@@ -63,8 +54,7 @@ func TestUserEmbedQueue_NewDefaultQueue(t *testing.T) {
 }
 
 func TestUserEmbedQueue_EnqueueInvalid(t *testing.T) {
-	mr, _ := miniredis.Run()
-	defer mr.Close()
+	mr := mustRunMiniRedis(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer client.Close()
 

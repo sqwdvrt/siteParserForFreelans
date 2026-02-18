@@ -56,6 +56,7 @@ type Handlers struct {
 	UserHMACSecret    string              // обязательный секрет подписи user-level запросов
 	NonceStore        NonceStore          // optional: anti-replay (nonce)
 	RateLimiter       RequestRateLimiter  // optional: rate limit (per ip/per telegram id)
+	TrustedProxyCIDRs []*net.IPNet        // optional: trusted reverse proxies for forwarded headers
 	NonceTTL          time.Duration
 	RateLimitWindow   time.Duration
 	IPRateLimit       int
@@ -368,7 +369,7 @@ func (h *Handlers) enforceIPRateLimit(w http.ResponseWriter, r *http.Request) bo
 	if h.RateLimiter == nil {
 		return true
 	}
-	ip := clientIP(r)
+	ip := h.clientIP(r)
 	if ip == "" {
 		return true
 	}
@@ -420,9 +421,18 @@ func isValidNonce(nonce string) bool {
 	return true
 }
 
-func clientIP(r *http.Request) string {
+func (h *Handlers) clientIP(r *http.Request) string {
 	if r == nil {
 		return ""
+	}
+	remoteIP := parseRemoteIP(r.RemoteAddr)
+	if remoteIP == nil {
+		return ""
+	}
+	// Trust forwarded headers only from configured reverse proxies.
+	// Without trusted proxies we always use direct RemoteAddr and ignore XFF/X-Real-IP.
+	if !h.isTrustedProxy(remoteIP) {
+		return remoteIP.String()
 	}
 	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
 		parts := strings.Split(xff, ",")
@@ -436,20 +446,36 @@ func clientIP(r *http.Request) string {
 			return ip.String()
 		}
 	}
-	remote := strings.TrimSpace(r.RemoteAddr)
-	if remote == "" {
-		return ""
+	return remoteIP.String()
+}
+
+func (h *Handlers) isTrustedProxy(ip net.IP) bool {
+	if ip == nil {
+		return false
 	}
-	if ip := net.ParseIP(remote); ip != nil {
-		return ip.String()
+	for _, n := range h.TrustedProxyCIDRs {
+		if n != nil && n.Contains(ip) {
+			return true
+		}
 	}
-	host, _, err := net.SplitHostPort(remote)
+	return false
+}
+
+func parseRemoteIP(raw string) net.IP {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	if ip := net.ParseIP(raw); ip != nil {
+		return ip
+	}
+	host, _, err := net.SplitHostPort(raw)
 	if err != nil {
-		return ""
+		return nil
 	}
 	host = strings.TrimSpace(host)
 	if ip := net.ParseIP(host); ip != nil {
-		return ip.String()
+		return ip
 	}
-	return ""
+	return nil
 }

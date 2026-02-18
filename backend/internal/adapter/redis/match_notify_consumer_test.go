@@ -6,17 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/alicebob/miniredis/v2"
 	redis "github.com/redis/go-redis/v9"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 )
 
 func TestMatchNotifyConsumer_NewDefaultQueue(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	defer mr.Close()
+	mr := mustRunMiniRedis(t)
 
 	c := NewMatchNotifyConsumer(redis.NewClient(&redis.Options{Addr: mr.Addr()}), "")
 	if c == nil {
@@ -28,11 +23,7 @@ func TestMatchNotifyConsumer_NewDefaultQueue(t *testing.T) {
 }
 
 func TestMatchNotifyConsumer_NewCustomQueue(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	defer mr.Close()
+	mr := mustRunMiniRedis(t)
 
 	c := NewMatchNotifyConsumer(redis.NewClient(&redis.Options{Addr: mr.Addr()}), "custom-queue")
 	if c.queue != "custom-queue" {
@@ -41,11 +32,7 @@ func TestMatchNotifyConsumer_NewCustomQueue(t *testing.T) {
 }
 
 func TestMatchNotifyConsumer_Pop(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	defer mr.Close()
+	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer client.Close()
@@ -74,11 +61,7 @@ func TestMatchNotifyConsumer_Pop(t *testing.T) {
 }
 
 func TestMatchNotifyConsumer_Pop_InvalidPayload_Skip(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	defer mr.Close()
+	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer client.Close()
@@ -100,11 +83,7 @@ func TestMatchNotifyConsumer_Pop_InvalidPayload_Skip(t *testing.T) {
 }
 
 func TestMatchNotifyConsumer_Pop_InvalidJSON(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	defer mr.Close()
+	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer client.Close()
@@ -124,11 +103,7 @@ func TestMatchNotifyConsumer_Pop_InvalidJSON(t *testing.T) {
 }
 
 func TestMatchNotifyConsumer_Pop_EmptyQueue_Timeout(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	defer mr.Close()
+	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer client.Close()
@@ -147,11 +122,7 @@ func TestMatchNotifyConsumer_Pop_EmptyQueue_Timeout(t *testing.T) {
 }
 
 func TestMatchNotifyConsumer_Nack_RequeuesMessage(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	defer mr.Close()
+	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer client.Close()
@@ -188,14 +159,22 @@ func TestMatchNotifyConsumer_Nack_RequeuesMessage(t *testing.T) {
 	if gotProcessing != 0 {
 		t.Fatalf("expected empty processing queue after nack, got %d", gotProcessing)
 	}
+
+	raw, err := client.LIndex(ctx, "match-notify", 0).Result()
+	if err != nil {
+		t.Fatalf("LIndex queue: %v", err)
+	}
+	var gotPayload map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &gotPayload); err != nil {
+		t.Fatalf("json unmarshal requeued payload: %v", err)
+	}
+	if gotPayload["_retry_count"] != float64(1) {
+		t.Fatalf("expected _retry_count=1 in requeued payload, got %v", gotPayload["_retry_count"])
+	}
 }
 
 func TestMatchNotifyConsumer_Recover_MovesProcessingToSource(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	defer mr.Close()
+	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
 	defer client.Close()
@@ -222,5 +201,76 @@ func TestMatchNotifyConsumer_Recover_MovesProcessingToSource(t *testing.T) {
 	}
 	if procLen != 0 {
 		t.Fatalf("expected empty processing queue after recover, got %d", procLen)
+	}
+}
+
+func TestMatchNotifyConsumer_Recover_MovesMoreThanThousandMessages(t *testing.T) {
+	mr := mustRunMiniRedis(t)
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	ctx := context.Background()
+	const n = 1205
+	for i := 0; i < n; i++ {
+		client.LPush(ctx, "match-notify:processing", `{"user_id":1,"job_id":2,"match_score":0.5}`)
+	}
+
+	consumer := NewMatchNotifyConsumer(client, "match-notify")
+	if err := consumer.Recover(ctx); err != nil {
+		t.Fatalf("Recover: %v", err)
+	}
+
+	sourceLen, err := client.LLen(ctx, "match-notify").Result()
+	if err != nil {
+		t.Fatalf("LLen queue: %v", err)
+	}
+	if sourceLen != n {
+		t.Fatalf("expected %d messages in source queue after recover, got %d", n, sourceLen)
+	}
+	procLen, err := client.LLen(ctx, "match-notify:processing").Result()
+	if err != nil {
+		t.Fatalf("LLen processing: %v", err)
+	}
+	if procLen != 0 {
+		t.Fatalf("expected empty processing queue after recover, got %d", procLen)
+	}
+}
+
+func TestMatchNotifyConsumer_Nack_MovesToDLQAfterRetryLimit(t *testing.T) {
+	mr := mustRunMiniRedis(t)
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	client.LPush(context.Background(), "match-notify", `{"user_id":10,"job_id":20,"match_score":0.9,"_retry_count":5}`)
+
+	consumer := NewMatchNotifyConsumer(client, "match-notify")
+	ctx := context.Background()
+
+	msg, err := consumer.Pop(ctx)
+	if err != nil {
+		t.Fatalf("Pop: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("Pop: want message, got nil")
+	}
+	if err := consumer.Nack(ctx, msg); err != nil {
+		t.Fatalf("Nack: %v", err)
+	}
+
+	sourceLen, err := client.LLen(ctx, "match-notify").Result()
+	if err != nil {
+		t.Fatalf("LLen queue: %v", err)
+	}
+	if sourceLen != 0 {
+		t.Fatalf("expected source queue empty after DLQ move, got %d", sourceLen)
+	}
+	dlqLen, err := client.LLen(ctx, "match-notify:dlq").Result()
+	if err != nil {
+		t.Fatalf("LLen dlq: %v", err)
+	}
+	if dlqLen != 1 {
+		t.Fatalf("expected 1 message in dlq after nack limit, got %d", dlqLen)
 	}
 }

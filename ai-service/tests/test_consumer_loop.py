@@ -51,6 +51,25 @@ class ReliableFakeQueueConsumer(FakeQueueConsumer):
         self.nacked.append(job_id)
 
 
+class AckFailsQueueConsumer(ReliableFakeQueueConsumer):
+    def ack(self, job_id: int) -> None:  # noqa: ARG002
+        raise RuntimeError("ack failed")
+
+
+class NackFailsQueueConsumer(ReliableFakeQueueConsumer):
+    def nack(self, job_id: int) -> None:  # noqa: ARG002
+        raise RuntimeError("nack failed")
+
+
+class ReclaimQueueConsumer(ReliableFakeQueueConsumer):
+    def __init__(self, job_ids: list[int]) -> None:
+        super().__init__(job_ids)
+        self.reclaimed = False
+
+    def reclaim_stuck(self) -> None:
+        self.reclaimed = True
+
+
 def test_run_consumer_calls_process_job() -> None:
     import time
 
@@ -135,3 +154,45 @@ def test_run_consumer_nacks_on_process_error() -> None:
 
     assert queue.acked == []
     assert queue.nacked == [42]
+
+
+def test_run_consumer_calls_reclaim_if_available() -> None:
+    process_job = MagicMock(spec=ProcessJobUseCase)
+    queue = ReclaimQueueConsumer([])
+    stop = threading.Event()
+    stop.set()
+    run_consumer(queue, process_job, timeout_sec=1, stop_event=stop)
+    assert queue.reclaimed is True
+
+
+def test_run_consumer_continues_when_ack_raises() -> None:
+    import time
+
+    process_job = MagicMock(spec=ProcessJobUseCase)
+    queue = AckFailsQueueConsumer([42])
+    stop = threading.Event()
+
+    t = threading.Thread(target=lambda: run_consumer(queue, process_job, timeout_sec=1, stop_event=stop))
+    t.start()
+    time.sleep(0.2)
+    stop.set()
+    t.join(timeout=3)
+
+    process_job.execute.assert_called_once_with(42)
+
+
+def test_run_consumer_continues_when_nack_raises() -> None:
+    import time
+
+    process_job = MagicMock(spec=ProcessJobUseCase)
+    process_job.execute.side_effect = RuntimeError("boom")
+    queue = NackFailsQueueConsumer([42])
+    stop = threading.Event()
+
+    t = threading.Thread(target=lambda: run_consumer(queue, process_job, timeout_sec=1, stop_event=stop))
+    t.start()
+    time.sleep(0.2)
+    stop.set()
+    t.join(timeout=3)
+
+    process_job.execute.assert_called_once_with(42)

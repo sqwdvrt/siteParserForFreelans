@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -58,6 +60,13 @@ func main() {
 	if redisURL == "" {
 		redisURL = "redis://localhost:6379/0"
 	}
+	allowRedisDegraded, err := parseOptionalBoolEnv("API_ALLOW_REDIS_DEGRADED", os.Getenv("API_ALLOW_REDIS_DEGRADED"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	if err := validateRuntimeSecurityPolicy(isProd, allowRedisDegraded); err != nil {
+		log.Fatal(err)
+	}
 	if isProd {
 		if err := security.ValidateRedisTLSForProduction("REDIS_URL", redisURL, 16); err != nil {
 			log.Fatalf("invalid REDIS_URL transport policy: %v", err)
@@ -80,13 +89,25 @@ func main() {
 
 	opt, err := redisclient.ParseURL(redisURL)
 	if err != nil {
+		if !allowRedisDegraded {
+			log.Fatalf(
+				"REDIS_URL parse error (%v); refusing insecure degraded mode: set API_ALLOW_REDIS_DEGRADED=1 to explicitly allow start without redis-backed queue/rate-limit/nonce",
+				err,
+			)
+		}
 		redisDegraded = true
-		log.Printf("REDIS_URL parse error (%v); starting API in degraded mode without redis-backed queue/rate-limit/nonce", err)
+		log.Printf("REDIS_URL parse error (%v); starting API in EXPLICITLY ALLOWED degraded mode without redis-backed queue/rate-limit/nonce", err)
 	} else {
 		rdb = redisclient.NewClient(opt)
 		if err := rdb.Ping(context.Background()).Err(); err != nil {
+			if !allowRedisDegraded {
+				log.Fatalf(
+					"redis unavailable (%v); refusing insecure degraded mode: set API_ALLOW_REDIS_DEGRADED=1 to explicitly allow start without redis-backed queue/rate-limit/nonce",
+					err,
+				)
+			}
 			redisDegraded = true
-			log.Printf("redis unavailable (%v); starting API in degraded mode without redis-backed queue/rate-limit/nonce", err)
+			log.Printf("redis unavailable (%v); starting API in EXPLICITLY ALLOWED degraded mode without redis-backed queue/rate-limit/nonce", err)
 			_ = rdb.Close()
 			rdb = nil
 		} else {
@@ -119,6 +140,10 @@ func main() {
 	if tgRPM <= 0 {
 		tgRPM = 60
 	}
+	trustedProxyCIDRs, err := parseTrustedProxyCIDRs(os.Getenv("API_TRUSTED_PROXY_CIDRS"))
+	if err != nil {
+		log.Fatalf("invalid API_TRUSTED_PROXY_CIDRS: %v", err)
+	}
 
 	handlers := &api.Handlers{
 		UserRepo:          userRepo,
@@ -127,6 +152,7 @@ func main() {
 		UserHMACSecret:    userHMACSecret,
 		NonceStore:        nonceStore,
 		RateLimiter:       rateLimiter,
+		TrustedProxyCIDRs: trustedProxyCIDRs,
 		NonceTTL:          time.Duration(nonceTTLSec) * time.Second,
 		RateLimitWindow:   time.Duration(rateWindowSec) * time.Second,
 		IPRateLimit:       ipRPM,
@@ -218,4 +244,44 @@ func main() {
 		log.Printf("API shutdown: %v", err)
 	}
 	log.Println("API stopped")
+}
+
+func parseTrustedProxyCIDRs(raw string) ([]*net.IPNet, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]*net.IPNet, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		_, n, err := net.ParseCIDR(p)
+		if err != nil {
+			return nil, fmt.Errorf("%q: %w", p, err)
+		}
+		out = append(out, n)
+	}
+	return out, nil
+}
+
+func parseOptionalBoolEnv(name, raw string) (bool, error) {
+	v := strings.ToLower(strings.TrimSpace(raw))
+	switch v {
+	case "", "0", "false", "no", "off":
+		return false, nil
+	case "1", "true", "yes", "on":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%s must be boolean (accepted: 1/0, true/false, yes/no, on/off)", name)
+	}
+}
+
+func validateRuntimeSecurityPolicy(isProd, allowRedisDegraded bool) error {
+	if isProd && allowRedisDegraded {
+		return fmt.Errorf("APP_ENV=production forbids API_ALLOW_REDIS_DEGRADED=1; redis-backed nonce/rate-limit/user-embed queue are mandatory")
+	}
+	return nil
 }

@@ -63,12 +63,15 @@ func (r *NotificationRepository) SentRecently(ctx context.Context, userID int64,
 	return exists, err
 }
 
-// CountToday возвращает количество уведомлений пользователю за сегодня (UTC).
+// CountToday возвращает количество уведомлений пользователю за текущие сутки в UTC
+// (не зависит от timezone сессии/БД).
 func (r *NotificationRepository) CountToday(ctx context.Context, userID int64) (int, error) {
 	var n int
 	err := r.pool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM notifications
-		WHERE user_id = $1 AND sent_at >= CURRENT_DATE AND sent_at < CURRENT_DATE + INTERVAL '1 day'
+		WHERE user_id = $1
+		  AND sent_at >= (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+		  AND sent_at < ((date_trunc('day', now() AT TIME ZONE 'UTC') + INTERVAL '1 day') AT TIME ZONE 'UTC')
 	`, userID).Scan(&n)
 	return n, err
 }

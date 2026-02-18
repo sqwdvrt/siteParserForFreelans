@@ -85,6 +85,8 @@ cd backend && go run ./cmd/crawler
 | `API_RATE_LIMIT_WINDOW_SEC` | Размер окна rate-limit (сек); по умолчанию `60` |
 | `API_RATE_LIMIT_IP_RPM` | Лимит API-запросов на IP в окне; по умолчанию `120` |
 | `API_RATE_LIMIT_TG_RPM` | Лимит API-запросов на Telegram ID в окне; по умолчанию `60` |
+| `API_ALLOW_REDIS_DEGRADED` | Явный opt-in запуска backend API без Redis (`1=true`) только для development. По умолчанию `0`: при недоступном Redis API завершится с ошибкой (fail-closed). В `APP_ENV=production` значение `1` запрещено |
+| `API_TRUSTED_PROXY_CIDRS` | CIDR-allowlist доверенных reverse-proxy (через запятую). Заголовки `X-Forwarded-For`/`X-Real-IP` учитываются только если `RemoteAddr` попадает в этот список |
 | `API_TLS_CERT_FILE`/`API_TLS_KEY_FILE` | Путь к TLS-сертификату и ключу API (обязательны в `APP_ENV=production`) |
 | `TELEGRAM_BOT_TOKEN` | Токен бота для уведомлений |
 | `TELEGRAM_ID` | Ваш chat_id (уведомления придут сюда) |
