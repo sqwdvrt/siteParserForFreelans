@@ -43,14 +43,38 @@ FORBIDDEN_SECRET_PREFIXES = (
 )
 ALLOWED_OUTBOUND_SCHEMES = {"http", "https"}
 _OUTBOUND_HOST_ALLOWLIST = {"api.telegram.org"}
-_HTTP_ONLY_OPENER = urllib.request.build_opener(
-    urllib.request.HTTPHandler(),
-    urllib.request.HTTPSHandler(),
-)
 API_RETRY_ATTEMPTS = 4
 API_RETRY_BASE_DELAY_SEC = 0.4
 API_RETRY_MAX_DELAY_SEC = 3.0
 API_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
+POLL_RETRY_BASE_DELAY_SEC = 0.5
+POLL_RETRY_MAX_DELAY_SEC = 10.0
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Redirect handler with outbound allowlist enforcement for each redirect hop."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[override]
+        base_url = req.full_url
+        resolved_url = urllib.parse.urljoin(base_url, newurl)
+        try:
+            _validate_outbound_url(resolved_url)
+        except ValueError as e:
+            raise urllib.error.HTTPError(
+                resolved_url,
+                403,
+                f"redirect blocked by outbound policy: {e}",
+                headers,
+                fp,
+            ) from e
+        return super().redirect_request(req, fp, code, msg, headers, resolved_url)
+
+
+_HTTP_ONLY_OPENER = urllib.request.build_opener(
+    urllib.request.HTTPHandler(),
+    urllib.request.HTTPSHandler(),
+    _SafeRedirectHandler(),
+)
 
 
 def _safe_open(url_or_request, timeout: int):
@@ -68,6 +92,11 @@ def _should_retry_status(status: int) -> bool:
 
 def _retry_delay_sec(attempt: int) -> float:
     delay = min(API_RETRY_MAX_DELAY_SEC, API_RETRY_BASE_DELAY_SEC * (2 ** attempt))
+    return delay + random.uniform(0.0, 0.2)
+
+
+def _poll_retry_delay_sec(attempt: int) -> float:
+    delay = min(POLL_RETRY_MAX_DELAY_SEC, POLL_RETRY_BASE_DELAY_SEC * (2 ** attempt))
     return delay + random.uniform(0.0, 0.2)
 
 
@@ -306,25 +335,48 @@ def send_message(token: str, chat_id: int, text: str) -> bool:
     return True
 
 
-def get_updates(token: str, offset: int | None, timeout: int = 30) -> tuple[list[dict], int | None]:
-    """getUpdates. Возвращает (updates, next_offset)."""
+def get_updates(
+    token: str,
+    offset: int | None,
+    timeout: int = 30,
+    *,
+    include_status: bool = False,
+) -> tuple[list[dict], int | None] | tuple[list[dict], int | None, bool]:
+    """getUpdates. Возвращает (updates, next_offset) или (updates, next_offset, ok)."""
     url = f"{TELEGRAM_BASE}{token}/getUpdates"
     params: dict = {"timeout": timeout}
     if offset is not None:
         params["offset"] = offset
     data = _http_get(url, params)
     if data is None or not data.get("ok"):
+        if include_status:
+            return [], offset, False
         return [], offset
     updates = data.get("result", [])
     next_offset = (max(u["update_id"] for u in updates) + 1) if updates else offset
+    if include_status:
+        return updates, next_offset, True
     return updates, next_offset
 
 
 def run_polling(token: str, api_url: str, api_auth_token: str, api_user_hmac_secret: str) -> None:
     """Цикл getUpdates → обработка /start, /profile."""
     offset: int | None = None
+    poll_error_streak = 0
     while True:
-        updates, offset = get_updates(token, offset)
+        result = get_updates(token, offset, include_status=True)
+        poll_ok = True
+        if isinstance(result, tuple) and len(result) == 3:
+            updates, offset, poll_ok = result
+        else:
+            updates, offset = result  # type: ignore[misc]
+        if not poll_ok:
+            delay = _poll_retry_delay_sec(poll_error_streak)
+            logger.warning("getUpdates failed, retry in %.2fs", delay)
+            time.sleep(delay)
+            poll_error_streak += 1
+            continue
+        poll_error_streak = 0
         for u in updates:
             msg = u.get("message")
             if not msg:

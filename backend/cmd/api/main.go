@@ -157,12 +157,12 @@ func main() {
 	}
 
 	r := chi.NewRouter()
-	r.Get("/healthz", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("ok"))
-	})
-	r.Get("/readyz", readyz(pool))
+	var redisHealth redisPinger
+	if rdb != nil {
+		redisHealth = redisClientPinger{client: rdb}
+	}
+	r.Get("/healthz", healthz(redisHealth))
+	r.Get("/readyz", readyz(pool, redisHealth))
 	r.Post("/users", handlers.PostUsers)
 	r.Put("/users/{id}/profile", handlers.PutUserProfile)
 
@@ -238,13 +238,64 @@ func parseTrustedProxyCIDRs(raw string) ([]*net.IPNet, error) {
 	return out, nil
 }
 
-func readyz(pool *pgxpool.Pool) http.HandlerFunc {
+type redisPinger interface {
+	Ping(ctx context.Context) error
+}
+
+type dbPinger interface {
+	Ping(ctx context.Context) error
+}
+
+type redisClientPinger struct {
+	client *redisclient.Client
+}
+
+func (p redisClientPinger) Ping(ctx context.Context) error {
+	if p.client == nil {
+		return fmt.Errorf("redis client is not configured")
+	}
+	return p.client.Ping(ctx).Err()
+}
+
+func healthz(redis redisPinger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 
-		if err := pool.Ping(ctx); err != nil {
+		if redis == nil {
+			http.Error(w, "redis not ready", http.StatusServiceUnavailable)
+			return
+		}
+		if err := redis.Ping(ctx); err != nil {
+			http.Error(w, "redis not ready", http.StatusServiceUnavailable)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}
+}
+
+func readyz(db dbPinger, redis redisPinger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		if db == nil {
 			http.Error(w, "db not ready", http.StatusServiceUnavailable)
+			return
+		}
+		if err := db.Ping(ctx); err != nil {
+			http.Error(w, "db not ready", http.StatusServiceUnavailable)
+			return
+		}
+		if redis == nil {
+			http.Error(w, "redis not ready", http.StatusServiceUnavailable)
+			return
+		}
+		if err := redis.Ping(ctx); err != nil {
+			http.Error(w, "redis not ready", http.StatusServiceUnavailable)
 			return
 		}
 

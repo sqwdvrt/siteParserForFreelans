@@ -1,3 +1,6 @@
+//go:build integration
+// +build integration
+
 package postgres
 
 import (
@@ -11,12 +14,9 @@ import (
 )
 
 // setupTestDB подключается к Postgres из DATABASE_URL.
-// Запуск: docker compose up -d && export DATABASE_URL=... && go test ./internal/adapter/postgres/ -v
+// Запуск: docker compose up -d && export DATABASE_URL=... && go test -tags=integration ./internal/adapter/postgres/ -v
 func setupTestDB(t *testing.T) *pgxpool.Pool {
 	t.Helper()
-	if os.Getenv("INTEGRATION_TESTS") != "1" {
-		t.Skip("INTEGRATION_TESTS!=1, skip integration tests")
-	}
 	connStr := os.Getenv("DATABASE_URL")
 	if connStr == "" {
 		t.Fatal("DATABASE_URL not set")

@@ -137,9 +137,7 @@ func formatMessage(p port.NotifyPayload) string {
 	if desc == "" {
 		desc = stripHTML(job.RawHTML)
 	}
-	if len(desc) > maxDescLen {
-		desc = desc[:maxDescLen] + "..."
-	}
+	desc = truncateRunes(desc, maxDescLen)
 	b.WriteString(escapeHTML(desc))
 
 	// Бюджет
@@ -233,6 +231,17 @@ func stripHTML(s string) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max]) + "..."
 }
 
 // Проверка, что Notifier реализует port.Notifier.

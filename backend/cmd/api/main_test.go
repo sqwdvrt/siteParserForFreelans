@@ -1,6 +1,23 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+type stubPinger struct {
+	err   error
+	calls int
+}
+
+func (p *stubPinger) Ping(context.Context) error {
+	p.calls++
+	return p.err
+}
 
 func TestParseTrustedProxyCIDRs_Empty(t *testing.T) {
 	nets, err := parseTrustedProxyCIDRs("")
@@ -96,5 +113,85 @@ func TestValidateRuntimeSecurityPolicy_AllowsSafeCombinations(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestHealthz_RedisReady(t *testing.T) {
+	redis := &stubPinger{}
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+
+	healthz(redis).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if strings.TrimSpace(rr.Body.String()) != "ok" {
+		t.Fatalf("expected body ok, got %q", rr.Body.String())
+	}
+	if redis.calls != 1 {
+		t.Fatalf("expected 1 redis ping, got %d", redis.calls)
+	}
+}
+
+func TestHealthz_RedisNotReady(t *testing.T) {
+	redis := &stubPinger{err: errors.New("redis down")}
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	rr := httptest.NewRecorder()
+
+	healthz(redis).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "redis not ready") {
+		t.Fatalf("expected redis error body, got %q", rr.Body.String())
+	}
+	if redis.calls != 1 {
+		t.Fatalf("expected 1 redis ping, got %d", redis.calls)
+	}
+}
+
+func TestReadyz_RedisReady(t *testing.T) {
+	db := &stubPinger{}
+	redis := &stubPinger{}
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rr := httptest.NewRecorder()
+
+	readyz(db, redis).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rr.Code)
+	}
+	if strings.TrimSpace(rr.Body.String()) != "ok" {
+		t.Fatalf("expected body ok, got %q", rr.Body.String())
+	}
+	if db.calls != 1 {
+		t.Fatalf("expected 1 db ping, got %d", db.calls)
+	}
+	if redis.calls != 1 {
+		t.Fatalf("expected 1 redis ping, got %d", redis.calls)
+	}
+}
+
+func TestReadyz_RedisNotReady(t *testing.T) {
+	db := &stubPinger{}
+	redis := &stubPinger{err: errors.New("redis down")}
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rr := httptest.NewRecorder()
+
+	readyz(db, redis).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "redis not ready") {
+		t.Fatalf("expected redis error body, got %q", rr.Body.String())
+	}
+	if db.calls != 1 {
+		t.Fatalf("expected 1 db ping, got %d", db.calls)
+	}
+	if redis.calls != 1 {
+		t.Fatalf("expected 1 redis ping, got %d", redis.calls)
 	}
 }

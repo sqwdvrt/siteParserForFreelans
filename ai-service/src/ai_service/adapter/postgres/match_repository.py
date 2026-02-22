@@ -2,34 +2,18 @@
 
 from __future__ import annotations
 
-import contextlib
-
-import psycopg2
-from psycopg2.extras import RealDictCursor
-from pgvector.psycopg2 import register_vector
 from pgvector import Vector
+from psycopg2.extras import RealDictCursor
 
+from ai_service.adapter.postgres._pooled_repository import PooledPostgresRepository
 from ai_service.port.match_repository import MatchCandidate, MatchRepository
 
 
-class PostgresMatchRepository(MatchRepository):
+class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
     """MatchRepository через PostgreSQL + pgvector."""
 
-    def __init__(self, dsn: str) -> None:
-        self._dsn = dsn
-
-    @contextlib.contextmanager
-    def _conn(self):
-        conn = psycopg2.connect(self._dsn)
-        register_vector(conn)
-        try:
-            yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+    def __init__(self, dsn: str, *, minconn: int = 1, maxconn: int = 10) -> None:
+        super().__init__(dsn, minconn=minconn, maxconn=maxconn)
 
     def find_users_for_job(
         self,

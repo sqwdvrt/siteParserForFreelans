@@ -3,7 +3,9 @@ from __future__ import annotations
 import importlib
 import io
 import json
+import urllib.parse
 import urllib.error
+import urllib.request
 from unittest.mock import MagicMock
 
 import pytest
@@ -186,6 +188,14 @@ def test_get_updates_returns_empty_when_not_ok(bot, monkeypatch):
     assert next_offset == 42
 
 
+def test_get_updates_returns_status_when_requested(bot, monkeypatch):
+    monkeypatch.setattr(bot, "_http_get", lambda *args, **kwargs: None)
+    updates, next_offset, ok = bot.get_updates("token", offset=7, include_status=True)
+    assert updates == []
+    assert next_offset == 7
+    assert ok is False
+
+
 def test_main_exits_on_invalid_env(bot, monkeypatch):
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "short")
     monkeypatch.setenv("API_AUTH_TOKEN", "short")
@@ -286,6 +296,26 @@ def test_run_polling_handles_profile(bot, monkeypatch):
     send_message.assert_called_once()
 
 
+def test_run_polling_backs_off_after_failed_get_updates(bot, monkeypatch):
+    calls = {"n": 0}
+    sleeps: list[float] = []
+
+    def _get_updates(*args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [], None, False
+        raise KeyboardInterrupt()
+
+    monkeypatch.setattr(bot, "get_updates", _get_updates)
+    monkeypatch.setattr(bot, "_poll_retry_delay_sec", lambda _: 0.25)
+    monkeypatch.setattr(bot.time, "sleep", lambda d: sleeps.append(d))
+
+    with pytest.raises(KeyboardInterrupt):
+        bot.run_polling("token", "https://api.example.com", "tok", "hmac")
+
+    assert sleeps == [0.25]
+
+
 def test_safe_open_uses_http_only_opener(bot, monkeypatch):
     called = {}
 
@@ -326,6 +356,28 @@ def test_validate_outbound_url_rejects_invalid_scheme(bot):
 def test_validate_outbound_url_rejects_missing_host(bot):
     with pytest.raises(ValueError):
         bot._validate_outbound_url("https:///path")
+
+
+def test_safe_redirect_handler_blocks_disallowed_host(bot):
+    bot._register_allowed_host("https://api.example.com")
+    handler = bot._SafeRedirectHandler()
+    req = urllib.request.Request("https://api.example.com/start")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        handler.redirect_request(req, None, 302, "Found", {}, "https://evil.example/collect")
+
+    assert exc.value.code == 403
+
+
+def test_safe_redirect_handler_allows_relative_redirect_on_allowed_host(bot):
+    bot._register_allowed_host("https://api.example.com")
+    handler = bot._SafeRedirectHandler()
+    req = urllib.request.Request("https://api.example.com/start")
+
+    redirected = handler.redirect_request(req, None, 302, "Found", {}, "/next")
+
+    assert redirected is not None
+    assert urllib.parse.urlsplit(redirected.full_url).hostname == "api.example.com"
 
 
 def test_http_post_retries_on_retryable_http_status(bot, monkeypatch):

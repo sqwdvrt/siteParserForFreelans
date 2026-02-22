@@ -8,7 +8,10 @@ rules/
 .cursor/
 __pycache__/
 .venv/
+.venv*/
 venv/
+.pyuserbase/
+Library/Caches/
 *.pyc
 .pytest_cache/
 .coverage

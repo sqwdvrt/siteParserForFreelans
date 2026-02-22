@@ -1,5 +1,5 @@
-//go:build integration
-// +build integration
+//go:build integration_tc
+// +build integration_tc
 
 package postgres
 
@@ -16,7 +16,7 @@ import (
 )
 
 // setupTestDBWithContainers поднимает Postgres в Docker (требует запущенный Docker).
-// Запуск: go test -tags=integration ./internal/adapter/postgres/ -v -timeout 120s
+// Запуск: go test -tags=integration_tc ./internal/adapter/postgres/ -v -timeout 120s
 func setupTestDBWithContainers(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	ctx := context.Background()

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
@@ -101,6 +102,29 @@ func TestNotifier_Send_ErrorDoesNotContainToken(t *testing.T) {
 	errStr := err.Error()
 	if strings.Contains(errStr, "secret") || strings.Contains(errStr, "token") || strings.Contains(errStr, "12345") {
 		t.Errorf("error must not contain token, got: %s", errStr)
+	}
+}
+
+func TestFormatMessage_TruncateDescription_UTF8Safe(t *testing.T) {
+	desc := strings.Repeat("🙂", maxDescLen+1)
+	job := &domain.Job{
+		ID:          1,
+		Title:       "Emoji job",
+		Description: desc,
+		URL:         "https://kwork.ru/projects/1",
+	}
+
+	msg := formatMessage(port.NotifyPayload{Job: job, Score: 0.85})
+	wantDesc := strings.Repeat("🙂", maxDescLen) + "..."
+
+	if !utf8.ValidString(msg) {
+		t.Fatal("message must be valid UTF-8")
+	}
+	if strings.Contains(msg, "�") {
+		t.Fatalf("message contains broken UTF-8 replacement rune: %q", msg)
+	}
+	if !strings.Contains(msg, wantDesc) {
+		t.Fatalf("want truncated description by runes, got: %q", msg)
 	}
 }
 

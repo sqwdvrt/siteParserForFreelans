@@ -655,10 +655,11 @@ func TestClientIP_UntrustedRemote_IgnoresForwardedHeaders(t *testing.T) {
 	}
 }
 
-func TestClientIP_TrustedProxy_UsesForwardedFor(t *testing.T) {
+func TestClientIP_TrustedProxy_UsesClosestUntrustedFromXForwardedFor(t *testing.T) {
 	h := &Handlers{
 		TrustedProxyCIDRs: []*net.IPNet{
 			mustCIDRForTest(t, "203.0.113.0/24"),
+			mustCIDRForTest(t, "10.0.0.0/8"),
 		},
 	}
 	req := httptest.NewRequest(http.MethodGet, "/users", nil)
@@ -667,7 +668,24 @@ func TestClientIP_TrustedProxy_UsesForwardedFor(t *testing.T) {
 
 	ip := h.clientIP(req)
 	if ip != "198.51.100.200" {
-		t.Fatalf("client ip = %q, want first forwarded ip", ip)
+		t.Fatalf("client ip = %q, want closest untrusted forwarded ip", ip)
+	}
+}
+
+func TestClientIP_TrustedProxy_IgnoresSpoofedLeftMostXForwardedFor(t *testing.T) {
+	h := &Handlers{
+		TrustedProxyCIDRs: []*net.IPNet{
+			mustCIDRForTest(t, "203.0.113.0/24"),
+		},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/users", nil)
+	req.RemoteAddr = "203.0.113.10:34567"
+	// Simulate a trusted proxy appending the real client after a spoofed left-most entry.
+	req.Header.Set("X-Forwarded-For", "198.51.100.250, 198.51.100.200")
+
+	ip := h.clientIP(req)
+	if ip != "198.51.100.200" {
+		t.Fatalf("client ip = %q, want right-most untrusted forwarded ip", ip)
 	}
 }
 

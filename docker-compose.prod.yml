@@ -91,6 +91,27 @@ services:
       - /home/app:mode=0700,size=64m
     restart: unless-stopped
 
+  ai-user-embed:
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+    command: ["python", "cmd/user_embed_consumer/main.py"]
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
+      REDIS_URL: ${REDIS_URL:?set_REDIS_URL_in_.env.production}
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+      - /home/app:mode=0700,size=64m
+    restart: unless-stopped
+
   telegram-bot:
     build:
       context: ./telegram-bot

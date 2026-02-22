@@ -434,19 +434,40 @@ func (h *Handlers) clientIP(r *http.Request) string {
 	if !h.isTrustedProxy(remoteIP) {
 		return remoteIP.String()
 	}
-	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
-		parts := strings.Split(xff, ",")
-		first := strings.TrimSpace(parts[0])
-		if ip := net.ParseIP(first); ip != nil {
-			return ip.String()
-		}
+	if xffIP := h.clientIPFromXForwardedFor(r.Header.Get("X-Forwarded-For"), remoteIP); xffIP != nil {
+		return xffIP.String()
 	}
 	if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
-		if ip := net.ParseIP(realIP); ip != nil {
+		if ip := parseRemoteIP(realIP); ip != nil && !h.isTrustedProxy(ip) {
 			return ip.String()
 		}
 	}
 	return remoteIP.String()
+}
+
+// clientIPFromXForwardedFor returns the closest untrusted hop from XFF chain.
+// This prevents spoofing of left-most XFF entries when trusted proxies append client IPs.
+func (h *Handlers) clientIPFromXForwardedFor(raw string, remoteIP net.IP) net.IP {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || remoteIP == nil {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	chain := make([]net.IP, 0, len(parts)+1)
+	for _, p := range parts {
+		if ip := parseRemoteIP(p); ip != nil {
+			chain = append(chain, ip)
+		}
+	}
+	chain = append(chain, remoteIP)
+	for i := len(chain) - 1; i >= 0; i-- {
+		ip := chain[i]
+		if h.isTrustedProxy(ip) {
+			continue
+		}
+		return ip
+	}
+	return nil
 }
 
 func (h *Handlers) isTrustedProxy(ip net.IP) bool {
