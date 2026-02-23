@@ -1,5 +1,0 @@
-covervars.go
-crawl_projects.cover.go
-send_notification.cover.go
-./crawl_projects_test.go
-./send_notification_test.go

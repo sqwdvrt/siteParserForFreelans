@@ -1,8 +1,0 @@
-./element.go
-./errorcode.go
-./errorcode_string.go
-./qualifier.go
-./recv.go
-./toonew.go
-./types.go
-./zerovalue.go
