@@ -43,6 +43,8 @@ docker compose up -d
 ## Operations
 
 - Monitoring, alerts, incident runbook, DR/backup/restore: `docs/operations.md`
+- Monitoring stack (Prometheus + Alertmanager): `docker-compose.monitoring.yml`
+- Monitoring config and alert rules: `monitoring/prometheus/prometheus.yml`, `monitoring/prometheus/alerts.yml`
 - Backup script: `scripts/backup_postgres.sh`
 - Restore script: `scripts/restore_postgres.sh`
 
@@ -50,6 +52,29 @@ docker compose up -d
 
 - `docker-compose.yml` — локальный dev-профиль (включает локальные PostgreSQL/Redis и допускает `sslmode=disable`, `redis://`, `http://`).
 - `docker-compose.prod.yml` — production-профиль (только внешние TLS endpoints, `APP_ENV=production`).
+- `docker-compose.monitoring.yml` — профиль мониторинга (Prometheus + Alertmanager, profile `monitoring`).
+
+### Monitoring (Docker Compose)
+
+```bash
+# Подготовить secrets для Alertmanager каналов (Telegram + Slack)
+printf '%s' "$TELEGRAM_BOT_TOKEN" > monitoring/alertmanager/secrets/telegram_bot_token
+printf '%s' "$ALERTMANAGER_SLACK_WEBHOOK_URL" > monitoring/alertmanager/secrets/slack_webhook_url
+chmod 600 monitoring/alertmanager/secrets/telegram_bot_token monitoring/alertmanager/secrets/slack_webhook_url
+
+# Поднять приложение + monitoring stack
+docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile monitoring up -d
+
+# Prometheus UI
+# http://127.0.0.1:9090
+
+# Alertmanager UI
+# http://127.0.0.1:9093
+```
+
+Alertmanager читает секреты из:
+- `monitoring/alertmanager/secrets/telegram_bot_token`
+- `monitoring/alertmanager/secrets/slack_webhook_url`
 
 ### Production (Docker Compose)
 
@@ -115,9 +140,11 @@ cd backend && go run ./cmd/crawler
 | `TELEGRAM_ID` | Ваш chat_id (уведомления придут сюда) |
 | `API_URL` | URL backend API (в production для telegram-bot только `https://`) |
 | `POSTGRES_BIND_IP`/`REDIS_BIND_IP`/`API_BIND_IP` | Привязка портов Docker к интерфейсу хоста (по умолчанию `127.0.0.1`; для внешней публикации нужно явно задать, например `0.0.0.0`) |
-| `POSTGRES_PORT`/`REDIS_PORT`/`API_PORT` | Порты публикации на хосте |
+| `POSTGRES_PORT`/`REDIS_PORT`/`API_PORT` | Порты публикации на хосте (`POSTGRES_PORT` по умолчанию `55432` для локального dev/integration) |
 | `CRAWL_LIST_URL` | URL страницы проектов (по умолчанию Kwork) |
 | `CRAWL_RATE_SEC` | Интервал между запросами (по умолчанию 15) |
+| `EMBEDDING_MODEL` | Модель эмбеддингов `sentence-transformers` (должна совпадать с preloaded моделью в Docker image) |
+| `EMBEDDING_REQUIRE_LOCAL` | `1` (рекомендуется): запрещает runtime-загрузку модели из сети; сервис падает, если модель не найдена локально/в `EMBEDDING_MODELS_DIR` |
 
 Полный список: `.env.example`. Документация: `docs/env_setup.md`.
 

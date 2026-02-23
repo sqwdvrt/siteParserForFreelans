@@ -19,7 +19,7 @@
 | **API_ALLOW_REDIS_DEGRADED** | Явный opt-in для запуска API без Redis (`1=true`) только в development. По умолчанию `0`: если Redis недоступен, backend API завершится с ошибкой (fail-closed). В `APP_ENV=production` значение `1` запрещено |
 | **API_TRUSTED_PROXY_CIDRS** | CIDR-allowlist доверенных reverse-proxy (через запятую). `X-Forwarded-For`/`X-Real-IP` используются только для запросов от этих proxy |
 | **POSTGRES_BIND_IP / REDIS_BIND_IP / API_BIND_IP** | Интерфейс публикации портов Docker на хосте. По умолчанию `127.0.0.1` (локальный доступ) |
-| **POSTGRES_PORT / REDIS_PORT / API_PORT** | Порты публикации на хосте |
+| **POSTGRES_PORT / REDIS_PORT / API_PORT** | Порты публикации на хосте (`POSTGRES_PORT` по умолчанию `55432` для локального dev/integration) |
 
 **Важно:** `.env` в `.gitignore` — секреты не попадут в репозиторий.
 

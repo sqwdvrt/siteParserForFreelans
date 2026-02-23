@@ -16,12 +16,16 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	redisclient "github.com/redis/go-redis/v9"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/postgres"
 	redisqueue "github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/redis"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/api"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/security"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/telemetry"
 )
 
 func main() {
@@ -157,12 +161,20 @@ func main() {
 	}
 
 	r := chi.NewRouter()
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+	)
+	httpMetrics := telemetry.NewHTTPMetrics(registry)
+	r.Use(httpMetrics.Middleware)
 	var redisHealth redisPinger
 	if rdb != nil {
 		redisHealth = redisClientPinger{client: rdb}
 	}
 	r.Get("/healthz", healthz(redisHealth))
 	r.Get("/readyz", readyz(pool, redisHealth))
+	r.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	r.Post("/users", handlers.PostUsers)
 	r.Put("/users/{id}/profile", handlers.PutUserProfile)
 

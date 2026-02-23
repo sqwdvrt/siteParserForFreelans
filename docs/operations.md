@@ -7,6 +7,18 @@
 
 ## 1) Monitoring
 
+### 1.0 Базовая инфраструктура мониторинга в репозитории
+- Prometheus compose профиль: `/Users/sqwdvrt/VS Code/siteParserForFreelans/docker-compose.monitoring.yml`
+- Prometheus config: `/Users/sqwdvrt/VS Code/siteParserForFreelans/monitoring/prometheus/prometheus.yml`
+- Alert rules: `/Users/sqwdvrt/VS Code/siteParserForFreelans/monitoring/prometheus/alerts.yml`
+- Alertmanager config: `/Users/sqwdvrt/VS Code/siteParserForFreelans/monitoring/alertmanager/alertmanager.yml`
+- Alertmanager secrets dir: `/Users/sqwdvrt/VS Code/siteParserForFreelans/monitoring/alertmanager/secrets`
+- CI-проверка конфигов: `/Users/sqwdvrt/VS Code/siteParserForFreelans/.github/workflows/monitoring-gate.yml`
+
+Для доставки алертов в каналы:
+- Telegram bot token: `/Users/sqwdvrt/VS Code/siteParserForFreelans/monitoring/alertmanager/secrets/telegram_bot_token`
+- Slack webhook URL: `/Users/sqwdvrt/VS Code/siteParserForFreelans/monitoring/alertmanager/secrets/slack_webhook_url`
+
 ### 1.1 SLO (рекомендуемые целевые значения)
 - API availability (5xx + timeout): `>= 99.9%` за 30 дней.
 - API latency p95 (`POST /users`, `PUT /users/:id/profile`): `< 300ms`.
@@ -18,6 +30,8 @@
   назначение: liveness.
 - `GET /readyz`:
   назначение: readiness (БД доступна).
+- `GET /metrics`:
+  назначение: scrape endpoint для Prometheus.
 
 Проверка:
 ```bash
@@ -166,4 +180,3 @@ DATABASE_URL='postgres://...' /Users/sqwdvrt/VS Code/siteParserForFreelans/scrip
    - `SELECT COUNT(*)` по `users/jobs/notifications`;
    - `docker compose up` + `./scripts/e2e_test.sh`.
 4. Зафиксировать `actual RTO/RPO`.
-

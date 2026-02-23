@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 [ -f .env ] && set -a && source .env && set +a
 
 API_URL="${API_URL:-http://localhost:8080}"
-DB_URL="${DATABASE_URL:-postgres://site_parser:site_parser@localhost:5432/site_parser?sslmode=disable}"
+DB_URL="${DATABASE_URL:-postgres://site_parser:site_parser@localhost:55432/site_parser?sslmode=disable}"
 REDIS_URL="${REDIS_URL:-redis://localhost:6379/0}"
 AUTH_TOKEN="${API_AUTH_TOKEN:-}"
 USER_HMAC_SECRET="${API_USER_HMAC_SECRET:-}"
@@ -59,10 +59,46 @@ psql_compose() {
   docker compose exec -T -e PGPASSWORD="$PGPASS" postgres psql -U "$PGUSER" -d "$PGDB" "$@"
 }
 
+wait_for_compose_health() {
+  local service="$1"
+  local timeout_sec="${2:-180}"
+  local elapsed=0
+  local container_id
+  container_id="$(docker compose ps -q "$service" | head -n1)"
+
+  if [ -z "$container_id" ]; then
+    echo "ERROR: контейнер сервиса '$service' не найден"
+    exit 1
+  fi
+
+  echo "Ожидание readiness сервиса '$service' (timeout ${timeout_sec}s)..."
+  while [ "$elapsed" -lt "$timeout_sec" ]; do
+    local status
+    status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}no-healthcheck{{end}}' "$container_id" 2>/dev/null || echo "unknown")"
+    if [ "$status" = "healthy" ]; then
+      echo "✓ $service healthy"
+      return 0
+    fi
+    if [ "$status" = "unhealthy" ]; then
+      echo "ERROR: $service unhealthy"
+      docker compose logs --tail=120 "$service" || true
+      exit 1
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+
+  echo "ERROR: timeout ожидания healthy для '$service'"
+  docker compose logs --tail=120 "$service" || true
+  exit 1
+}
+
 echo "=== E2E: Запуск docker compose ==="
 docker compose up -d
-echo "Ожидание сервисов (30 сек)..."
-sleep 30
+wait_for_compose_health "ai-service" 180
+wait_for_compose_health "ai-user-embed" 180
+echo "Ожидание API (10 сек)..."
+sleep 10
 
 echo ""
 echo "=== 9.7: POST /users (/start) → User в БД ==="
@@ -143,8 +179,9 @@ done
 
 # Проверка job_embeddings
 if [ "${EMB_COUNT:-0}" -lt 1 ]; then
-  echo "job_embeddings не создан для job_id=$JOB_ID (AI может ещё обрабатывать)"
+  echo "ERROR: job_embeddings не создан для job_id=$JOB_ID"
   echo "Проверьте логи: docker compose logs ai-service"
+  exit 1
 else
   echo "✓ job_embeddings создан"
 fi

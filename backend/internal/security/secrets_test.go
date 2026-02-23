@@ -31,7 +31,7 @@ func TestValidateSecret_AcceptsStrong(t *testing.T) {
 }
 
 func TestValidateURLPassword(t *testing.T) {
-	raw := "postgres://user:5e15709d34a5405d84c6f2e2457c7e8a@localhost:5432/db?sslmode=disable"
+	raw := "postgres://user:5e15709d34a5405d84c6f2e2457c7e8a@localhost:55432/db?sslmode=disable"
 	if err := ValidateURLPassword("DATABASE_URL", raw, 16); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

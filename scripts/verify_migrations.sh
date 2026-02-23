@@ -2,7 +2,7 @@
 # Проверка миграций: применяет 001_init.sql и проверяет таблицы
 set -e
 
-DB_URL="${DATABASE_URL:-postgres://site_parser:site_parser@localhost:5432/site_parser?sslmode=disable}"
+DB_URL="${DATABASE_URL:-postgres://site_parser:site_parser@localhost:55432/site_parser?sslmode=disable}"
 
 echo "Applying migrations..."
 psql "$DB_URL" -f backend/migrations/001_init.sql

@@ -200,7 +200,7 @@ jobs:
           POSTGRES_PASSWORD: site_parser
           POSTGRES_DB: site_parser
         ports:
-          - 5432:5432
+          - 55432:5432
         options: >-
           --health-cmd "pg_isready -U site_parser -d site_parser"
           --health-interval 5s
@@ -216,7 +216,7 @@ jobs:
           --health-timeout 5s
           --health-retries 20
     env:
-      DATABASE_URL: postgres://site_parser:site_parser@localhost:5432/site_parser?sslmode=disable
+      DATABASE_URL: postgres://site_parser:site_parser@localhost:55432/site_parser?sslmode=disable
       REDIS_URL: redis://localhost:6379/0
       INTEGRATION_TESTS: "1"
     steps:

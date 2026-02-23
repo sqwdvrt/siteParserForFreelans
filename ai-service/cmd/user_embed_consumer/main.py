@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """AI Service user-embed consumer: BRPOP user-embed → ProcessUserEmbed. Точка входа."""
 
+import atexit
 import logging
 import os
 import signal
@@ -34,8 +35,41 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+READY_FILE_ENV = "AI_READY_FILE"
+DEFAULT_READY_FILE = "/tmp/ai-user-embed-ready"
+WARMUP_TEXT_ENV = "AI_WARMUP_TEXT"
+DEFAULT_WARMUP_TEXT = "Warmup embedding probe"
+
+
+def _cleanup_ready_file(ready_file: str) -> None:
+    try:
+        os.remove(ready_file)
+    except FileNotFoundError:
+        return
+    except OSError as e:
+        logger.warning("failed to remove ready file %s: %s", ready_file, e)
+
+
+def _mark_ready(ready_file: str) -> None:
+    try:
+        with open(ready_file, "w", encoding="utf-8") as f:
+            f.write("ready\n")
+    except OSError as e:
+        logger.error("failed to write ready file %s: %s", ready_file, e)
+        sys.exit(1)
+
+
+def _warmup_embedding(embedding: SentenceTransformerEmbedding) -> None:
+    warmup_text = os.getenv(WARMUP_TEXT_ENV, DEFAULT_WARMUP_TEXT)
+    vec = embedding.encode(warmup_text)
+    logger.info("embedding warmup completed, dim=%d", len(vec))
+
 
 def main() -> None:
+    ready_file = os.getenv(READY_FILE_ENV, DEFAULT_READY_FILE)
+    _cleanup_ready_file(ready_file)
+    atexit.register(_cleanup_ready_file, ready_file)
+
     app_env = os.getenv("APP_ENV", "development")
     db_url = os.getenv("DATABASE_URL")
     if not db_url:
@@ -56,8 +90,10 @@ def main() -> None:
 
     user_repo = PostgresUserRepository(db_url)
     embedding = SentenceTransformerEmbedding(model_name)
+    _warmup_embedding(embedding)
     process_user_embed = ProcessUserEmbedUseCase(user_repo, embedding)
     queue = RedisUserEmbedQueueConsumer(redis_url, queue_name)
+    _mark_ready(ready_file)
 
     stop_event = threading.Event()
 

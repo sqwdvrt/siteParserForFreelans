@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib
 import sys
 import types
+from pathlib import Path
 
 import pytest
 
@@ -66,3 +67,32 @@ def test_package_exports_embedding_class() -> None:
     _load_embedding_module()
     pkg = importlib.reload(importlib.import_module("ai_service.adapter.sentence_transformers"))
     assert "SentenceTransformerEmbedding" in pkg.__all__
+
+
+def test_prefers_bundled_model_dir_when_present(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = _load_embedding_module()
+    bundled_dir = tmp_path / "models"
+    model_dir = bundled_dir / "demo-model"
+    model_dir.mkdir(parents=True)
+    monkeypatch.setenv("EMBEDDING_MODELS_DIR", str(bundled_dir))
+
+    emb = mod.SentenceTransformerEmbedding("demo-model")
+    assert emb._model.model_name == str(model_dir)  # type: ignore[attr-defined]
+
+
+def test_raises_when_local_required_and_model_missing(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = _load_embedding_module()
+    monkeypatch.setenv("EMBEDDING_REQUIRE_LOCAL", "1")
+    monkeypatch.setenv("EMBEDDING_MODELS_DIR", "/tmp/not-existing-model-dir")
+
+    with pytest.raises(ValueError):
+        mod.SentenceTransformerEmbedding("missing-model")
+
+
+def test_allows_remote_when_local_not_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    mod = _load_embedding_module()
+    monkeypatch.delenv("EMBEDDING_REQUIRE_LOCAL", raising=False)
+    monkeypatch.setenv("EMBEDDING_MODELS_DIR", "/tmp/not-existing-model-dir")
+
+    emb = mod.SentenceTransformerEmbedding("remote-model")
+    assert emb._model.model_name == "remote-model"  # type: ignore[attr-defined]
