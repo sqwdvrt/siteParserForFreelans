@@ -1,0 +1,3 @@
+covervars.go
+secrets.cover.go
+./secrets_test.go

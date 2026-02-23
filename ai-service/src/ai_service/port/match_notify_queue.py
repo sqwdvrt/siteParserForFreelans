@@ -14,3 +14,8 @@ class MatchNotifyQueue(ABC):
     def enqueue(self, candidate: MatchCandidate) -> None:
         """Добавить кандидата в очередь."""
         ...
+
+    def enqueue_many(self, candidates: list[MatchCandidate]) -> None:
+        """Добавить несколько кандидатов в очередь (по умолчанию через enqueue)."""
+        for candidate in candidates:
+            self.enqueue(candidate)

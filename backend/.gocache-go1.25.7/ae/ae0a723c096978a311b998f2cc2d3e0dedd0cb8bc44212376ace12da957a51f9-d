@@ -1,0 +1,10 @@
+//line /Users/sqwdvrt/VS Code/siteParserForFreelans/backend/internal/port/fetcher.go:1:1
+package port; import _cover_atomic_ "sync/atomic"
+
+import "context"
+
+type Fetcher interface {
+	Fetch(ctx context.Context, url string) ([]byte, error)
+}
+
+var _ = _cover_atomic_.LoadUint32

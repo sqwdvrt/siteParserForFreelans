@@ -23,9 +23,21 @@ class RedisMatchNotifyQueue(MatchNotifyQueue):
         self._queue = queue_name
 
     def enqueue(self, candidate: MatchCandidate) -> None:
-        payload = json.dumps({
+        payload = self._serialize(candidate)
+        self._client.lpush(self._queue, payload)
+
+    def enqueue_many(self, candidates: list[MatchCandidate]) -> None:
+        if not candidates:
+            return
+        pipe = self._client.pipeline(transaction=False)
+        for candidate in candidates:
+            pipe.lpush(self._queue, self._serialize(candidate))
+        pipe.execute()
+
+    @staticmethod
+    def _serialize(candidate: MatchCandidate) -> str:
+        return json.dumps({
             "user_id": candidate.user_id,
             "job_id": candidate.job_id,
             "match_score": round(candidate.match_score, 4),
         })
-        self._client.lpush(self._queue, payload)

@@ -1,0 +1,46 @@
+//line /Users/sqwdvrt/VS Code/siteParserForFreelans/backend/internal/adapter/redis/queue.go:1:1
+package redis; import _cover_atomic_ "sync/atomic"
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	redis "github.com/redis/go-redis/v9"
+)
+
+const defaultQueue = "ai-process"
+
+// Queue реализует port.JobQueue через Redis List.
+type Queue struct {
+	client *redis.Client
+	queue  string
+}
+
+// NewQueue создаёт очередь.
+func NewQueue(client *redis.Client, queueName string) *Queue {_cover_atomic_.StoreUint32(&goCover_1ce51927aba3__8[0], 3) ; _cover_atomic_.StoreUint32(&goCover_1ce51927aba3__8[1], goCover_1ce51927aba3_P) ; _cover_atomic_.StoreUint32(&goCover_1ce51927aba3__8[2], 8) ; _cover_atomic_.AddUint32(&goCover_1ce51927aba3__8[3], 1);
+	if queueName == "" {_cover_atomic_.AddUint32(&goCover_1ce51927aba3__8[5], 1);
+		queueName = defaultQueue
+	}
+	_cover_atomic_.AddUint32(&goCover_1ce51927aba3__8[4], 1);return &Queue{client: client, queue: queueName}
+}
+
+// Enqueue добавляет job_id в очередь. Payload: {"job_id": N}.
+// jobID должен быть > 0.
+func (q *Queue) Enqueue(ctx context.Context, jobID int64) error {_cover_atomic_.StoreUint32(&goCover_1ce51927aba3__9[0], 5) ; _cover_atomic_.StoreUint32(&goCover_1ce51927aba3__9[1], goCover_1ce51927aba3_P) ; _cover_atomic_.StoreUint32(&goCover_1ce51927aba3__9[2], 9) ; _cover_atomic_.AddUint32(&goCover_1ce51927aba3__9[3], 1);
+	if jobID <= 0 {_cover_atomic_.AddUint32(&goCover_1ce51927aba3__9[6], 1);
+		return fmt.Errorf("job_id must be positive, got %d", jobID)
+	}
+	_cover_atomic_.AddUint32(&goCover_1ce51927aba3__9[4], 1);payload, err := json.Marshal(map[string]int64{"job_id": jobID})
+	if err != nil {_cover_atomic_.AddUint32(&goCover_1ce51927aba3__9[7], 1);
+		return fmt.Errorf("marshal payload: %w", err)
+	}
+	_cover_atomic_.AddUint32(&goCover_1ce51927aba3__9[5], 1);return q.client.LPush(ctx, q.queue, payload).Err()
+}
+
+// Ping проверяет подключение к Redis.
+func (q *Queue) Ping(ctx context.Context) error {_cover_atomic_.StoreUint32(&goCover_1ce51927aba3__10[0], 1) ; _cover_atomic_.StoreUint32(&goCover_1ce51927aba3__10[1], goCover_1ce51927aba3_P) ; _cover_atomic_.StoreUint32(&goCover_1ce51927aba3__10[2], 10) ; _cover_atomic_.AddUint32(&goCover_1ce51927aba3__10[3], 1);
+	return q.client.Ping(ctx).Err()
+}
+
+var _ = _cover_atomic_.LoadUint32

@@ -51,6 +51,25 @@ POLL_RETRY_BASE_DELAY_SEC = 0.5
 POLL_RETRY_MAX_DELAY_SEC = 10.0
 
 
+def _read_positive_int_env(name: str, default: int) -> int:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("%s must be an integer; using default=%s", name, default)
+        return default
+    if value <= 0:
+        logger.warning("%s must be > 0; using default=%s", name, default)
+        return default
+    return value
+
+
+USER_ID_CACHE_TTL_SEC = _read_positive_int_env("USER_ID_CACHE_TTL_SEC", 300)
+_USER_ID_CACHE: dict[int, tuple[int, float]] = {}
+
+
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
     """Redirect handler with outbound allowlist enforcement for each redirect hop."""
 
@@ -325,6 +344,33 @@ def put_user_profile(
     return True
 
 
+def _cache_user_id(telegram_id: int, user_id: int, *, now_monotonic: float | None = None) -> None:
+    now = now_monotonic if now_monotonic is not None else time.monotonic()
+    _USER_ID_CACHE[telegram_id] = (user_id, now + USER_ID_CACHE_TTL_SEC)
+
+
+def _get_cached_user_id(telegram_id: int, *, now_monotonic: float | None = None) -> int | None:
+    now = now_monotonic if now_monotonic is not None else time.monotonic()
+    cached = _USER_ID_CACHE.get(telegram_id)
+    if cached is None:
+        return None
+    user_id, expires_at = cached
+    if now >= expires_at:
+        _USER_ID_CACHE.pop(telegram_id, None)
+        return None
+    return user_id
+
+
+def _resolve_user_id(api_url: str, telegram_id: int, api_auth_token: str, api_user_hmac_secret: str) -> int | None:
+    cached_user_id = _get_cached_user_id(telegram_id)
+    if cached_user_id is not None:
+        return cached_user_id
+    user_id = post_users(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+    if user_id is not None:
+        _cache_user_id(telegram_id, user_id)
+    return user_id
+
+
 def send_message(token: str, chat_id: int, text: str) -> bool:
     """Отправить сообщение в чат."""
     url = f"{TELEGRAM_BASE}{token}/sendMessage"
@@ -391,6 +437,7 @@ def run_polling(token: str, api_url: str, api_auth_token: str, api_user_hmac_sec
             if text == "/start":
                 user_id = post_users(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
                 if user_id is not None:
+                    _cache_user_id(telegram_id, user_id)
                     send_message(
                         token,
                         chat_id,
@@ -408,7 +455,7 @@ def run_polling(token: str, api_url: str, api_auth_token: str, api_user_hmac_sec
                         "Напишите: /profile <ваш текст профиля>",
                     )
                     continue
-                user_id = post_users(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+                user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
                 if user_id is None:
                     send_message(token, chat_id, "Сначала отправьте /start")
                     continue

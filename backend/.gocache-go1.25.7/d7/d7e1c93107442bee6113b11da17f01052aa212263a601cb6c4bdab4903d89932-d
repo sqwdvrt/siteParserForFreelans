@@ -1,0 +1,251 @@
+//line /Users/sqwdvrt/VS Code/siteParserForFreelans/backend/internal/adapter/telegram/notifier.go:1:1
+package telegram; import _cover_atomic_ "sync/atomic"
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
+)
+
+const (
+	apiBase       = "https://api.telegram.org/bot"
+	timeout       = 15 * time.Second
+	maxDescLen    = 500
+	maxRetries    = 3
+	retryBaseWait = 1 * time.Second
+)
+
+// Notifier реализует port.Notifier через Telegram Bot API sendMessage.
+// Важно: ошибки возвращаются без токена (только "telegram api: http N") — токен не должен попадать в логи.
+type Notifier struct {
+	token  string
+	client *http.Client
+}
+
+// NewNotifier создаёт Notifier с заданным токеном бота.
+func NewNotifier(token string) *Notifier {_cover_atomic_.StoreUint32(&goCover_8961526e850c__0[0], 1) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__0[1], goCover_8961526e850c_P) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__0[2], 0) ; _cover_atomic_.AddUint32(&goCover_8961526e850c__0[3], 1);
+	return &Notifier{
+		token: token,
+		client: &http.Client{
+			Timeout: timeout,
+		},
+	}
+}
+
+// NewNotifierWithClient создаёт Notifier с кастомным HTTP-клиентом (для тестов).
+func NewNotifierWithClient(token string, client *http.Client) *Notifier {_cover_atomic_.StoreUint32(&goCover_8961526e850c__1[0], 3) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__1[1], goCover_8961526e850c_P) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__1[2], 1) ; _cover_atomic_.AddUint32(&goCover_8961526e850c__1[3], 1);
+	if client == nil {_cover_atomic_.AddUint32(&goCover_8961526e850c__1[5], 1);
+		client = &http.Client{Timeout: timeout}
+	}
+	_cover_atomic_.AddUint32(&goCover_8961526e850c__1[4], 1);return &Notifier{token: token, client: client}
+}
+
+// Send отправляет уведомление о проекте в Telegram.
+func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayload) error {_cover_atomic_.StoreUint32(&goCover_8961526e850c__2[0], 20) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__2[1], goCover_8961526e850c_P) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__2[2], 2) ; _cover_atomic_.AddUint32(&goCover_8961526e850c__2[3], 1);
+	if p.Job == nil {_cover_atomic_.AddUint32(&goCover_8961526e850c__2[7], 1);
+		return fmt.Errorf("job is nil")
+	}
+	_cover_atomic_.AddUint32(&goCover_8961526e850c__2[4], 1);text := formatMessage(p)
+
+	url := apiBase + n.token + "/sendMessage"
+	body := map[string]interface{}{
+		"chat_id":    telegramID,
+		"text":       text,
+		"parse_mode": "HTML",
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_8961526e850c__2[8], 1);
+		return fmt.Errorf("marshal request: %w", err)
+	}
+
+	_cover_atomic_.AddUint32(&goCover_8961526e850c__2[5], 1);var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {_cover_atomic_.AddUint32(&goCover_8961526e850c__2[9], 1);
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
+		if err != nil {_cover_atomic_.AddUint32(&goCover_8961526e850c__2[14], 1);
+			return fmt.Errorf("create request: %w", err)
+		}
+		_cover_atomic_.AddUint32(&goCover_8961526e850c__2[10], 1);req.Header.Set("Content-Type", "application/json")
+
+		resp, err := n.client.Do(req)
+		if err != nil {_cover_atomic_.AddUint32(&goCover_8961526e850c__2[15], 1);
+			lastErr = fmt.Errorf("send request: %w", err)
+			if attempt < maxRetries-1 {_cover_atomic_.AddUint32(&goCover_8961526e850c__2[17], 1);
+				if err := waitForRetry(ctx, retryBackoff(attempt)); err != nil {_cover_atomic_.AddUint32(&goCover_8961526e850c__2[18], 1);
+					return err
+				}
+			}
+			_cover_atomic_.AddUint32(&goCover_8961526e850c__2[16], 1);continue
+		}
+		_cover_atomic_.AddUint32(&goCover_8961526e850c__2[11], 1);status := resp.StatusCode
+		resp.Body.Close()
+
+		if status == http.StatusOK {_cover_atomic_.AddUint32(&goCover_8961526e850c__2[19], 1);
+			return nil
+		}
+		_cover_atomic_.AddUint32(&goCover_8961526e850c__2[12], 1);lastErr = fmt.Errorf("telegram api: http %d", status)
+		if (status == 429 || status >= 500) && attempt < maxRetries-1 {_cover_atomic_.AddUint32(&goCover_8961526e850c__2[20], 1);
+			if err := waitForRetry(ctx, retryBackoff(attempt)); err != nil {_cover_atomic_.AddUint32(&goCover_8961526e850c__2[22], 1);
+				return err
+			}
+			_cover_atomic_.AddUint32(&goCover_8961526e850c__2[21], 1);continue
+		}
+		_cover_atomic_.AddUint32(&goCover_8961526e850c__2[13], 1);return lastErr
+	}
+	_cover_atomic_.AddUint32(&goCover_8961526e850c__2[6], 1);return lastErr
+}
+
+func retryBackoff(attempt int) time.Duration {_cover_atomic_.StoreUint32(&goCover_8961526e850c__3[0], 3) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__3[1], goCover_8961526e850c_P) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__3[2], 3) ; _cover_atomic_.AddUint32(&goCover_8961526e850c__3[3], 1);
+	d := retryBaseWait
+	for i := 0; i < attempt; i++ {_cover_atomic_.AddUint32(&goCover_8961526e850c__3[5], 1);
+		d *= 2
+	}
+	_cover_atomic_.AddUint32(&goCover_8961526e850c__3[4], 1);return d
+}
+
+func waitForRetry(ctx context.Context, d time.Duration) error {_cover_atomic_.StoreUint32(&goCover_8961526e850c__4[0], 5) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__4[1], goCover_8961526e850c_P) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__4[2], 4) ; _cover_atomic_.AddUint32(&goCover_8961526e850c__4[3], 1);
+	if d <= 0 {_cover_atomic_.AddUint32(&goCover_8961526e850c__4[5], 1);
+		return nil
+	}
+	_cover_atomic_.AddUint32(&goCover_8961526e850c__4[4], 1);timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():_cover_atomic_.AddUint32(&goCover_8961526e850c__4[6], 1);
+		return ctx.Err()
+	case <-timer.C:_cover_atomic_.AddUint32(&goCover_8961526e850c__4[7], 1);
+		return nil
+	}
+}
+
+// formatMessage формирует текст уведомления: заголовок, описание (500 символов), бюджет, ссылка, почему подходит.
+func formatMessage(p port.NotifyPayload) string {_cover_atomic_.StoreUint32(&goCover_8961526e850c__5[0], 7) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__5[1], goCover_8961526e850c_P) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__5[2], 5) ; _cover_atomic_.AddUint32(&goCover_8961526e850c__5[3], 1);
+	job := p.Job
+	var b strings.Builder
+
+	// Заголовок
+	b.WriteString("<b>")
+	b.WriteString(escapeHTML(job.Title))
+	b.WriteString("</b>\n\n")
+
+	// Описание (до 500 символов)
+	desc := job.Description
+	if desc == "" {_cover_atomic_.AddUint32(&goCover_8961526e850c__5[7], 1);
+		desc = stripHTML(job.RawHTML)
+	}
+	_cover_atomic_.AddUint32(&goCover_8961526e850c__5[4], 1);desc = truncateRunes(desc, maxDescLen)
+	b.WriteString(escapeHTML(desc))
+
+	// Бюджет
+	if job.Budget != "" {_cover_atomic_.AddUint32(&goCover_8961526e850c__5[8], 1);
+		b.WriteString("\n\n💰 ")
+		b.WriteString(escapeHTML(job.Budget))
+	}
+
+	// Ссылка на проект (кликабельная)
+	_cover_atomic_.AddUint32(&goCover_8961526e850c__5[5], 1);b.WriteString("\n\n")
+	b.WriteString(formatProjectLink(job.URL))
+
+	// Почему подходит (из ai_metadata)
+	if p.WhyItFits != "" {_cover_atomic_.AddUint32(&goCover_8961526e850c__5[9], 1);
+		b.WriteString("\n\n")
+		b.WriteString("✨ ")
+		b.WriteString(escapeHTML(p.WhyItFits))
+	}
+
+	_cover_atomic_.AddUint32(&goCover_8961526e850c__5[6], 1);b.WriteString(fmt.Sprintf("\n\n📊 Рекомендация: %.0f%%", p.Score*100))
+	return b.String()
+}
+
+// formatProjectLink возвращает кликабельную HTML-ссылку на проект.
+func formatProjectLink(url string) string {_cover_atomic_.StoreUint32(&goCover_8961526e850c__6[0], 3) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__6[1], goCover_8961526e850c_P) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__6[2], 6) ; _cover_atomic_.AddUint32(&goCover_8961526e850c__6[3], 1);
+	if !isValidJobURL(url) {_cover_atomic_.AddUint32(&goCover_8961526e850c__6[5], 1);
+		return escapeHTML(url)
+	}
+	_cover_atomic_.AddUint32(&goCover_8961526e850c__6[4], 1);return fmt.Sprintf(`<a href="%s">Открыть проект</a>`, escapeForAttr(url))
+}
+
+// blockedURLSchemes — опасные схемы, запрещённые в ссылках (XSS, инъекция).
+var blockedURLSchemes = []string{
+	"javascript:", "data:", "vbscript:", "file:", "about:",
+}
+
+func isValidJobURL(raw string) bool {_cover_atomic_.StoreUint32(&goCover_8961526e850c__7[0], 10) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__7[1], goCover_8961526e850c_P) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__7[2], 7) ; _cover_atomic_.AddUint32(&goCover_8961526e850c__7[3], 1);
+	if raw == "" || len(raw) > 2000 {_cover_atomic_.AddUint32(&goCover_8961526e850c__7[8], 1);
+		return false
+	}
+	_cover_atomic_.AddUint32(&goCover_8961526e850c__7[4], 1);parsed, err := url.Parse(raw)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_8961526e850c__7[9], 1);
+		return false
+	}
+	_cover_atomic_.AddUint32(&goCover_8961526e850c__7[5], 1);scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {_cover_atomic_.AddUint32(&goCover_8961526e850c__7[10], 1);
+		return false
+	}
+	_cover_atomic_.AddUint32(&goCover_8961526e850c__7[6], 1);lower := strings.ToLower(raw)
+	for _, s := range blockedURLSchemes {_cover_atomic_.AddUint32(&goCover_8961526e850c__7[11], 1);
+		if strings.HasPrefix(lower, s) {_cover_atomic_.AddUint32(&goCover_8961526e850c__7[12], 1);
+			return false
+		}
+	}
+	_cover_atomic_.AddUint32(&goCover_8961526e850c__7[7], 1);return true
+}
+
+// escapeHTML экранирует HTML-спецсимволы для защиты от инъекции (parse_mode HTML).
+// Обязательно: & < > — иначе возможна подмена разметки или XSS.
+func escapeHTML(s string) string {_cover_atomic_.StoreUint32(&goCover_8961526e850c__8[0], 1) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__8[1], goCover_8961526e850c_P) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__8[2], 8) ; _cover_atomic_.AddUint32(&goCover_8961526e850c__8[3], 1);
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
+}
+
+// escapeForAttr экранирует строку для использования в HTML-атрибуте (href и т.п.).
+func escapeForAttr(s string) string {_cover_atomic_.StoreUint32(&goCover_8961526e850c__9[0], 1) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__9[1], goCover_8961526e850c_P) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__9[2], 9) ; _cover_atomic_.AddUint32(&goCover_8961526e850c__9[3], 1);
+	s = strings.ReplaceAll(s, "&", "&amp;")
+	s = strings.ReplaceAll(s, "\"", "&quot;")
+	s = strings.ReplaceAll(s, "<", "&lt;")
+	s = strings.ReplaceAll(s, ">", "&gt;")
+	return s
+}
+
+func stripHTML(s string) string {_cover_atomic_.StoreUint32(&goCover_8961526e850c__10[0], 8) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__10[1], goCover_8961526e850c_P) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__10[2], 10) ; _cover_atomic_.AddUint32(&goCover_8961526e850c__10[3], 1);
+	// Простое удаление тегов для raw_html
+	var b strings.Builder
+	inTag := false
+	for _, r := range s {_cover_atomic_.AddUint32(&goCover_8961526e850c__10[5], 1);
+		if r == '<' {_cover_atomic_.AddUint32(&goCover_8961526e850c__10[8], 1);
+			inTag = true
+			continue
+		}
+		_cover_atomic_.AddUint32(&goCover_8961526e850c__10[6], 1);if r == '>' {_cover_atomic_.AddUint32(&goCover_8961526e850c__10[9], 1);
+			inTag = false
+			continue
+		}
+		_cover_atomic_.AddUint32(&goCover_8961526e850c__10[7], 1);if !inTag && (r == ' ' || r == '\n' || r == '\t' || r > 32) {_cover_atomic_.AddUint32(&goCover_8961526e850c__10[10], 1);
+			b.WriteRune(r)
+		}
+	}
+	_cover_atomic_.AddUint32(&goCover_8961526e850c__10[4], 1);return strings.TrimSpace(b.String())
+}
+
+func truncateRunes(s string, max int) string {_cover_atomic_.StoreUint32(&goCover_8961526e850c__11[0], 5) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__11[1], goCover_8961526e850c_P) ; _cover_atomic_.StoreUint32(&goCover_8961526e850c__11[2], 11) ; _cover_atomic_.AddUint32(&goCover_8961526e850c__11[3], 1);
+	if max <= 0 {_cover_atomic_.AddUint32(&goCover_8961526e850c__11[6], 1);
+		return ""
+	}
+	_cover_atomic_.AddUint32(&goCover_8961526e850c__11[4], 1);runes := []rune(s)
+	if len(runes) <= max {_cover_atomic_.AddUint32(&goCover_8961526e850c__11[7], 1);
+		return s
+	}
+	_cover_atomic_.AddUint32(&goCover_8961526e850c__11[5], 1);return string(runes[:max]) + "..."
+}
+
+// Проверка, что Notifier реализует port.Notifier.
+var _ port.Notifier = (*Notifier)(nil)
+
+var _ = _cover_atomic_.LoadUint32

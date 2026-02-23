@@ -1,0 +1,136 @@
+name: Supply Chain Security
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - develop
+
+permissions:
+  contents: read
+  security-events: write
+  id-token: write
+
+jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          args: detect --source . --no-banner --redact --report-format sarif --report-path gitleaks.sarif
+
+      - name: Upload gitleaks SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gitleaks.sarif
+
+      - name: Upload gitleaks report artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks.sarif
+
+  image-scan-sbom-sign:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: backend
+            context: ./backend
+            dockerfile: ./backend/Dockerfile
+          - service: ai-service
+            context: ./ai-service
+            dockerfile: ./ai-service/Dockerfile
+          - service: telegram-bot
+            context: ./telegram-bot
+            dockerfile: ./telegram-bot/Dockerfile
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build image
+        env:
+          IMAGE_REF: local/${{ matrix.service }}:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker build -t "${IMAGE_REF}" -f "${{ matrix.dockerfile }}" "${{ matrix.context }}"
+
+      - name: Run Trivy scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: local/${{ matrix.service }}:${{ github.sha }}
+          format: json
+          output: trivy-${{ matrix.service }}.json
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: HIGH,CRITICAL
+          exit-code: "1"
+
+      - name: Install Grype
+        run: |
+          set -euo pipefail
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Run Grype scan
+        env:
+          IMAGE_REF: local/${{ matrix.service }}:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          grype "${IMAGE_REF}" -o json > "grype-${{ matrix.service }}.json"
+          grype "${IMAGE_REF}" --fail-on high
+
+      - name: Install Syft
+        run: |
+          set -euo pipefail
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh | sh -s -- -b /usr/local/bin
+
+      - name: Generate SBOM (CycloneDX JSON)
+        env:
+          IMAGE_REF: local/${{ matrix.service }}:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          syft "${IMAGE_REF}" -o cyclonedx-json="sbom-${{ matrix.service }}.cdx.json"
+
+      - name: Install Cosign
+        if: ${{ github.event_name == 'push' }}
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign SBOM artifact (keyless)
+        if: ${{ github.event_name == 'push' }}
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --bundle "sbom-${{ matrix.service }}.bundle" \
+            --output-certificate "sbom-${{ matrix.service }}.pem" \
+            --output-signature "sbom-${{ matrix.service }}.sig" \
+            "sbom-${{ matrix.service }}.cdx.json"
+
+      - name: Note unsigned artifact for pull requests
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          set -euo pipefail
+          echo "SBOM signature is created on push events only (OIDC keyless signing)." > "sbom-${{ matrix.service }}.sig.note.txt"
+
+      - name: Upload supply-chain artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain-${{ matrix.service }}
+          path: |
+            trivy-${{ matrix.service }}.json
+            grype-${{ matrix.service }}.json
+            sbom-${{ matrix.service }}.cdx.json
+            sbom-${{ matrix.service }}.sig
+            sbom-${{ matrix.service }}.pem
+            sbom-${{ matrix.service }}.bundle
+            sbom-${{ matrix.service }}.sig.note.txt
+          if-no-files-found: ignore

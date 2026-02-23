@@ -1,0 +1,20 @@
+//line /Users/sqwdvrt/VS Code/siteParserForFreelans/backend/internal/domain/job.go:1:1
+package domain; import _cover_atomic_ "sync/atomic"
+
+import "time"
+
+type Job struct {
+	ID          int64
+	Source      string
+	URL         string
+	ExternalID  string
+	Title       string
+	Description string
+	Budget      string
+	Skills      []string
+	PostedAt    *time.Time
+	RawHTML     string
+	CreatedAt   time.Time
+}
+
+var _ = _cover_atomic_.LoadUint32

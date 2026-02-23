@@ -100,3 +100,20 @@ def test_match_notify_enqueue(redis_url: str, redis_client: redis.Redis, queue_p
     raw = redis_client.rpop(queue_name)
     assert raw is not None
     assert json.loads(raw) == {"user_id": 11, "job_id": 22, "match_score": 0.8765}
+
+
+def test_match_notify_enqueue_many(redis_url: str, redis_client: redis.Redis, queue_prefix: str) -> None:
+    queue_name = f"{queue_prefix}:match-notify"
+    queue = RedisMatchNotifyQueue(redis_url, queue_name=queue_name)
+
+    queue.enqueue_many([
+        MatchCandidate(user_id=11, job_id=22, match_score=0.87654),
+        MatchCandidate(user_id=12, job_id=22, match_score=0.70111),
+    ])
+
+    first = redis_client.rpop(queue_name)
+    second = redis_client.rpop(queue_name)
+    assert first is not None
+    assert second is not None
+    assert json.loads(first) == {"user_id": 11, "job_id": 22, "match_score": 0.8765}
+    assert json.loads(second) == {"user_id": 12, "job_id": 22, "match_score": 0.7011}

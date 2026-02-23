@@ -1,0 +1,18 @@
+//line /Users/sqwdvrt/VS Code/siteParserForFreelans/backend/internal/port/user_repository.go:1:1
+package port; import _cover_atomic_ "sync/atomic"
+
+import (
+	"context"
+
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
+)
+
+// UserRepository — репозиторий пользователей.
+type UserRepository interface {
+	Save(ctx context.Context, telegramID int64) (int64, error)
+	GetByID(ctx context.Context, userID int64) (*domain.User, error)
+	GetByTelegramID(ctx context.Context, telegramID int64) (*domain.User, error)
+	UpdateProfile(ctx context.Context, userID int64, profileText string) error
+}
+
+var _ = _cover_atomic_.LoadUint32

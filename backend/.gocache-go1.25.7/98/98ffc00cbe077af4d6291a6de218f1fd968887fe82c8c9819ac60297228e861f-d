@@ -1,0 +1,3 @@
+./handler.go
+./sarif.go
+./utils.go

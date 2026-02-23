@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import importlib
+import importlib.util
 import io
 import json
+from pathlib import Path
 import urllib.parse
 import urllib.error
 import urllib.request
@@ -11,9 +12,16 @@ from unittest.mock import MagicMock
 import pytest
 
 
+BOT_MAIN_PATH = Path(__file__).resolve().parents[1] / "main.py"
+
+
 def _load_bot_module():
-    mod = importlib.import_module("main")
-    return importlib.reload(mod)
+    spec = importlib.util.spec_from_file_location("telegram_bot_main", BOT_MAIN_PATH)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"failed to load bot module from {BOT_MAIN_PATH}")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 @pytest.fixture
@@ -294,6 +302,65 @@ def test_run_polling_handles_profile(bot, monkeypatch):
         bot.run_polling("token", "https://api.example.com", "tok", "hmac")
 
     send_message.assert_called_once()
+
+
+def test_user_id_cache_hit_and_expire(bot):
+    bot._USER_ID_CACHE.clear()
+    bot._cache_user_id(telegram_id=200, user_id=321, now_monotonic=10.0)
+
+    assert bot._get_cached_user_id(telegram_id=200, now_monotonic=10.1) == 321
+    assert bot._get_cached_user_id(
+        telegram_id=200,
+        now_monotonic=10.0 + bot.USER_ID_CACHE_TTL_SEC + 0.001,
+    ) is None
+
+
+def test_run_polling_profile_uses_cached_user_id(bot, monkeypatch):
+    updates = [
+        (
+            [
+                {
+                    "update_id": 1,
+                    "message": {
+                        "chat": {"id": 100},
+                        "from": {"id": 200},
+                        "text": "/profile python",
+                    },
+                },
+                {
+                    "update_id": 2,
+                    "message": {
+                        "chat": {"id": 100},
+                        "from": {"id": 200},
+                        "text": "/profile golang",
+                    },
+                },
+            ],
+            3,
+        ),
+        KeyboardInterrupt(),
+    ]
+
+    def _get_updates(*args, **kwargs):
+        item = updates.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    post_users = MagicMock(return_value=123)
+    put_user_profile = MagicMock(return_value=True)
+    send_message = MagicMock(return_value=True)
+
+    monkeypatch.setattr(bot, "get_updates", _get_updates)
+    monkeypatch.setattr(bot, "post_users", post_users)
+    monkeypatch.setattr(bot, "put_user_profile", put_user_profile)
+    monkeypatch.setattr(bot, "send_message", send_message)
+
+    with pytest.raises(KeyboardInterrupt):
+        bot.run_polling("token", "https://api.example.com", "tok", "hmac")
+
+    assert post_users.call_count == 1
+    assert put_user_profile.call_count == 2
 
 
 def test_run_polling_backs_off_after_failed_get_updates(bot, monkeypatch):

@@ -97,6 +97,7 @@ services:
       - /home/app:mode=0700,size=16m
 
   ai-service:
+    image: ${AI_IMAGE:-siteparserforfreelans-ai-runtime:local}
     build:
       context: ./ai-service
       dockerfile: Dockerfile
@@ -120,9 +121,7 @@ services:
       - /home/app:mode=0700,size=64m
 
   ai-user-embed:
-    build:
-      context: ./ai-service
-      dockerfile: Dockerfile
+    image: ${AI_IMAGE:-siteparserforfreelans-ai-runtime:local}
     command: ["python", "cmd/user_embed_consumer/main.py"]
     env_file: .env
     environment:

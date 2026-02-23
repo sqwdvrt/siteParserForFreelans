@@ -1,0 +1,10 @@
+covervars.go
+match_notify_consumer.cover.go
+queue.cover.go
+security.cover.go
+user_embed_queue.cover.go
+./match_notify_consumer_test.go
+./queue_test.go
+./security_test.go
+./test_miniredis_helper_test.go
+./user_embed_queue_test.go

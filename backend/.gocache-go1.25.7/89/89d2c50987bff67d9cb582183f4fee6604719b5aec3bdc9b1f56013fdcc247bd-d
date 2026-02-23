@@ -1,0 +1,11 @@
+./binary.go
+./doc.go
+./emit.go
+./entries.go
+./fetch.go
+./packages.go
+./slicing.go
+./source.go
+./utils.go
+./vulncheck.go
+./witness.go

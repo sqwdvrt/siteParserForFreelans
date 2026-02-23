@@ -1,0 +1,11 @@
+//line /Users/sqwdvrt/VS Code/siteParserForFreelans/backend/internal/domain/user.go:1:1
+package domain; import _cover_atomic_ "sync/atomic"
+
+// User — пользователь из таблицы users.
+type User struct {
+	ID          int64
+	TelegramID  int64
+	ProfileText *string
+}
+
+var _ = _cover_atomic_.LoadUint32

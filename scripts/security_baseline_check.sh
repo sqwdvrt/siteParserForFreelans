@@ -7,8 +7,11 @@ PY_USER_BASE="${ROOT_DIR}/.pyuserbase"
 
 PYTHON_BIN="${PYTHON_BIN:-}"
 GO_TOOLCHAIN="${GO_TOOLCHAIN:-go1.25.7}"
+GO_GOMODCACHE="${GO_GOMODCACHE:-${ROOT_DIR}/backend/.gomodcache-${GO_TOOLCHAIN}}"
+GO_GOCACHE="${GO_GOCACHE:-${ROOT_DIR}/backend/.gocache-${GO_TOOLCHAIN}}"
 PY_MODE="local"
 PIP_AUDIT_REQ_PATH="ai-service/requirements.txt"
+AI_VENV_PYTHON="${ROOT_DIR}/ai-service/.venv/bin/python"
 
 echo "[security] Validating pinned baseline versions"
 
@@ -31,6 +34,17 @@ print(".".join(map(str, sys.version_info[:3])))
 PY
 }
 
+is_python_virtualenv() {
+  "$@" - <<'PY' >/dev/null 2>&1
+import sys
+in_venv = (
+    getattr(sys, "base_prefix", sys.prefix) != sys.prefix
+    or hasattr(sys, "real_prefix")
+)
+raise SystemExit(0 if in_venv else 1)
+PY
+}
+
 PY_CMD=()
 
 if [[ -n "$PYTHON_BIN" ]]; then
@@ -44,12 +58,25 @@ if [[ -n "$PYTHON_BIN" ]]; then
   fi
   PY_CMD=("$PYTHON_BIN")
 else
-  for candidate in python3.13 python3.12 python3.11 python3; do
-    if command -v "$candidate" >/dev/null 2>&1 && is_python_ge_311 "$candidate"; then
-      PY_CMD=("$candidate")
-      break
+  if [[ -x "${AI_VENV_PYTHON}" ]] && is_python_ge_311 "${AI_VENV_PYTHON}"; then
+    PY_CMD=("${AI_VENV_PYTHON}")
+  fi
+
+  if [[ ${#PY_CMD[@]} -eq 0 ]]; then
+    for candidate in python3.13 python3.12 python3.11 python3; do
+      if command -v "$candidate" >/dev/null 2>&1 && is_python_ge_311 "$candidate"; then
+        PY_CMD=("$candidate")
+        break
+      fi
+    done
+  fi
+
+  if [[ ${#PY_CMD[@]} -eq 0 ]]; then
+    if command -v python >/dev/null 2>&1 && is_python_ge_311 python; then
+      PY_CMD=("python")
     fi
-  done
+  fi
+
   if [[ ${#PY_CMD[@]} -eq 0 ]]; then
     if command -v docker >/dev/null 2>&1 && docker image inspect siteparserforfreelans-ai-service >/dev/null 2>&1 && \
       is_python_ge_311 docker run --rm -i --entrypoint python siteparserforfreelans-ai-service; then
@@ -59,7 +86,7 @@ else
     fi
   fi
   if [[ ${#PY_CMD[@]} -eq 0 ]]; then
-    echo "ERROR: Python >=3.11 not found (and docker ai-service image fallback is unavailable)."
+    echo "ERROR: Python >=3.11 not found (tried PYTHON_BIN, ai-service/.venv, python3.*, python3, python; docker fallback unavailable)."
     echo "Install Python >=3.11 or build image: docker compose build ai-service."
     exit 1
   fi
@@ -83,17 +110,31 @@ if ! grep -qiE '^pillow==12\.1\.1$' ai-service/requirements.txt; then
 fi
 
 echo "[security] Running govulncheck with ${GO_TOOLCHAIN}"
-(cd backend && GOTOOLCHAIN="${GO_TOOLCHAIN}" go run golang.org/x/vuln/cmd/govulncheck@latest ./...)
+mkdir -p "${GO_GOMODCACHE}" "${GO_GOCACHE}"
+(
+  cd backend && \
+    GOTOOLCHAIN="${GO_TOOLCHAIN}" \
+    GOMODCACHE="${GO_GOMODCACHE}" \
+    GOCACHE="${GO_GOCACHE}" \
+    go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+)
 
 echo "[security] Running pip-audit"
 if [[ "$PY_MODE" == "docker" ]]; then
   docker run --rm --entrypoint sh siteparserforfreelans-ai-service -lc \
     'python -m pip install --upgrade pip pip-audit >/dev/null && python -m pip_audit -r /app/requirements.txt'
 else
-  PIP_DISABLE_PIP_VERSION_CHECK=1 PYTHONUSERBASE="$PY_USER_BASE" HOME="$ROOT_DIR" \
-    "${PY_CMD[@]}" -m pip install --upgrade --user pip pip-audit >/dev/null
-  PYTHONUSERBASE="$PY_USER_BASE" HOME="$ROOT_DIR" \
+  if is_python_virtualenv "${PY_CMD[@]}"; then
+    echo "[security] Detected virtualenv Python; installing pip-audit into venv (without --user)"
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+      "${PY_CMD[@]}" -m pip install --upgrade pip pip-audit >/dev/null
     "${PY_CMD[@]}" -m pip_audit -r "$PIP_AUDIT_REQ_PATH"
+  else
+    PIP_DISABLE_PIP_VERSION_CHECK=1 PYTHONUSERBASE="$PY_USER_BASE" HOME="$ROOT_DIR" \
+      "${PY_CMD[@]}" -m pip install --upgrade --user pip pip-audit >/dev/null
+    PYTHONUSERBASE="$PY_USER_BASE" HOME="$ROOT_DIR" \
+      "${PY_CMD[@]}" -m pip_audit -r "$PIP_AUDIT_REQ_PATH"
+  fi
 fi
 
 echo "[security] Baseline checks passed"

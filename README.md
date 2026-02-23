@@ -40,6 +40,12 @@ docker compose up -d
 
 Миграции применяются автоматически при старте backend. Подробнее: `docs/e2e.md`.
 
+## Operations
+
+- Monitoring, alerts, incident runbook, DR/backup/restore: `docs/operations.md`
+- Backup script: `scripts/backup_postgres.sh`
+- Restore script: `scripts/restore_postgres.sh`
+
 ## Deployment Profiles
 
 - `docker-compose.yml` — локальный dev-профиль (включает локальные PostgreSQL/Redis и допускает `sslmode=disable`, `redis://`, `http://`).
@@ -58,6 +64,23 @@ docker compose --env-file .env.production -f docker-compose.prod.yml up -d --bui
 ```
 
 В production compose **не** поднимает локальные PostgreSQL/Redis контейнеры: используются внешние managed endpoints.
+
+### Deploy Pipeline: Secrets for Staging Smoke/E2E Gate
+
+Для workflow `/Users/sqwdvrt/VS Code/siteParserForFreelans/.github/workflows/deploy.yml` (job `staging-smoke-e2e-gate`) нужны:
+
+- `STAGING_SSH_HOST` (обязателен)
+- `STAGING_SSH_USER` (обязателен)
+- `STAGING_SSH_PRIVATE_KEY` (обязателен)
+- `STAGING_DEPLOY_PATH` (обязателен)
+- `STAGING_GATE_API_URL` (рекомендуется; если не задан, используется `API_URL` из `.env.production` на staging-хосте)
+- `STAGING_SMOKE_TELEGRAM_ID` (опционально; переопределяет `TELEGRAM_ID`/дефолтный ID в smoke/e2e gate)
+
+Также на staging-хосте в `.env.production` должны быть заданы:
+
+- `API_AUTH_TOKEN` (обязателен)
+- `API_USER_HMAC_SECRET` (обязателен)
+- `API_URL` (обязателен, если не задан `STAGING_GATE_API_URL`)
 
 **Локальный запуск без Docker:**
 ```bash
@@ -91,7 +114,7 @@ cd backend && go run ./cmd/crawler
 | `TELEGRAM_BOT_TOKEN` | Токен бота для уведомлений |
 | `TELEGRAM_ID` | Ваш chat_id (уведомления придут сюда) |
 | `API_URL` | URL backend API (в production для telegram-bot только `https://`) |
-| `POSTGRES_BIND_IP`/`REDIS_BIND_IP`/`API_BIND_IP` | Привязка портов Docker к интерфейсу хоста (по умолчанию `127.0.0.1`) |
+| `POSTGRES_BIND_IP`/`REDIS_BIND_IP`/`API_BIND_IP` | Привязка портов Docker к интерфейсу хоста (по умолчанию `127.0.0.1`; для внешней публикации нужно явно задать, например `0.0.0.0`) |
 | `POSTGRES_PORT`/`REDIS_PORT`/`API_PORT` | Порты публикации на хосте |
 | `CRAWL_LIST_URL` | URL страницы проектов (по умолчанию Kwork) |
 | `CRAWL_RATE_SEC` | Интервал между запросами (по умолчанию 15) |
@@ -131,3 +154,30 @@ cd ai-service && pip-audit -r requirements.txt
 # Если Python 3.11 установлен не как python3.11:
 PYTHON_BIN=python3.12 ./scripts/security_baseline_check.sh
 ```
+
+## Supply Chain Security (CI)
+
+В CI добавлен workflow `.github/workflows/supply-chain-security.yml`:
+
+- `gitleaks` — secret scan по репозиторию.
+- `trivy` и `grype` — скан уязвимостей Docker-образов (`backend`, `ai-service`, `telegram-bot`) с fail на `HIGH/CRITICAL`.
+- `syft` — генерация SBOM (CycloneDX JSON) для каждого образа.
+- `cosign` — keyless-подпись SBOM-артефактов на `push` (через OIDC).
+
+Артефакты (`trivy/grype/sbom/signature`) публикуются в Actions artifacts.
+
+Для загрузки SARIF и keyless-подписи workflow использует permissions:
+- `security-events: write`
+- `id-token: write`
+
+Примечание:
+- На `pull_request` выполняются сканы и SBOM.
+- Подпись SBOM выполняется только на `push`.
+
+## Deploy Gates
+
+`Deploy Pipeline` (`.github/workflows/deploy.yml`) ожидает успешные gate’ы на target SHA:
+
+- `Test Gate`
+- `Security Baseline`
+- `Supply Chain Security`

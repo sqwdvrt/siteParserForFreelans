@@ -14,7 +14,7 @@ services:
       API_TLS_CERT_FILE: ${API_TLS_CERT_FILE:-/run/secrets/api_tls_cert.pem}
       API_TLS_KEY_FILE: ${API_TLS_KEY_FILE:-/run/secrets/api_tls_key.pem}
     ports:
-      - "${API_BIND_IP:-0.0.0.0}:${API_PORT:-8443}:8443"
+      - "${API_BIND_IP:-127.0.0.1}:${API_PORT:-8443}:8443"
     volumes:
       - "${API_TLS_CERT_HOST_PATH:?set_API_TLS_CERT_HOST_PATH}:/run/secrets/api_tls_cert.pem:ro"
       - "${API_TLS_KEY_HOST_PATH:?set_API_TLS_KEY_HOST_PATH}:/run/secrets/api_tls_key.pem:ro"
@@ -71,6 +71,7 @@ services:
     restart: unless-stopped
 
   ai-service:
+    image: ${AI_IMAGE:-siteparserforfreelans-ai-runtime:prod}
     build:
       context: ./ai-service
       dockerfile: Dockerfile
@@ -92,9 +93,7 @@ services:
     restart: unless-stopped
 
   ai-user-embed:
-    build:
-      context: ./ai-service
-      dockerfile: Dockerfile
+    image: ${AI_IMAGE:-siteparserforfreelans-ai-runtime:prod}
     command: ["python", "cmd/user_embed_consumer/main.py"]
     env_file:
       - .env.production

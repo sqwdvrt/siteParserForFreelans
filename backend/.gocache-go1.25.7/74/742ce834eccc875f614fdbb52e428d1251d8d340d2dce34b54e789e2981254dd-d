@@ -1,0 +1,13 @@
+./binary.go
+./color.go
+./errors.go
+./extract.go
+./filepath.go
+./flags.go
+./query.go
+./run.go
+./source.go
+./stdlib.go
+./template.go
+./text.go
+./util.go

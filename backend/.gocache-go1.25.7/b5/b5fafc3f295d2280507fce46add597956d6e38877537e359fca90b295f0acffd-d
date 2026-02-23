@@ -1,0 +1,317 @@
+//line /Users/sqwdvrt/VS Code/siteParserForFreelans/backend/internal/adapter/http/fetcher.go:1:1
+package http; import _cover_atomic_ "sync/atomic"
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	defaultTimeout   = 30 * time.Second
+	defaultRateLimit = 15 * time.Second
+	maxBodySize      = 1 << 20 // 1 MB
+)
+
+var blockedHosts = map[string]bool{
+	"localhost": true,
+	"127.0.0.1": true,
+	"::1":       true,
+	"0.0.0.0":   true,
+}
+
+var (
+	cgnatNet     = mustCIDR("100.64.0.0/10")
+	benchmarkNet = mustCIDR("198.18.0.0/15")
+)
+
+type ResolveIPFunc func(ctx context.Context, host string) ([]net.IPAddr, error)
+type DialContextFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+
+type pinnedHostsContextKey struct{}
+
+type pinnedHosts map[string][]net.IP
+
+type Fetcher struct {
+	client    *http.Client
+	rateLimit time.Duration
+	lastFetch map[string]time.Time
+	resolveIP ResolveIPFunc
+	dial      DialContextFunc
+	mu        sync.Mutex
+}
+
+type Config struct {
+	Timeout   time.Duration
+	RateLimit time.Duration
+	Transport http.RoundTripper // для тестов: мок RoundTripper
+	ResolveIP ResolveIPFunc     // для тестов: мок DNS-резолвера
+	Dial      DialContextFunc   // для тестов: мок dialer
+}
+
+func NewFetcher(cfg Config) *Fetcher {_cover_atomic_.StoreUint32(&goCover_1e518ee273d5__0[0], 19) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__0[1], goCover_1e518ee273d5_P) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__0[2], 0) ; _cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[3], 1);
+	if cfg.Timeout == 0 {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[10], 1);
+		cfg.Timeout = defaultTimeout
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[4], 1);if cfg.RateLimit == 0 {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[11], 1);
+		cfg.RateLimit = defaultRateLimit
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[5], 1);resolveIP := cfg.ResolveIP
+	if resolveIP == nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[12], 1);
+		resolveIP = net.DefaultResolver.LookupIPAddr
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[6], 1);transport := cfg.Transport
+	f := &Fetcher{
+		client: &http.Client{
+			Timeout: cfg.Timeout,
+		},
+		rateLimit: cfg.RateLimit,
+		lastFetch: make(map[string]time.Time),
+		resolveIP: resolveIP,
+	}
+	dial := cfg.Dial
+	if dial == nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[13], 1);
+		dialer := &net.Dialer{Timeout: cfg.Timeout, KeepAlive: 30 * time.Second}
+		dial = dialer.DialContext
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[7], 1);f.dial = dial
+	if transport == nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[14], 1);
+		base, ok := http.DefaultTransport.(*http.Transport)
+		if !ok {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[15], 1);
+			transport = http.DefaultTransport
+		} else{ _cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[16], 1);{
+			cloned := base.Clone()
+			cloned.DialContext = f.dialPinnedContext
+			transport = cloned
+		}}
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[8], 1);f.client.CheckRedirect = func(req *http.Request, via []*http.Request) error {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[17], 1);
+		if len(via) >= 10 {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[20], 1);
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		_cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[18], 1);nextCtx, err := f.validateParsedURL(req.Context(), req.URL)
+		if err != nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[21], 1);
+			return err
+		}
+		_cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[19], 1);*req = *req.WithContext(nextCtx)
+		return nil
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__0[9], 1);f.client.Transport = transport
+	return f
+}
+
+func (f *Fetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) {_cover_atomic_.StoreUint32(&goCover_1e518ee273d5__1[0], 14) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__1[1], goCover_1e518ee273d5_P) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__1[2], 1) ; _cover_atomic_.AddUint32(&goCover_1e518ee273d5__1[3], 1);
+	nextCtx, err := f.validateURL(ctx, rawURL)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__1[10], 1);
+		return nil, err
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__1[4], 1);ctx = nextCtx
+
+	domain := f.extractDomain(rawURL)
+	f.mu.Lock()
+	if last, ok := f.lastFetch[domain]; ok {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__1[11], 1);
+		elapsed := time.Since(last)
+		if elapsed < f.rateLimit {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__1[12], 1);
+			f.mu.Unlock()
+			time.Sleep(f.rateLimit - elapsed)
+			f.mu.Lock()
+		}
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__1[5], 1);f.lastFetch[domain] = time.Now()
+	f.mu.Unlock()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__1[13], 1);
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__1[6], 1);req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; SiteParser/1.0)")
+
+	resp, err := f.client.Do(req)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__1[14], 1);
+		return nil, fmt.Errorf("fetch: %w", err)
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__1[7], 1);defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__1[15], 1);
+		return nil, fmt.Errorf("http %d", resp.StatusCode)
+	}
+
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__1[8], 1);body := io.LimitReader(resp.Body, maxBodySize)
+	data, err := io.ReadAll(body)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__1[16], 1);
+		return nil, fmt.Errorf("read body: %w", err)
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__1[9], 1);return data, nil
+}
+
+func (f *Fetcher) validateURL(ctx context.Context, rawURL string) (context.Context, error) {_cover_atomic_.StoreUint32(&goCover_1e518ee273d5__2[0], 3) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__2[1], goCover_1e518ee273d5_P) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__2[2], 2) ; _cover_atomic_.AddUint32(&goCover_1e518ee273d5__2[3], 1);
+	u, err := url.Parse(rawURL)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__2[5], 1);
+		return ctx, fmt.Errorf("invalid url: %w", err)
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__2[4], 1);return f.validateParsedURL(ctx, u)
+}
+
+func (f *Fetcher) validateParsedURL(ctx context.Context, u *url.URL) (context.Context, error) {_cover_atomic_.StoreUint32(&goCover_1e518ee273d5__3[0], 11) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__3[1], goCover_1e518ee273d5_P) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__3[2], 3) ; _cover_atomic_.AddUint32(&goCover_1e518ee273d5__3[3], 1);
+	if u == nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__3[9], 1);
+		return ctx, fmt.Errorf("invalid url: empty")
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__3[4], 1);if u.Scheme != "http" && u.Scheme != "https" {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__3[10], 1);
+		return ctx, fmt.Errorf("invalid scheme: %s", u.Scheme)
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__3[5], 1);if u.Hostname() == "" {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__3[11], 1);
+		return ctx, fmt.Errorf("empty host")
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__3[6], 1);host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	if blockedHosts[host] {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__3[12], 1);
+		return ctx, fmt.Errorf("host not allowed: %s", host)
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__3[7], 1);ips, err := f.resolveAllowedIPs(ctx, host)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__3[13], 1);
+		return ctx, err
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__3[8], 1);return withPinnedHost(ctx, host, ips), nil
+}
+
+func (f *Fetcher) resolveAllowedIPs(ctx context.Context, host string) ([]net.IP, error) {_cover_atomic_.StoreUint32(&goCover_1e518ee273d5__4[0], 17) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__4[1], goCover_1e518ee273d5_P) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__4[2], 4) ; _cover_atomic_.AddUint32(&goCover_1e518ee273d5__4[3], 1);
+	if ip := net.ParseIP(host); ip != nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__4[9], 1);
+		if isDisallowedIP(ip) {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__4[11], 1);
+			return nil, fmt.Errorf("private network not allowed: %s", host)
+		}
+		_cover_atomic_.AddUint32(&goCover_1e518ee273d5__4[10], 1);return []net.IP{cloneIP(ip)}, nil
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__4[4], 1);addrs, err := f.resolveIP(ctx, host)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__4[12], 1);
+		return nil, fmt.Errorf("resolve host %s: %w", host, err)
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__4[5], 1);if len(addrs) == 0 {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__4[13], 1);
+		return nil, fmt.Errorf("resolve host %s: no addresses", host)
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__4[6], 1);uniq := make(map[string]struct{}, len(addrs))
+	ips := make([]net.IP, 0, len(addrs))
+	for _, addr := range addrs {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__4[14], 1);
+		ip := cloneIP(addr.IP)
+		if isDisallowedIP(ip) {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__4[17], 1);
+			return nil, fmt.Errorf("private network not allowed: %s", ip.String())
+		}
+		_cover_atomic_.AddUint32(&goCover_1e518ee273d5__4[15], 1);key := ip.String()
+		if _, ok := uniq[key]; ok {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__4[18], 1);
+			continue
+		}
+		_cover_atomic_.AddUint32(&goCover_1e518ee273d5__4[16], 1);uniq[key] = struct{}{}
+		ips = append(ips, ip)
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__4[7], 1);if len(ips) == 0 {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__4[19], 1);
+		return nil, fmt.Errorf("resolve host %s: no addresses", host)
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__4[8], 1);return ips, nil
+}
+
+func (f *Fetcher) dialPinnedContext(ctx context.Context, network, addr string) (net.Conn, error) {_cover_atomic_.StoreUint32(&goCover_1e518ee273d5__5[0], 11) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__5[1], goCover_1e518ee273d5_P) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__5[2], 5) ; _cover_atomic_.AddUint32(&goCover_1e518ee273d5__5[3], 1);
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__5[8], 1);
+		return nil, fmt.Errorf("split host port: %w", err)
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__5[4], 1);host = normalizeHost(host)
+	pinned := pinnedHostIPsFromContext(ctx, host)
+	if len(pinned) == 0 {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__5[9], 1);
+		return nil, fmt.Errorf("host %s has no pinned addresses", host)
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__5[5], 1);var lastErr error
+	for _, ip := range pinned {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__5[10], 1);
+		target := net.JoinHostPort(ip.String(), port)
+		conn, err := f.dial(ctx, network, target)
+		if err == nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__5[12], 1);
+			return conn, nil
+		}
+		_cover_atomic_.AddUint32(&goCover_1e518ee273d5__5[11], 1);lastErr = err
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__5[6], 1);if lastErr == nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__5[13], 1);
+		lastErr = fmt.Errorf("all pinned addresses failed")
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__5[7], 1);return nil, fmt.Errorf("dial pinned host %s:%s: %w", host, port, lastErr)
+}
+
+func isDisallowedIP(ip net.IP) bool {_cover_atomic_.StoreUint32(&goCover_1e518ee273d5__6[0], 5) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__6[1], goCover_1e518ee273d5_P) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__6[2], 6) ; _cover_atomic_.AddUint32(&goCover_1e518ee273d5__6[3], 1);
+	if ip == nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__6[6], 1);
+		return true
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__6[4], 1);if ip.IsLoopback() || ip.IsPrivate() || ip.IsMulticast() || ip.IsUnspecified() ||
+		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__6[7], 1);
+		return true
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__6[5], 1);return cgnatNet.Contains(ip) || benchmarkNet.Contains(ip)
+}
+
+func mustCIDR(raw string) *net.IPNet {_cover_atomic_.StoreUint32(&goCover_1e518ee273d5__7[0], 3) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__7[1], goCover_1e518ee273d5_P) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__7[2], 7) ; _cover_atomic_.AddUint32(&goCover_1e518ee273d5__7[3], 1);
+	_, n, err := net.ParseCIDR(raw)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__7[5], 1);
+		panic(err)
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__7[4], 1);return n
+}
+
+func cloneIP(ip net.IP) net.IP {_cover_atomic_.StoreUint32(&goCover_1e518ee273d5__8[0], 3) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__8[1], goCover_1e518ee273d5_P) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__8[2], 8) ; _cover_atomic_.AddUint32(&goCover_1e518ee273d5__8[3], 1);
+	if ip == nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__8[5], 1);
+		return nil
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__8[4], 1);cp := make(net.IP, len(ip))
+	copy(cp, ip)
+	return cp
+}
+
+func normalizeHost(host string) string {_cover_atomic_.StoreUint32(&goCover_1e518ee273d5__9[0], 1) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__9[1], goCover_1e518ee273d5_P) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__9[2], 9) ; _cover_atomic_.AddUint32(&goCover_1e518ee273d5__9[3], 1);
+	host = strings.TrimSpace(strings.ToLower(host))
+	host = strings.Trim(host, "[]")
+	return host
+}
+
+func cloneIPs(ips []net.IP) []net.IP {_cover_atomic_.StoreUint32(&goCover_1e518ee273d5__10[0], 3) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__10[1], goCover_1e518ee273d5_P) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__10[2], 10) ; _cover_atomic_.AddUint32(&goCover_1e518ee273d5__10[3], 1);
+	out := make([]net.IP, len(ips))
+	for i, ip := range ips {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__10[5], 1);
+		out[i] = cloneIP(ip)
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__10[4], 1);return out
+}
+
+func withPinnedHost(ctx context.Context, host string, ips []net.IP) context.Context {_cover_atomic_.StoreUint32(&goCover_1e518ee273d5__11[0], 5) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__11[1], goCover_1e518ee273d5_P) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__11[2], 11) ; _cover_atomic_.AddUint32(&goCover_1e518ee273d5__11[3], 1);
+	host = normalizeHost(host)
+	if host == "" || len(ips) == 0 {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__11[6], 1);
+		return ctx
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__11[4], 1);existing, _ := ctx.Value(pinnedHostsContextKey{}).(pinnedHosts)
+	book := make(pinnedHosts, len(existing)+1)
+	for k, v := range existing {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__11[7], 1);
+		book[k] = cloneIPs(v)
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__11[5], 1);book[host] = cloneIPs(ips)
+	return context.WithValue(ctx, pinnedHostsContextKey{}, book)
+}
+
+func pinnedHostIPsFromContext(ctx context.Context, host string) []net.IP {_cover_atomic_.StoreUint32(&goCover_1e518ee273d5__12[0], 5) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__12[1], goCover_1e518ee273d5_P) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__12[2], 12) ; _cover_atomic_.AddUint32(&goCover_1e518ee273d5__12[3], 1);
+	host = normalizeHost(host)
+	if host == "" || ctx == nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__12[6], 1);
+		return nil
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__12[4], 1);book, _ := ctx.Value(pinnedHostsContextKey{}).(pinnedHosts)
+	if book == nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__12[7], 1);
+		return nil
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__12[5], 1);return cloneIPs(book[host])
+}
+
+func (f *Fetcher) extractDomain(rawURL string) string {_cover_atomic_.StoreUint32(&goCover_1e518ee273d5__13[0], 3) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__13[1], goCover_1e518ee273d5_P) ; _cover_atomic_.StoreUint32(&goCover_1e518ee273d5__13[2], 13) ; _cover_atomic_.AddUint32(&goCover_1e518ee273d5__13[3], 1);
+	u, err := url.Parse(rawURL)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_1e518ee273d5__13[5], 1);
+		return rawURL
+	}
+	_cover_atomic_.AddUint32(&goCover_1e518ee273d5__13[4], 1);return u.Hostname()
+}
+
+var _ = _cover_atomic_.LoadUint32

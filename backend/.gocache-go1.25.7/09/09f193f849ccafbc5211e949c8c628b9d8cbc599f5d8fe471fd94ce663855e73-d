@@ -1,0 +1,4 @@
+./client.go
+./index.go
+./schema.go
+./source.go

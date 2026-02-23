@@ -1,0 +1,88 @@
+//line /Users/sqwdvrt/VS Code/siteParserForFreelans/backend/internal/adapter/redis/security.go:1:1
+package redis; import _cover_atomic_ "sync/atomic"
+
+import (
+	"context"
+	"time"
+
+	goredis "github.com/redis/go-redis/v9"
+)
+
+const defaultNoncePrefix = "api:nonce"
+const defaultRateLimitPrefix = "api:ratelimit"
+
+var rateLimitScript = goredis.NewScript(`
+local key = KEYS[1]
+local limit = tonumber(ARGV[1])
+local ttl_ms = tonumber(ARGV[2])
+local current = redis.call("INCR", key)
+if current == 1 then
+  redis.call("PEXPIRE", key, ttl_ms)
+end
+if current > limit then
+  return 0
+end
+return 1
+`)
+
+// NonceStore хранит одноразовые nonce в Redis (SET NX + TTL).
+type NonceStore struct {
+	client *goredis.Client
+	prefix string
+}
+
+// NewNonceStore создаёт Redis NonceStore.
+func NewNonceStore(client *goredis.Client, prefix string) *NonceStore {_cover_atomic_.StoreUint32(&goCover_1ce51927aba3__11[0], 3) ; _cover_atomic_.StoreUint32(&goCover_1ce51927aba3__11[1], goCover_1ce51927aba3_P) ; _cover_atomic_.StoreUint32(&goCover_1ce51927aba3__11[2], 11) ; _cover_atomic_.AddUint32(&goCover_1ce51927aba3__11[3], 1);
+	if prefix == "" {_cover_atomic_.AddUint32(&goCover_1ce51927aba3__11[5], 1);
+		prefix = defaultNoncePrefix
+	}
+	_cover_atomic_.AddUint32(&goCover_1ce51927aba3__11[4], 1);return &NonceStore{
+		client: client,
+		prefix: prefix,
+	}
+}
+
+// Use резервирует nonce-ключ на ttl. Возвращает false при повторном использовании.
+func (s *NonceStore) Use(ctx context.Context, key string, ttl time.Duration) (bool, error) {_cover_atomic_.StoreUint32(&goCover_1ce51927aba3__12[0], 3) ; _cover_atomic_.StoreUint32(&goCover_1ce51927aba3__12[1], goCover_1ce51927aba3_P) ; _cover_atomic_.StoreUint32(&goCover_1ce51927aba3__12[2], 12) ; _cover_atomic_.AddUint32(&goCover_1ce51927aba3__12[3], 1);
+	if ttl <= 0 {_cover_atomic_.AddUint32(&goCover_1ce51927aba3__12[5], 1);
+		ttl = 10 * time.Minute
+	}
+	_cover_atomic_.AddUint32(&goCover_1ce51927aba3__12[4], 1);return s.client.SetNX(ctx, s.prefix+":"+key, "1", ttl).Result()
+}
+
+// RateLimiter реализует fixed-window rate limit через Redis.
+type RateLimiter struct {
+	client *goredis.Client
+	prefix string
+}
+
+// NewRateLimiter создаёт Redis RateLimiter.
+func NewRateLimiter(client *goredis.Client, prefix string) *RateLimiter {_cover_atomic_.StoreUint32(&goCover_1ce51927aba3__13[0], 3) ; _cover_atomic_.StoreUint32(&goCover_1ce51927aba3__13[1], goCover_1ce51927aba3_P) ; _cover_atomic_.StoreUint32(&goCover_1ce51927aba3__13[2], 13) ; _cover_atomic_.AddUint32(&goCover_1ce51927aba3__13[3], 1);
+	if prefix == "" {_cover_atomic_.AddUint32(&goCover_1ce51927aba3__13[5], 1);
+		prefix = defaultRateLimitPrefix
+	}
+	_cover_atomic_.AddUint32(&goCover_1ce51927aba3__13[4], 1);return &RateLimiter{
+		client: client,
+		prefix: prefix,
+	}
+}
+
+// Allow проверяет лимит для ключа в окне window.
+func (r *RateLimiter) Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error) {_cover_atomic_.StoreUint32(&goCover_1ce51927aba3__14[0], 5) ; _cover_atomic_.StoreUint32(&goCover_1ce51927aba3__14[1], goCover_1ce51927aba3_P) ; _cover_atomic_.StoreUint32(&goCover_1ce51927aba3__14[2], 14) ; _cover_atomic_.AddUint32(&goCover_1ce51927aba3__14[3], 1);
+	if limit <= 0 || window <= 0 {_cover_atomic_.AddUint32(&goCover_1ce51927aba3__14[6], 1);
+		return true, nil
+	}
+	_cover_atomic_.AddUint32(&goCover_1ce51927aba3__14[4], 1);res, err := rateLimitScript.Run(
+		ctx,
+		r.client,
+		[]string{r.prefix + ":" + key},
+		limit,
+		window.Milliseconds(),
+	).Int()
+	if err != nil {_cover_atomic_.AddUint32(&goCover_1ce51927aba3__14[7], 1);
+		return false, err
+	}
+	_cover_atomic_.AddUint32(&goCover_1ce51927aba3__14[5], 1);return res == 1, nil
+}
+
+var _ = _cover_atomic_.LoadUint32

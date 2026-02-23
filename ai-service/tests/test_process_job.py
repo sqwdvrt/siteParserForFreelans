@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from ai_service.adapter.rule_based import RuleBasedClassifier
 from ai_service.domain.job import Job
 from ai_service.port.match_repository import MatchCandidate
@@ -97,9 +95,41 @@ def test_execute_enqueues_candidates_to_match_notify() -> None:
         repo, emb, match_repo=match_repo, match_notify_queue=match_notify_queue
     )
     assert uc.execute(1) is True
-    assert match_notify_queue.enqueue.call_count == 2
-    calls = match_notify_queue.enqueue.call_args_list
-    assert calls[0][0][0].user_id == 10
-    assert calls[0][0][0].match_score == 0.85
-    assert calls[1][0][0].user_id == 20
-    assert calls[1][0][0].match_score == 0.72
+    match_notify_queue.enqueue_many.assert_called_once()
+    calls = match_notify_queue.enqueue_many.call_args_list
+    sent = calls[0][0][0]
+    assert len(sent) == 2
+    assert sent[0].user_id == 10
+    assert sent[0].match_score == 0.85
+    assert sent[1].user_id == 20
+    assert sent[1].match_score == 0.72
+
+
+def test_execute_fallbacks_to_enqueue_when_batch_method_absent() -> None:
+    job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
+    repo = MagicMock()
+    repo.get.return_value = job
+    repo.has_embedding.return_value = False
+    emb = MagicMock()
+    emb.encode.return_value = [0.1] * 384
+    emb.model_name = "test"
+    match_repo = MagicMock()
+    candidates = [
+        MatchCandidate(user_id=10, job_id=1, match_score=0.85),
+        MatchCandidate(user_id=20, job_id=1, match_score=0.72),
+    ]
+    match_repo.find_users_for_job.return_value = candidates
+
+    class _EnqueueOnlyQueue:
+        def __init__(self) -> None:
+            self.items: list[MatchCandidate] = []
+
+        def enqueue(self, candidate: MatchCandidate) -> None:
+            self.items.append(candidate)
+
+    queue = _EnqueueOnlyQueue()
+    uc = ProcessJobUseCase(repo, emb, match_repo=match_repo, match_notify_queue=queue)
+    assert uc.execute(1) is True
+    assert len(queue.items) == 2
+    assert queue.items[0].user_id == 10
+    assert queue.items[1].user_id == 20

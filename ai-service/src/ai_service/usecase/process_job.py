@@ -71,8 +71,12 @@ class ProcessJobUseCase:
                 embedding, job_id, self._threshold, self._limit
             )
             logger.info("job_id=%s: %d match candidates", job_id, len(candidates))
-            if self._match_notify_queue is not None:
-                for c in candidates:
-                    self._match_notify_queue.enqueue(c)
+            if self._match_notify_queue is not None and candidates:
+                enqueue_many = getattr(self._match_notify_queue, "enqueue_many", None)
+                if callable(enqueue_many):
+                    enqueue_many(candidates)
+                else:
+                    for c in candidates:
+                        self._match_notify_queue.enqueue(c)
 
         return True

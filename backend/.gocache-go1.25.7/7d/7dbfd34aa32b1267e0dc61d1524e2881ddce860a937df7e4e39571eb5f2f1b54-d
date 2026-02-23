@@ -1,0 +1,3 @@
+./govulncheck.go
+./handler.go
+./jsonhandler.go

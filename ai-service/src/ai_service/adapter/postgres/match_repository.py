@@ -39,8 +39,11 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
                     FROM users u
                     WHERE u.embedding IS NOT NULL
                       AND 1 - (u.embedding <=> %s) >= %s
-                      AND u.id NOT IN (
-                          SELECT user_id FROM notifications WHERE job_id = %s
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM notifications n
+                          WHERE n.job_id = %s
+                            AND n.user_id = u.id
                       )
                     ORDER BY similarity DESC
                     LIMIT %s

@@ -1,0 +1,119 @@
+//line /Users/sqwdvrt/VS Code/siteParserForFreelans/backend/internal/usecase/send_notification.go:1:1
+package usecase; import _cover_atomic_ "sync/atomic"
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"time"
+
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
+)
+
+const (
+	defaultRateLimit = 5 * time.Minute
+	defaultMaxPerDay = 5
+)
+
+// SendNotification проверяет rate limit, лимит в день и дедупликацию, записывает в notifications, отправляет.
+type SendNotification struct {
+	notifRepo port.NotificationRepository
+	userRepo  port.UserRepository
+	jobRepo   port.JobRepository
+	notifier  port.Notifier
+	rateLimit time.Duration
+	maxPerDay int
+}
+
+// NewSendNotification создаёт usecase.
+func NewSendNotification(
+	notifRepo port.NotificationRepository,
+	userRepo port.UserRepository,
+	jobRepo port.JobRepository,
+	notifier port.Notifier,
+	rateLimit time.Duration,
+	maxPerDay int,
+) *SendNotification {_cover_atomic_.StoreUint32(&goCover_f49f11767515__2[0], 5) ; _cover_atomic_.StoreUint32(&goCover_f49f11767515__2[1], goCover_f49f11767515_P) ; _cover_atomic_.StoreUint32(&goCover_f49f11767515__2[2], 2) ; _cover_atomic_.AddUint32(&goCover_f49f11767515__2[3], 1);
+	if rateLimit <= 0 {_cover_atomic_.AddUint32(&goCover_f49f11767515__2[6], 1);
+		rateLimit = defaultRateLimit
+	}
+	_cover_atomic_.AddUint32(&goCover_f49f11767515__2[4], 1);if maxPerDay <= 0 {_cover_atomic_.AddUint32(&goCover_f49f11767515__2[7], 1);
+		maxPerDay = defaultMaxPerDay
+	}
+	_cover_atomic_.AddUint32(&goCover_f49f11767515__2[5], 1);return &SendNotification{
+		notifRepo: notifRepo,
+		userRepo:  userRepo,
+		jobRepo:   jobRepo,
+		notifier:  notifier,
+		rateLimit: rateLimit,
+		maxPerDay: maxPerDay,
+	}
+}
+
+// Execute обрабатывает кандидата: rate limit → запись в notifications → Send.
+// Пропускает при: rate limit, дубликат, отсутствие user/job.
+func (u *SendNotification) Execute(ctx context.Context, userID, jobID int64, matchScore float64) error {_cover_atomic_.StoreUint32(&goCover_f49f11767515__3[0], 25) ; _cover_atomic_.StoreUint32(&goCover_f49f11767515__3[1], goCover_f49f11767515_P) ; _cover_atomic_.StoreUint32(&goCover_f49f11767515__3[2], 3) ; _cover_atomic_.AddUint32(&goCover_f49f11767515__3[3], 1);
+	user, err := u.userRepo.GetByID(ctx, userID)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_f49f11767515__3[15], 1);
+		return fmt.Errorf("get user by id: %w", err)
+	}
+	_cover_atomic_.AddUint32(&goCover_f49f11767515__3[4], 1);if user == nil {_cover_atomic_.AddUint32(&goCover_f49f11767515__3[16], 1);
+		slog.Debug("send notification: user not found", "user_id", userID)
+		return nil
+	}
+
+	_cover_atomic_.AddUint32(&goCover_f49f11767515__3[5], 1);job, err := u.jobRepo.GetByID(ctx, jobID)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_f49f11767515__3[17], 1);
+		return fmt.Errorf("get job by id: %w", err)
+	}
+	_cover_atomic_.AddUint32(&goCover_f49f11767515__3[6], 1);if job == nil {_cover_atomic_.AddUint32(&goCover_f49f11767515__3[18], 1);
+		slog.Debug("send notification: job not found", "job_id", jobID)
+		return nil
+	}
+
+	_cover_atomic_.AddUint32(&goCover_f49f11767515__3[7], 1);recent, err := u.notifRepo.SentRecently(ctx, userID, u.rateLimit)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_f49f11767515__3[19], 1);
+		return err
+	}
+	_cover_atomic_.AddUint32(&goCover_f49f11767515__3[8], 1);if recent {_cover_atomic_.AddUint32(&goCover_f49f11767515__3[20], 1);
+		slog.Debug("send notification: rate limited", "user_id", userID)
+		return nil
+	}
+
+	_cover_atomic_.AddUint32(&goCover_f49f11767515__3[9], 1);count, err := u.notifRepo.CountToday(ctx, userID)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_f49f11767515__3[21], 1);
+		return err
+	}
+	_cover_atomic_.AddUint32(&goCover_f49f11767515__3[10], 1);if count >= u.maxPerDay {_cover_atomic_.AddUint32(&goCover_f49f11767515__3[22], 1);
+		slog.Debug("send notification: daily limit reached", "user_id", userID, "count", count)
+		return nil
+	}
+
+	_cover_atomic_.AddUint32(&goCover_f49f11767515__3[11], 1);inserted, err := u.notifRepo.Record(ctx, userID, jobID, matchScore)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_f49f11767515__3[23], 1);
+		return err
+	}
+	_cover_atomic_.AddUint32(&goCover_f49f11767515__3[12], 1);if !inserted {_cover_atomic_.AddUint32(&goCover_f49f11767515__3[24], 1);
+		slog.Debug("send notification: duplicate skipped", "user_id", userID, "job_id", jobID)
+		return nil
+	}
+
+	_cover_atomic_.AddUint32(&goCover_f49f11767515__3[13], 1);payload := port.NotifyPayload{
+		Job:       job,
+		Score:     matchScore,
+		WhyItFits: "", // заполняется при интеграции с ai_metadata
+	}
+	if err := u.notifier.Send(ctx, user.TelegramID, payload); err != nil {_cover_atomic_.AddUint32(&goCover_f49f11767515__3[25], 1);
+		slog.Error("send notification: telegram failed", "user_id", userID, "err", err)
+		if rollbackErr := u.notifRepo.Delete(ctx, userID, jobID); rollbackErr != nil {_cover_atomic_.AddUint32(&goCover_f49f11767515__3[27], 1);
+			slog.Error("send notification: rollback failed", "user_id", userID, "job_id", jobID, "err", rollbackErr)
+			return errors.Join(err, fmt.Errorf("rollback notification record: %w", rollbackErr))
+		}
+		_cover_atomic_.AddUint32(&goCover_f49f11767515__3[26], 1);return err
+	}
+	_cover_atomic_.AddUint32(&goCover_f49f11767515__3[14], 1);slog.Info("notification sent", "user_id", userID, "job_id", jobID)
+	return nil
+}
+
+var _ = _cover_atomic_.LoadUint32

@@ -21,8 +21,18 @@ jobs:
 
       - name: Run backend unit tests
         run: |
+          set -euo pipefail
+          started_at=$(date +%s)
           cd backend
           GOMODCACHE=$(pwd)/.gomodcache GOCACHE=$(pwd)/.gocache go test ./... -count=1
+          finished_at=$(date +%s)
+          echo $((finished_at - started_at)) > ../backend-unit-seconds.txt
+
+      - name: Upload backend unit timing
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-unit-timing
+          path: backend-unit-seconds.txt
 
   ai-unit:
     runs-on: ubuntu-latest
@@ -41,7 +51,18 @@ jobs:
         run: python -m pip install -r ai-service/requirements.txt
 
       - name: Run AI unit tests
-        run: ./scripts/pytest_ai.sh -q
+        run: |
+          set -euo pipefail
+          started_at=$(date +%s)
+          ./scripts/pytest_ai.sh -q
+          finished_at=$(date +%s)
+          echo $((finished_at - started_at)) > ai-unit-seconds.txt
+
+      - name: Upload AI unit timing
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-unit-timing
+          path: ai-unit-seconds.txt
 
   telegram-bot-unit:
     runs-on: ubuntu-latest
@@ -63,13 +84,88 @@ jobs:
         run: python -m pip install "python-dotenv>=1.0" "pytest>=7.0"
 
       - name: Run Telegram bot unit tests
-        run: python -m pytest -q
+        run: |
+          set -euo pipefail
+          started_at=$(date +%s)
+          python -m pytest -q
+          finished_at=$(date +%s)
+          echo $((finished_at - started_at)) > ../telegram-bot-unit-seconds.txt
+
+      - name: Upload Telegram bot unit timing
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-bot-unit-timing
+          path: telegram-bot-unit-seconds.txt
+
+  performance-gate:
+    runs-on: ubuntu-latest
+    needs:
+      - backend-unit
+      - ai-unit
+      - telegram-bot-unit
+    env:
+      BACKEND_UNIT_MAX_SECONDS: "180"
+      AI_UNIT_MAX_SECONDS: "240"
+      TELEGRAM_BOT_UNIT_MAX_SECONDS: "90"
+    steps:
+      - name: Download backend unit timing
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-unit-timing
+          path: .artifacts/backend
+
+      - name: Download AI unit timing
+        uses: actions/download-artifact@v4
+        with:
+          name: ai-unit-timing
+          path: .artifacts/ai
+
+      - name: Download Telegram bot unit timing
+        uses: actions/download-artifact@v4
+        with:
+          name: telegram-bot-unit-timing
+          path: .artifacts/telegram
+
+      - name: Enforce performance budgets
+        run: |
+          set -euo pipefail
+
+          backend_seconds="$(cat .artifacts/backend/backend-unit-seconds.txt)"
+          ai_seconds="$(cat .artifacts/ai/ai-unit-seconds.txt)"
+          telegram_seconds="$(cat .artifacts/telegram/telegram-bot-unit-seconds.txt)"
+
+          for value in "$backend_seconds" "$ai_seconds" "$telegram_seconds"; do
+            if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+              echo "ERROR: invalid timing value: '$value'"
+              exit 1
+            fi
+          done
+
+          echo "backend-unit: ${backend_seconds}s (limit ${BACKEND_UNIT_MAX_SECONDS}s)"
+          echo "ai-unit: ${ai_seconds}s (limit ${AI_UNIT_MAX_SECONDS}s)"
+          echo "telegram-bot-unit: ${telegram_seconds}s (limit ${TELEGRAM_BOT_UNIT_MAX_SECONDS}s)"
+
+          if (( backend_seconds > BACKEND_UNIT_MAX_SECONDS )); then
+            echo "ERROR: backend-unit exceeded performance budget"
+            exit 1
+          fi
+          if (( ai_seconds > AI_UNIT_MAX_SECONDS )); then
+            echo "ERROR: ai-unit exceeded performance budget"
+            exit 1
+          fi
+          if (( telegram_seconds > TELEGRAM_BOT_UNIT_MAX_SECONDS )); then
+            echo "ERROR: telegram-bot-unit exceeded performance budget"
+            exit 1
+          fi
+
+          echo "Performance gate PASSED"
 
   coverage-gate:
     runs-on: ubuntu-latest
     env:
       BACKEND_INTERNAL_COVERAGE_MIN: "70"
       AI_SERVICE_COVERAGE_MIN: "70"
+      TELEGRAM_BOT_COVERAGE_MIN: "80"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -87,31 +183,12 @@ jobs:
           cache-dependency-path: ai-service/requirements.txt
 
       - name: Install AI dependencies
-        run: python -m pip install -r ai-service/requirements.txt
+        run: |
+          python -m pip install -r ai-service/requirements.txt
+          python -m pip install "pytest>=7.0" "pytest-cov>=4.0" "python-dotenv>=1.0"
 
       - name: Run coverage gate
         run: ./scripts/check_coverage.sh
-
-  security:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.25.7"
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-          cache: "pip"
-          cache-dependency-path: ai-service/requirements.txt
-
-      - name: Run security baseline checks
-        run: ./scripts/security_baseline_check.sh
 
   integration:
     runs-on: ubuntu-latest

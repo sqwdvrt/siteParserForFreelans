@@ -1,0 +1,155 @@
+//line /Users/sqwdvrt/VS Code/siteParserForFreelans/backend/internal/adapter/kwork/extractor.go:1:1
+package kwork; import _cover_atomic_ "sync/atomic"
+
+import (
+	"net/url"
+	"regexp"
+	"strings"
+	"time"
+
+	"github.com/PuerkitoBio/goquery"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
+)
+
+const baseURL = "https://kwork.ru"
+const baseHost = "kwork.ru"
+
+// Extractor парсит HTML страниц Kwork.
+type Extractor struct{}
+
+// NewExtractor создаёт экстрактор для Kwork.
+func NewExtractor() *Extractor {_cover_atomic_.StoreUint32(&goCover_682450adafa0__0[0], 1) ; _cover_atomic_.StoreUint32(&goCover_682450adafa0__0[1], goCover_682450adafa0_P) ; _cover_atomic_.StoreUint32(&goCover_682450adafa0__0[2], 0) ; _cover_atomic_.AddUint32(&goCover_682450adafa0__0[3], 1);
+	return &Extractor{}
+}
+
+// ExtractList извлекает URL проектов из HTML списка.
+// Возвращает пустой слайс при пустом или битом HTML, не паникует.
+func (e *Extractor) ExtractList(html []byte) ([]string, error) {_cover_atomic_.StoreUint32(&goCover_682450adafa0__1[0], 13) ; _cover_atomic_.StoreUint32(&goCover_682450adafa0__1[1], goCover_682450adafa0_P) ; _cover_atomic_.StoreUint32(&goCover_682450adafa0__1[2], 1) ; _cover_atomic_.AddUint32(&goCover_682450adafa0__1[3], 1);
+	if len(html) == 0 {_cover_atomic_.AddUint32(&goCover_682450adafa0__1[7], 1);
+		return nil, nil
+	}
+	_cover_atomic_.AddUint32(&goCover_682450adafa0__1[4], 1);doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(html)))
+	if err != nil {_cover_atomic_.AddUint32(&goCover_682450adafa0__1[8], 1);
+		return nil, nil
+	}
+	_cover_atomic_.AddUint32(&goCover_682450adafa0__1[5], 1);var urls []string
+	seen := make(map[string]bool)
+	doc.Find("a[href*=\"/projects/\"]").Each(func(_ int, s *goquery.Selection) {_cover_atomic_.AddUint32(&goCover_682450adafa0__1[9], 1);
+		href, ok := s.Attr("href")
+		if !ok || href == "" {_cover_atomic_.AddUint32(&goCover_682450adafa0__1[13], 1);
+			return
+		}
+		_cover_atomic_.AddUint32(&goCover_682450adafa0__1[10], 1);abs, err := resolveURL(href)
+		if err != nil {_cover_atomic_.AddUint32(&goCover_682450adafa0__1[14], 1);
+			return
+		}
+		_cover_atomic_.AddUint32(&goCover_682450adafa0__1[11], 1);if seen[abs] {_cover_atomic_.AddUint32(&goCover_682450adafa0__1[15], 1);
+			return
+		}
+		_cover_atomic_.AddUint32(&goCover_682450adafa0__1[12], 1);seen[abs] = true
+		urls = append(urls, abs)
+	})
+	_cover_atomic_.AddUint32(&goCover_682450adafa0__1[6], 1);return urls, nil
+}
+
+// ExtractDetail извлекает Job из HTML страницы проекта.
+// Возвращает nil при пустом или битом HTML, не паникует.
+func (e *Extractor) ExtractDetail(html []byte, pageURL string) (*domain.Job, error) {_cover_atomic_.StoreUint32(&goCover_682450adafa0__2[0], 17) ; _cover_atomic_.StoreUint32(&goCover_682450adafa0__2[1], goCover_682450adafa0_P) ; _cover_atomic_.StoreUint32(&goCover_682450adafa0__2[2], 2) ; _cover_atomic_.AddUint32(&goCover_682450adafa0__2[3], 1);
+	if len(html) == 0 {_cover_atomic_.AddUint32(&goCover_682450adafa0__2[10], 1);
+		return nil, nil
+	}
+	_cover_atomic_.AddUint32(&goCover_682450adafa0__2[4], 1);doc, err := goquery.NewDocumentFromReader(strings.NewReader(string(html)))
+	if err != nil {_cover_atomic_.AddUint32(&goCover_682450adafa0__2[11], 1);
+		return nil, nil
+	}
+	_cover_atomic_.AddUint32(&goCover_682450adafa0__2[5], 1);job := &domain.Job{
+		Source:     "kwork",
+		URL:        pageURL,
+		ExternalID: extractExternalID(pageURL),
+		RawHTML:    string(html),
+		CreatedAt:  time.Now(),
+	}
+	if title := strings.TrimSpace(doc.Find(".project-title").First().Text()); title != "" {_cover_atomic_.AddUint32(&goCover_682450adafa0__2[12], 1);
+		job.Title = title
+	} else{ _cover_atomic_.AddUint32(&goCover_682450adafa0__2[13], 1);{
+		job.Title = "(без названия)"
+	}}
+	_cover_atomic_.AddUint32(&goCover_682450adafa0__2[6], 1);job.Description = strings.TrimSpace(doc.Find(".project-description").First().Text())
+	if budget := strings.TrimSpace(doc.Find(".project-budget").First().Text()); budget != "" {_cover_atomic_.AddUint32(&goCover_682450adafa0__2[14], 1);
+		job.Budget = strings.TrimPrefix(budget, "Бюджет: ")
+	}
+	_cover_atomic_.AddUint32(&goCover_682450adafa0__2[7], 1);skillsText := strings.TrimSpace(doc.Find(".project-skills").First().Text())
+	if skillsText != "" {_cover_atomic_.AddUint32(&goCover_682450adafa0__2[15], 1);
+		for _, s := range strings.Split(skillsText, ",") {_cover_atomic_.AddUint32(&goCover_682450adafa0__2[16], 1);
+			if t := strings.TrimSpace(s); t != "" {_cover_atomic_.AddUint32(&goCover_682450adafa0__2[17], 1);
+				job.Skills = append(job.Skills, t)
+			}
+		}
+	}
+	_cover_atomic_.AddUint32(&goCover_682450adafa0__2[8], 1);if dateText := strings.TrimSpace(doc.Find(".project-date").First().Text()); dateText != "" {_cover_atomic_.AddUint32(&goCover_682450adafa0__2[18], 1);
+		if t := parsePostedAt(dateText); t != nil {_cover_atomic_.AddUint32(&goCover_682450adafa0__2[19], 1);
+			job.PostedAt = t
+		}
+	}
+	_cover_atomic_.AddUint32(&goCover_682450adafa0__2[9], 1);return job, nil
+}
+
+func resolveURL(href string) (string, error) {_cover_atomic_.StoreUint32(&goCover_682450adafa0__3[0], 13) ; _cover_atomic_.StoreUint32(&goCover_682450adafa0__3[1], goCover_682450adafa0_P) ; _cover_atomic_.StoreUint32(&goCover_682450adafa0__3[2], 3) ; _cover_atomic_.AddUint32(&goCover_682450adafa0__3[3], 1);
+	if strings.HasPrefix(href, "http://") || strings.HasPrefix(href, "https://") {_cover_atomic_.AddUint32(&goCover_682450adafa0__3[8], 1);
+		u, err := url.Parse(href)
+		if err != nil {_cover_atomic_.AddUint32(&goCover_682450adafa0__3[11], 1);
+			return "", err
+		}
+		_cover_atomic_.AddUint32(&goCover_682450adafa0__3[9], 1);if !isAllowedHost(u.Hostname()) {_cover_atomic_.AddUint32(&goCover_682450adafa0__3[12], 1);
+			return "", url.InvalidHostError(u.Hostname())
+		}
+		_cover_atomic_.AddUint32(&goCover_682450adafa0__3[10], 1);return u.String(), nil
+	}
+	_cover_atomic_.AddUint32(&goCover_682450adafa0__3[4], 1);base, err := url.Parse(baseURL)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_682450adafa0__3[13], 1);
+		return "", err
+	}
+	_cover_atomic_.AddUint32(&goCover_682450adafa0__3[5], 1);ref, err := url.Parse(href)
+	if err != nil {_cover_atomic_.AddUint32(&goCover_682450adafa0__3[14], 1);
+		return "", err
+	}
+	_cover_atomic_.AddUint32(&goCover_682450adafa0__3[6], 1);resolved := base.ResolveReference(ref)
+	if !isAllowedHost(resolved.Hostname()) {_cover_atomic_.AddUint32(&goCover_682450adafa0__3[15], 1);
+		return "", url.InvalidHostError(resolved.Hostname())
+	}
+	_cover_atomic_.AddUint32(&goCover_682450adafa0__3[7], 1);return resolved.String(), nil
+}
+
+func isAllowedHost(host string) bool {_cover_atomic_.StoreUint32(&goCover_682450adafa0__4[0], 1) ; _cover_atomic_.StoreUint32(&goCover_682450adafa0__4[1], goCover_682450adafa0_P) ; _cover_atomic_.StoreUint32(&goCover_682450adafa0__4[2], 4) ; _cover_atomic_.AddUint32(&goCover_682450adafa0__4[3], 1);
+	host = strings.ToLower(strings.TrimSuffix(strings.TrimSpace(host), "."))
+	return host == baseHost || strings.HasSuffix(host, "."+baseHost)
+}
+
+var externalIDRe = regexp.MustCompile(`/projects/(\d+)/`)
+
+func extractExternalID(u string) string {_cover_atomic_.StoreUint32(&goCover_682450adafa0__5[0], 3) ; _cover_atomic_.StoreUint32(&goCover_682450adafa0__5[1], goCover_682450adafa0_P) ; _cover_atomic_.StoreUint32(&goCover_682450adafa0__5[2], 5) ; _cover_atomic_.AddUint32(&goCover_682450adafa0__5[3], 1);
+	m := externalIDRe.FindStringSubmatch(u)
+	if len(m) > 1 {_cover_atomic_.AddUint32(&goCover_682450adafa0__5[5], 1);
+		return m[1]
+	}
+	_cover_atomic_.AddUint32(&goCover_682450adafa0__5[4], 1);return ""
+}
+
+var dateLayouts = []string{
+	"02.01.2006",
+	"2.1.2006",
+}
+
+func parsePostedAt(s string) *time.Time {_cover_atomic_.StoreUint32(&goCover_682450adafa0__6[0], 4) ; _cover_atomic_.StoreUint32(&goCover_682450adafa0__6[1], goCover_682450adafa0_P) ; _cover_atomic_.StoreUint32(&goCover_682450adafa0__6[2], 6) ; _cover_atomic_.AddUint32(&goCover_682450adafa0__6[3], 1);
+	s = strings.TrimPrefix(s, "Опубликовано:")
+	s = strings.TrimSpace(s)
+	for _, layout := range dateLayouts {_cover_atomic_.AddUint32(&goCover_682450adafa0__6[5], 1);
+		t, err := time.Parse(layout, s)
+		if err == nil {_cover_atomic_.AddUint32(&goCover_682450adafa0__6[6], 1);
+			return &t
+		}
+	}
+	_cover_atomic_.AddUint32(&goCover_682450adafa0__6[4], 1);return nil
+}
+
+var _ = _cover_atomic_.LoadUint32
