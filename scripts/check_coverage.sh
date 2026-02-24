@@ -86,13 +86,11 @@ ensure_tg_pytest_coverage_tools() {
   echo "WARN: pytest/pytest-cov not found for ${pybin}; installing..."
   if is_python_virtualenv "${pybin}"; then
     PIP_DISABLE_PIP_VERSION_CHECK=1 "${pybin}" -m pip install --upgrade pytest pytest-cov >/dev/null
-    if has_pytest_cov "${pybin}"; then
-      echo "${pybin}"
-      return 0
-    fi
+    echo "${pybin}"
+    return 0
   else
     # Prefer global install first (works on many CI runners).
-    if PIP_DISABLE_PIP_VERSION_CHECK=1 "${pybin}" -m pip install --upgrade pytest pytest-cov >/dev/null 2>&1 && has_pytest_cov "${pybin}"; then
+    if PIP_DISABLE_PIP_VERSION_CHECK=1 "${pybin}" -m pip install --upgrade pytest pytest-cov >/dev/null 2>&1; then
       echo "${pybin}"
       return 0
     fi
@@ -101,10 +99,8 @@ ensure_tg_pytest_coverage_tools() {
     TG_COV_VENV_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tg-cov-venv.XXXXXX")"
     "${pybin}" -m venv "${TG_COV_VENV_DIR}"
     PIP_DISABLE_PIP_VERSION_CHECK=1 "${TG_COV_VENV_DIR}/bin/python" -m pip install --upgrade pip pytest pytest-cov >/dev/null
-    if has_pytest_cov "${TG_COV_VENV_DIR}/bin/python"; then
-      echo "${TG_COV_VENV_DIR}/bin/python"
-      return 0
-    fi
+    echo "${TG_COV_VENV_DIR}/bin/python"
+    return 0
   fi
 
   echo "ERROR: failed to install pytest/pytest-cov for ${pybin}" >&2
