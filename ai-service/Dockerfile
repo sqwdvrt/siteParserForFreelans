@@ -11,7 +11,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /build
 
 RUN python -m venv "${VENV_PATH}" && \
-    "${VENV_PATH}/bin/pip" install --upgrade pip
+    "${VENV_PATH}/bin/pip" install --upgrade pip "setuptools>=80.9.0" "wheel>=0.46.2"
 
 COPY requirements.txt .
 RUN awk 'BEGIN{dev=0} /^# Dev/{dev=1} dev==0 {print}' requirements.txt > requirements.runtime.txt
@@ -54,7 +54,9 @@ COPY --from=builder /opt/models /opt/models
 COPY src ./src
 COPY cmd ./cmd
 
-RUN groupadd --system app && useradd --system --gid app --create-home --home-dir /home/app --shell /usr/sbin/nologin app && \
+RUN /usr/local/bin/python -m pip install --upgrade "setuptools>=80.9.0" "wheel>=0.46.2" && \
+    "${VENV_PATH}/bin/pip" install --upgrade "setuptools>=80.9.0" "wheel>=0.46.2" && \
+    groupadd --system app && useradd --system --gid app --create-home --home-dir /home/app --shell /usr/sbin/nologin app && \
     mkdir -p /tmp/hf /tmp/transformers /tmp/torch /tmp/.cache && \
     chown -R app:app /app /home/app /tmp /opt/models
 

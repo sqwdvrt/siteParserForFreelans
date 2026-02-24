@@ -22,22 +22,41 @@ jobs:
           fetch-depth: 0
 
       - name: Run gitleaks
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          args: detect --source . --no-banner --redact --report-format sarif --report-path gitleaks.sarif
+        id: gitleaks
+        run: |
+          set +e
+          config_arg=""
+          if [ -f /repo/.gitleaks.toml ]; then
+            config_arg="--config /repo/.gitleaks.toml"
+          fi
+          docker run --rm -v "${PWD}:/repo" zricethezav/gitleaks:latest \
+            detect --source /repo ${config_arg} --no-banner --redact \
+            --report-format sarif --report-path /repo/gitleaks.sarif
+          exit_code=$?
+          if [ ! -f gitleaks.sarif ]; then
+            printf '%s\n' '{"version":"2.1.0","runs":[]}' > gitleaks.sarif
+          fi
+          echo "exit_code=${exit_code}" >> "${GITHUB_OUTPUT}"
+          exit 0
 
       - name: Upload gitleaks SARIF
+        if: always()
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: gitleaks.sarif
 
       - name: Upload gitleaks report artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: gitleaks-report
           path: gitleaks.sarif
+
+      - name: Fail on gitleaks findings
+        if: steps.gitleaks.outputs.exit_code != '0'
+        run: |
+          echo "ERROR: gitleaks detected potential secrets"
+          exit 1
 
   image-scan-sbom-sign:
     runs-on: ubuntu-latest
