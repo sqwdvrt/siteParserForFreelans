@@ -2,6 +2,7 @@
 .env.production
 *.log
 backend/bin/
+backend/api
 backend/.gocache/
 backend/.gomodcache/
 backend/.gocache-*/
