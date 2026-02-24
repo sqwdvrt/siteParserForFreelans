@@ -174,15 +174,26 @@ jobs:
             cd "${{ secrets.STAGING_DEPLOY_PATH }}"
             git fetch --all --prune
             git checkout --detach "${{ needs.resolve-target.outputs.deploy_sha }}"
+            git clean -ffdx -e .env.production
             docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
             docker compose --env-file .env.production -f docker-compose.prod.yml ps
 
       - name: Staging health check
-        if: ${{ env.STAGING_HEALTHCHECK_URL != '' }}
         env:
           STAGING_HEALTHCHECK_URL: ${{ secrets.STAGING_HEALTHCHECK_URL }}
         run: |
           set -euo pipefail
+          if [ -z "${STAGING_HEALTHCHECK_URL:-}" ]; then
+            echo "ERROR: missing required secret STAGING_HEALTHCHECK_URL"
+            exit 1
+          fi
+          case "${STAGING_HEALTHCHECK_URL}" in
+            http://*|https://*) ;;
+            *)
+              echo "ERROR: STAGING_HEALTHCHECK_URL must start with http:// or https://"
+              exit 1
+              ;;
+          esac
           curl --fail --show-error --silent --retry 10 --retry-delay 5 "${STAGING_HEALTHCHECK_URL}"
 
   staging-smoke-e2e-gate:
@@ -214,6 +225,7 @@ jobs:
             cd "${{ secrets.STAGING_DEPLOY_PATH }}"
             git fetch --all --prune
             git checkout --detach "${DEPLOY_SHA}"
+            git clean -ffdx -e .env.production
             set -a
             . ./.env.production
             set +a
@@ -250,13 +262,24 @@ jobs:
             cd "${{ secrets.PROD_DEPLOY_PATH }}"
             git fetch --all --prune
             git checkout --detach "${{ needs.resolve-target.outputs.deploy_sha }}"
+            git clean -ffdx -e .env.production
             docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
             docker compose --env-file .env.production -f docker-compose.prod.yml ps
 
       - name: Production health check
-        if: ${{ env.PROD_HEALTHCHECK_URL != '' }}
         env:
           PROD_HEALTHCHECK_URL: ${{ secrets.PROD_HEALTHCHECK_URL }}
         run: |
           set -euo pipefail
+          if [ -z "${PROD_HEALTHCHECK_URL:-}" ]; then
+            echo "ERROR: missing required secret PROD_HEALTHCHECK_URL"
+            exit 1
+          fi
+          case "${PROD_HEALTHCHECK_URL}" in
+            http://*|https://*) ;;
+            *)
+              echo "ERROR: PROD_HEALTHCHECK_URL must start with http:// or https://"
+              exit 1
+              ;;
+          esac
           curl --fail --show-error --silent --retry 10 --retry-delay 5 "${PROD_HEALTHCHECK_URL}"
