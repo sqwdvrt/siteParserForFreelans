@@ -85,7 +85,10 @@ ensure_tg_pytest_coverage_tools() {
   if is_python_virtualenv "${pybin}"; then
     PIP_DISABLE_PIP_VERSION_CHECK=1 "${pybin}" -m pip install --upgrade pytest pytest-cov >/dev/null
   else
-    PIP_DISABLE_PIP_VERSION_CHECK=1 "${pybin}" -m pip install --upgrade --user pytest pytest-cov >/dev/null
+    # Prefer standard install on CI-managed Python; fallback to --user for local interpreters.
+    if ! PIP_DISABLE_PIP_VERSION_CHECK=1 "${pybin}" -m pip install --upgrade pytest pytest-cov >/dev/null 2>&1; then
+      PIP_DISABLE_PIP_VERSION_CHECK=1 "${pybin}" -m pip install --upgrade --user pytest pytest-cov >/dev/null
+    fi
   fi
 
   if ! has_pytest_cov "${pybin}"; then
