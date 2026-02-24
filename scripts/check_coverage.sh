@@ -20,6 +20,7 @@ cleanup() {
   [[ -n "${GO_COVER_FILE:-}" && -f "${GO_COVER_FILE}" ]] && rm -f "${GO_COVER_FILE}"
   [[ -n "${AI_COVER_LOG:-}" && -f "${AI_COVER_LOG}" ]] && rm -f "${AI_COVER_LOG}"
   [[ -n "${TG_COVER_LOG:-}" && -f "${TG_COVER_LOG}" ]] && rm -f "${TG_COVER_LOG}"
+  [[ -n "${TG_COV_VENV_DIR:-}" && -d "${TG_COV_VENV_DIR}" ]] && rm -rf "${TG_COV_VENV_DIR}"
 }
 trap cleanup EXIT
 
@@ -73,6 +74,7 @@ has_pytest_cov() {
 ensure_tg_pytest_coverage_tools() {
   local pybin="$1"
   if has_pytest_cov "${pybin}"; then
+    echo "${pybin}"
     return 0
   fi
 
@@ -84,17 +86,29 @@ ensure_tg_pytest_coverage_tools() {
   echo "WARN: pytest/pytest-cov not found for ${pybin}; installing..."
   if is_python_virtualenv "${pybin}"; then
     PIP_DISABLE_PIP_VERSION_CHECK=1 "${pybin}" -m pip install --upgrade pytest pytest-cov >/dev/null
+    if has_pytest_cov "${pybin}"; then
+      echo "${pybin}"
+      return 0
+    fi
   else
-    # Prefer standard install on CI-managed Python; fallback to --user for local interpreters.
-    if ! PIP_DISABLE_PIP_VERSION_CHECK=1 "${pybin}" -m pip install --upgrade pytest pytest-cov >/dev/null 2>&1; then
-      PIP_DISABLE_PIP_VERSION_CHECK=1 "${pybin}" -m pip install --upgrade --user pytest pytest-cov >/dev/null
+    # Prefer global install first (works on many CI runners).
+    if PIP_DISABLE_PIP_VERSION_CHECK=1 "${pybin}" -m pip install --upgrade pytest pytest-cov >/dev/null 2>&1 && has_pytest_cov "${pybin}"; then
+      echo "${pybin}"
+      return 0
+    fi
+
+    # Fallback: isolate tools into a temporary venv to avoid externally-managed Python/user-site issues.
+    TG_COV_VENV_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tg-cov-venv.XXXXXX")"
+    "${pybin}" -m venv "${TG_COV_VENV_DIR}"
+    PIP_DISABLE_PIP_VERSION_CHECK=1 "${TG_COV_VENV_DIR}/bin/python" -m pip install --upgrade pip pytest pytest-cov >/dev/null
+    if has_pytest_cov "${TG_COV_VENV_DIR}/bin/python"; then
+      echo "${TG_COV_VENV_DIR}/bin/python"
+      return 0
     fi
   fi
 
-  if ! has_pytest_cov "${pybin}"; then
-    echo "ERROR: failed to install pytest/pytest-cov for ${pybin}" >&2
-    return 1
-  fi
+  echo "ERROR: failed to install pytest/pytest-cov for ${pybin}" >&2
+  return 1
 }
 
 ensure_go_covdata() {
@@ -189,7 +203,7 @@ echo "=== Python coverage: telegram-bot/main.py ==="
 cd "${ROOT_DIR}/telegram-bot"
 TG_COVER_LOG="$(mktemp)"
 TG_PYTHON_BIN="$(choose_python_cmd)"
-ensure_tg_pytest_coverage_tools "${TG_PYTHON_BIN}"
+TG_PYTHON_BIN="$(ensure_tg_pytest_coverage_tools "${TG_PYTHON_BIN}")"
 set +e
 "${TG_PYTHON_BIN}" -m pytest --cov=. --cov-report=term-missing -q | tee "${TG_COVER_LOG}"
 PYTEST_TG_STATUS=${PIPESTATUS[0]}
