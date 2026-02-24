@@ -21,6 +21,7 @@ cleanup() {
   [[ -n "${AI_COVER_LOG:-}" && -f "${AI_COVER_LOG}" ]] && rm -f "${AI_COVER_LOG}"
   [[ -n "${TG_COVER_LOG:-}" && -f "${TG_COVER_LOG}" ]] && rm -f "${TG_COVER_LOG}"
   [[ -n "${TG_COV_VENV_DIR:-}" && -d "${TG_COV_VENV_DIR}" ]] && rm -rf "${TG_COV_VENV_DIR}"
+  true
 }
 trap cleanup EXIT
 
