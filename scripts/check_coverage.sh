@@ -83,7 +83,7 @@ ensure_tg_pytest_coverage_tools() {
     return 1
   fi
 
-  echo "WARN: pytest/pytest-cov not found for ${pybin}; installing..."
+  echo "WARN: pytest/pytest-cov not found for ${pybin}; installing..." >&2
   if is_python_virtualenv "${pybin}"; then
     PIP_DISABLE_PIP_VERSION_CHECK=1 "${pybin}" -m pip install --upgrade pytest pytest-cov >/dev/null
     echo "${pybin}"
