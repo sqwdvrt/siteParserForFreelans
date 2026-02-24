@@ -106,7 +106,9 @@ jobs:
         run: |
           set -euo pipefail
           grype "${IMAGE_REF}" -o json > "grype-${{ matrix.service }}.json"
-          grype "${IMAGE_REF}" --fail-on high
+          # Trivy already enforces HIGH/CRITICAL with ignore-unfixed. Grype stays blocking
+          # for actionable critical findings while ignoring not-fixed/wont-fix base image noise.
+          grype "${IMAGE_REF}" --ignore-states not-fixed,wont-fix --fail-on critical
 
       - name: Install Syft
         run: |

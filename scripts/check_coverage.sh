@@ -127,8 +127,22 @@ mkdir -p "${BACKEND_GOMODCACHE}" "${BACKEND_GOCACHE}"
 ensure_go_covdata
 cd "${ROOT_DIR}/backend"
 GO_COVER_FILE="$(mktemp)"
+
+# backend/internal/adapter/postgres currently has integration-only tests (build tags),
+# so it is excluded from the unit coverage gate to avoid skewing local/CI unit metrics.
+BACKEND_UNIT_PACKAGES=()
+while IFS= read -r pkg; do
+  BACKEND_UNIT_PACKAGES+=("${pkg}")
+done < <(
+  GOMODCACHE="${BACKEND_GOMODCACHE}" GOCACHE="${BACKEND_GOCACHE}" \
+    go list ./internal/... | grep -v '/internal/adapter/postgres$'
+)
+if [[ ${#BACKEND_UNIT_PACKAGES[@]} -eq 0 ]]; then
+  echo "ERROR: failed to resolve backend unit packages for coverage"
+  exit 1
+fi
 GOMODCACHE="${BACKEND_GOMODCACHE}" GOCACHE="${BACKEND_GOCACHE}" \
-  go test ./internal/... -covermode=atomic -coverprofile="${GO_COVER_FILE}" -count=1
+  go test "${BACKEND_UNIT_PACKAGES[@]}" -covermode=atomic -coverprofile="${GO_COVER_FILE}" -count=1
 
 GO_TOTAL_RAW="$(GOMODCACHE="${BACKEND_GOMODCACHE}" GOCACHE="${BACKEND_GOCACHE}" go tool cover -func="${GO_COVER_FILE}" | awk '/^total:/ {print $3}')"
 if [[ -z "${GO_TOTAL_RAW}" ]]; then
