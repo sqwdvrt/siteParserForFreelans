@@ -243,17 +243,23 @@ jobs:
           python - <<'PY'
           import os
           import time
+          from pathlib import Path
           import psycopg2
 
           dsn = os.environ["DATABASE_URL"]
-          sql = open("backend/migrations/001_init.sql", "r", encoding="utf-8").read()
+          migration_paths = sorted(Path("backend/migrations").glob("*.sql"))
+          if not migration_paths:
+              raise SystemExit("failed to apply migrations: no *.sql files found in backend/migrations")
 
           last_err = None
           for _ in range(60):
               try:
                   with psycopg2.connect(dsn) as conn:
                       with conn.cursor() as cur:
-                          cur.execute(sql)
+                          for migration_path in migration_paths:
+                              print(f"Applying migration: {migration_path}")
+                              sql = migration_path.read_text(encoding="utf-8")
+                              cur.execute(sql)
                       conn.commit()
                   break
               except Exception as e:

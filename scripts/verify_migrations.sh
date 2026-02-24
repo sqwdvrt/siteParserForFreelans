@@ -1,11 +1,29 @@
 #!/bin/bash
-# Проверка миграций: применяет 001_init.sql и проверяет таблицы
-set -e
+# Проверка миграций: применяет все SQL-файлы из backend/migrations и проверяет базовые операции
+set -euo pipefail
 
 DB_URL="${DATABASE_URL:-postgres://site_parser:site_parser@localhost:55432/site_parser?sslmode=disable}"
+MIGRATIONS_DIR="${MIGRATIONS_DIR:-backend/migrations}"
+
+if [[ ! -d "$MIGRATIONS_DIR" ]]; then
+  echo "ERROR: migrations directory not found: $MIGRATIONS_DIR"
+  exit 1
+fi
+
+shopt -s nullglob
+migration_files=("$MIGRATIONS_DIR"/*.sql)
+shopt -u nullglob
+
+if [[ ${#migration_files[@]} -eq 0 ]]; then
+  echo "ERROR: no migration files found in $MIGRATIONS_DIR"
+  exit 1
+fi
 
 echo "Applying migrations..."
-psql "$DB_URL" -f backend/migrations/001_init.sql
+for migration in "${migration_files[@]}"; do
+  echo " - $migration"
+  psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$migration"
+done
 
 echo "Verifying tables..."
 psql "$DB_URL" -c "\dt"
