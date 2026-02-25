@@ -84,7 +84,7 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const sha = process.env.DEPLOY_SHA;
-            const required = ["Test Gate", "Security Baseline", "Supply Chain Security"];
+            const required = ["Test Gate", "Security Baseline", "Supply Chain Security", "Monitoring Gate"];
             const maxAttempts = 90; // 30 minutes with 20s interval
             const sleepMs = 20_000;
 
