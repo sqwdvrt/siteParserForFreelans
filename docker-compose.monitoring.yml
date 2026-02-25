@@ -22,15 +22,40 @@ services:
     image: prom/alertmanager:v0.27.0
     profiles:
       - monitoring
-    command:
-      - --config.file=/etc/alertmanager/alertmanager.yml
-      - --storage.path=/alertmanager
+    entrypoint:
+      - /bin/sh
+      - /usr/local/bin/alertmanager-entrypoint.sh
     volumes:
-      - ./monitoring/alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./monitoring/alertmanager/alertmanager.yml.tmpl:/etc/alertmanager/alertmanager.yml.tmpl:ro
+      - ./monitoring/alertmanager/render_config.sh:/usr/local/bin/render-alertmanager-config.sh:ro
+      - ./monitoring/alertmanager/docker-entrypoint.sh:/usr/local/bin/alertmanager-entrypoint.sh:ro
       - ./monitoring/alertmanager/secrets:/etc/alertmanager/secrets:ro
       - alertmanager_data:/alertmanager
     ports:
       - "${ALERTMANAGER_BIND_IP:-127.0.0.1}:${ALERTMANAGER_PORT:-9093}:9093"
+    restart: unless-stopped
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0
+    profiles:
+      - monitoring
+    command:
+      - --redis.addr=${REDIS_EXPORTER_REDIS_ADDR:-redis://redis:6379}
+      - --check-keys=${REDIS_EXPORTER_CHECK_KEYS:-ai-process,ai-process:processing,ai-process:dlq,user-embed,user-embed:processing,user-embed:dlq,match-notify,match-notify:processing,match-notify:dlq}
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.17.1
+    profiles:
+      - monitoring
+    environment:
+      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

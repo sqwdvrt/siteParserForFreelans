@@ -172,7 +172,7 @@ func main() {
 	if rdb != nil {
 		redisHealth = redisClientPinger{client: rdb}
 	}
-	r.Get("/healthz", healthz(redisHealth))
+	r.Get("/healthz", healthz())
 	r.Get("/readyz", readyz(pool, redisHealth))
 	r.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	r.Post("/users", handlers.PostUsers)
@@ -269,20 +269,8 @@ func (p redisClientPinger) Ping(ctx context.Context) error {
 	return p.client.Ping(ctx).Err()
 }
 
-func healthz(redis redisPinger) http.HandlerFunc {
+func healthz() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-
-		if redis == nil {
-			http.Error(w, "redis not ready", http.StatusServiceUnavailable)
-			return
-		}
-		if err := redis.Ping(ctx); err != nil {
-			http.Error(w, "redis not ready", http.StatusServiceUnavailable)
-			return
-		}
-
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))

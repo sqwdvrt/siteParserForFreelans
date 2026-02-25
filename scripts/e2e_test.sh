@@ -5,6 +5,10 @@
 
 set -e
 cd "$(dirname "$0")/.."
+
+# Keep caller-provided overrides before loading .env.
+CLI_TELEGRAM_ID="${TELEGRAM_ID-}"
+CLI_E2E_TELEGRAM_ID="${E2E_TELEGRAM_ID-}"
 [ -f .env ] && set -a && source .env && set +a
 
 API_URL="${API_URL:-http://localhost:8080}"
@@ -102,8 +106,14 @@ sleep 10
 
 echo ""
 echo "=== 9.7: POST /users (/start) → User в БД ==="
-# TELEGRAM_ID из .env или переменной окружения (для реальных уведомлений)
-TELEGRAM_ID="${TELEGRAM_ID:-123456789}"
+# Telegram ID priority: E2E_TELEGRAM_ID -> caller TELEGRAM_ID -> .env TELEGRAM_ID -> fallback.
+if [ -n "${CLI_TELEGRAM_ID}" ]; then
+  TELEGRAM_ID="${CLI_TELEGRAM_ID}"
+fi
+if [ -n "${CLI_E2E_TELEGRAM_ID}" ]; then
+  E2E_TELEGRAM_ID="${CLI_E2E_TELEGRAM_ID}"
+fi
+TELEGRAM_ID="${E2E_TELEGRAM_ID:-${TELEGRAM_ID:-123456789}}"
 POST_BODY="{\"telegram_id\":$TELEGRAM_ID}"
 POST_TS="$(date +%s)"
 POST_NONCE="$(generate_nonce)"

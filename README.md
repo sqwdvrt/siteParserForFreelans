@@ -43,7 +43,7 @@ docker compose up -d
 ## Operations
 
 - Monitoring, alerts, incident runbook, DR/backup/restore: `docs/operations.md`
-- Monitoring stack (Prometheus + Alertmanager): `docker-compose.monitoring.yml`
+- Monitoring stack (Prometheus + Alertmanager + Redis/Postgres exporters): `docker-compose.monitoring.yml`
 - Monitoring config and alert rules: `monitoring/prometheus/prometheus.yml`, `monitoring/prometheus/alerts.yml`
 - Backup script: `scripts/backup_postgres.sh`
 - Restore script: `scripts/restore_postgres.sh`
@@ -59,8 +59,9 @@ docker compose up -d
 ```bash
 # Подготовить secrets для Alertmanager каналов (Telegram + Slack)
 printf '%s' "$TELEGRAM_BOT_TOKEN" > monitoring/alertmanager/secrets/telegram_bot_token
+printf '%s' "$TELEGRAM_ID" > monitoring/alertmanager/secrets/telegram_chat_id
 printf '%s' "$ALERTMANAGER_SLACK_WEBHOOK_URL" > monitoring/alertmanager/secrets/slack_webhook_url
-chmod 600 monitoring/alertmanager/secrets/telegram_bot_token monitoring/alertmanager/secrets/slack_webhook_url
+chmod 600 monitoring/alertmanager/secrets/telegram_bot_token monitoring/alertmanager/secrets/telegram_chat_id monitoring/alertmanager/secrets/slack_webhook_url
 
 # Поднять приложение + monitoring stack
 docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile monitoring up -d
@@ -72,8 +73,13 @@ docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile 
 # http://127.0.0.1:9093
 ```
 
+Опционально можно переопределить источники exporter-метрик:
+- `REDIS_EXPORTER_REDIS_ADDR` (по умолчанию `redis://redis:6379`)
+- `REDIS_EXPORTER_CHECK_KEYS` (по умолчанию ключи очередей `ai-process/user-embed/match-notify` + `:processing/:dlq`)
+
 Alertmanager читает секреты из:
 - `monitoring/alertmanager/secrets/telegram_bot_token`
+- `monitoring/alertmanager/secrets/telegram_chat_id`
 - `monitoring/alertmanager/secrets/slack_webhook_url`
 
 ### Production (Docker Compose)
@@ -92,14 +98,18 @@ docker compose --env-file .env.production -f docker-compose.prod.yml up -d --bui
 
 ### Deploy Pipeline: Secrets for Staging Smoke/E2E Gate
 
-Для workflow `/Users/sqwdvrt/VS Code/siteParserForFreelans/.github/workflows/deploy.yml` (job `staging-smoke-e2e-gate`) нужны:
+Для workflow `.github/workflows/deploy.yml` (job `staging-smoke-e2e-gate`) нужны:
 
 - `STAGING_SSH_HOST` (обязателен)
 - `STAGING_SSH_USER` (обязателен)
 - `STAGING_SSH_PRIVATE_KEY` (обязателен)
 - `STAGING_DEPLOY_PATH` (обязателен)
+- `STAGING_HEALTHCHECK_URL` (обязателен; `http://` или `https://`)
 - `STAGING_GATE_API_URL` (рекомендуется; если не задан, используется `API_URL` из `.env.production` на staging-хосте)
 - `STAGING_SMOKE_TELEGRAM_ID` (опционально; переопределяет `TELEGRAM_ID`/дефолтный ID в smoke/e2e gate)
+
+Для production health check в том же workflow нужен:
+- `PROD_HEALTHCHECK_URL` (обязателен; `http://` или `https://`)
 
 Также на staging-хосте в `.env.production` должны быть заданы:
 

@@ -41,3 +41,151 @@ groups:
         annotations:
           summary: "High backend-api p95 latency"
           description: "p95 latency is above 500ms for 10 minutes."
+
+  - name: siteparser-infra
+    rules:
+      - alert: SiteParserRedisExporterDown
+        expr: up{job="redis-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: redis-exporter
+        annotations:
+          summary: "redis-exporter is down"
+          description: "Prometheus cannot scrape redis-exporter for more than 2 minutes."
+
+      - alert: SiteParserPostgresExporterDown
+        expr: up{job="postgres-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: postgres-exporter
+        annotations:
+          summary: "postgres-exporter is down"
+          description: "Prometheus cannot scrape postgres-exporter for more than 2 minutes."
+
+      - alert: SiteParserRedisUnavailable
+        expr: redis_up{job="redis-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: redis
+        annotations:
+          summary: "Redis is unavailable"
+          description: "redis-exporter reports redis_up=0 for more than 2 minutes."
+
+      - alert: SiteParserPostgresUnavailable
+        expr: pg_up{job="postgres-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: postgres
+        annotations:
+          summary: "PostgreSQL is unavailable"
+          description: "postgres-exporter reports pg_up=0 for more than 2 minutes."
+
+      - alert: SiteParserPostgresConnectionsHigh
+        expr: |
+          sum by (job, instance) (
+            pg_stat_database_numbackends{job="postgres-exporter", datname!~"template0|template1"}
+          ) > 80
+        for: 10m
+        labels:
+          severity: warning
+          service: postgres
+        annotations:
+          summary: "High PostgreSQL connection count"
+          description: "Active PostgreSQL backends are above 80 for 10 minutes."
+
+  - name: siteparser-queues
+    rules:
+      # Queue metrics rely on redis-exporter --check-keys for:
+      # ai-process, user-embed, match-notify and corresponding :processing/:dlq keys.
+      - alert: SiteParserAiProcessBacklogHigh
+        expr: |
+          sum by (job, instance) (redis_key_size{job="redis-exporter", key="ai-process"}) > 1000
+        for: 10m
+        labels:
+          severity: warning
+          service: ai-process
+        annotations:
+          summary: "ai-process backlog is high"
+          description: "Queue ai-process has more than 1000 messages for 10 minutes."
+
+      - alert: SiteParserUserEmbedBacklogHigh
+        expr: |
+          sum by (job, instance) (redis_key_size{job="redis-exporter", key="user-embed"}) > 1000
+        for: 10m
+        labels:
+          severity: warning
+          service: user-embed
+        annotations:
+          summary: "user-embed backlog is high"
+          description: "Queue user-embed has more than 1000 messages for 10 minutes."
+
+      - alert: SiteParserMatchNotifyBacklogHigh
+        expr: |
+          sum by (job, instance) (redis_key_size{job="redis-exporter", key="match-notify"}) > 1000
+        for: 10m
+        labels:
+          severity: warning
+          service: match-notify
+        annotations:
+          summary: "match-notify backlog is high"
+          description: "Queue match-notify has more than 1000 messages for 10 minutes."
+
+      - alert: SiteParserAnyDLQNotEmpty
+        expr: |
+          sum by (job, instance) (redis_key_size{job="redis-exporter", key=~".*:dlq"}) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: queues-dlq
+        annotations:
+          summary: "DLQ is not empty"
+          description: "At least one DLQ has messages for more than 5 minutes."
+
+      - alert: SiteParserDLQGrowing
+        expr: |
+          sum by (job, instance) (delta(redis_key_size{job="redis-exporter", key=~".*:dlq"}[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: queues-dlq
+        annotations:
+          summary: "DLQ size is growing"
+          description: "Total DLQ size increased over the last 10 minutes."
+
+      - alert: SiteParserAiProcessStall
+        expr: |
+          (
+            sum by (job, instance) (redis_key_size{job="redis-exporter", key="ai-process"}) > 200
+          )
+          and on(job, instance)
+          (
+            sum by (job, instance) (redis_key_size{job="redis-exporter", key="ai-process:processing"}) == 0
+          )
+        for: 10m
+        labels:
+          severity: warning
+          service: ai-process
+        annotations:
+          summary: "ai-process consumer stall suspected"
+          description: "ai-process backlog exists but processing queue stays empty for 10 minutes."
+
+      - alert: SiteParserNotifierStall
+        expr: |
+          (
+            sum by (job, instance) (redis_key_size{job="redis-exporter", key="match-notify"}) > 100
+          )
+          and on(job, instance)
+          (
+            sum by (job, instance) (redis_key_size{job="redis-exporter", key="match-notify:processing"}) == 0
+          )
+        for: 15m
+        labels:
+          severity: warning
+          service: backend-notifier
+        annotations:
+          summary: "notification stall suspected"
+          description: "match-notify backlog exists but processing queue stays empty for 15 minutes."

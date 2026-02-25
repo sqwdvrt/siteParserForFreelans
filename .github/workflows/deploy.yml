@@ -179,11 +179,18 @@ jobs:
             docker compose --env-file .env.production -f docker-compose.prod.yml ps
 
       - name: Staging health check
-        if: ${{ env.STAGING_HEALTHCHECK_URL != '' }}
         env:
           STAGING_HEALTHCHECK_URL: ${{ secrets.STAGING_HEALTHCHECK_URL }}
         run: |
           set -euo pipefail
+          : "${STAGING_HEALTHCHECK_URL:?STAGING_HEALTHCHECK_URL is required}"
+          case "${STAGING_HEALTHCHECK_URL}" in
+            http://*|https://*) ;;
+            *)
+              echo "STAGING_HEALTHCHECK_URL must start with http:// or https://" >&2
+              exit 1
+              ;;
+          esac
           curl --fail --show-error --silent --retry 10 --retry-delay 5 "${STAGING_HEALTHCHECK_URL}"
 
   staging-smoke-e2e-gate:
@@ -257,9 +264,16 @@ jobs:
             docker compose --env-file .env.production -f docker-compose.prod.yml ps
 
       - name: Production health check
-        if: ${{ env.PROD_HEALTHCHECK_URL != '' }}
         env:
           PROD_HEALTHCHECK_URL: ${{ secrets.PROD_HEALTHCHECK_URL }}
         run: |
           set -euo pipefail
+          : "${PROD_HEALTHCHECK_URL:?PROD_HEALTHCHECK_URL is required}"
+          case "${PROD_HEALTHCHECK_URL}" in
+            http://*|https://*) ;;
+            *)
+              echo "PROD_HEALTHCHECK_URL must start with http:// or https://" >&2
+              exit 1
+              ;;
+          esac
           curl --fail --show-error --silent --retry 10 --retry-delay 5 "${PROD_HEALTHCHECK_URL}"

@@ -22,3 +22,13 @@ scrape_configs:
     static_configs:
       - targets:
           - backend-api:8080
+
+  - job_name: redis-exporter
+    static_configs:
+      - targets:
+          - redis-exporter:9121
+
+  - job_name: postgres-exporter
+    static_configs:
+      - targets:
+          - postgres-exporter:9187
