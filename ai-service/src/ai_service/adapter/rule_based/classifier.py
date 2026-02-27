@@ -30,14 +30,82 @@ BUDGET_KEYWORDS = {
 }
 SPAM_KEYWORDS = ["казино", "заработок", "крипто", "crypto", "биткоин", "bitcoin"]
 
+# Признаки высокой сложности: архитектурные решения, масштабирование, интеграции
+COMPLEXITY_HIGH_KEYWORDS = [
+    "архитектур",    # архитектура, архитектурный
+    "интеграц",      # интеграция, интеграций
+    "микросервис",
+    "highload",
+    "high load",
+    "нагрузк",       # нагрузка, нагрузки
+    "масштаб",       # масштабирование
+    "enterprise",
+    "платформ",      # платформа, платформенный
+    "инфраструктур", # инфраструктура
+    "распределённ",  # распределённая система
+    "distributed",
+    "big data",
+    "machine learning",
+    "нейронн",       # нейронная сеть
+]
+
+# Признаки низкой сложности: небольшие/простые проекты
+COMPLEXITY_LOW_KEYWORDS = [
+    "лендинг",
+    "landing",
+    "небольшой",
+    "небольшую",
+    "небольшое",
+    "простой",
+    "простую",
+    "простое",
+    "несложн",
+    "мелкий",
+    "маленьк",
+]
+
+# Дефолтные пороги сложности (переопределяются в конструкторе)
+_DEFAULT_COMPLEXITY_HIGH_TECH_COUNT = 4
+_DEFAULT_COMPLEXITY_LOW_TEXT_LEN = 150
+
 
 def _normalize(text: str) -> str:
     """Нижний регистр для поиска."""
     return text.lower().strip()
 
 
+def _infer_complexity(
+    normalized: str,
+    tech_count: int,
+    seniority: str,
+    high_tech_count: int,
+    low_text_len: int,
+) -> str:
+    """Определить сложность проекта по эвристикам.
+
+    Приоритет: ключевые слова → кол-во технологий/уровень → ключевые слова «просто» → умолчание.
+    """
+    if any(kw in normalized for kw in COMPLEXITY_HIGH_KEYWORDS):
+        return "high"
+    if tech_count >= high_tech_count or seniority == "senior":
+        return "high"
+    if any(kw in normalized for kw in COMPLEXITY_LOW_KEYWORDS):
+        return "low"
+    if tech_count == 0 and seniority in ("junior", "unknown") and len(normalized) < low_text_len:
+        return "low"
+    return "medium"
+
+
 class RuleBasedClassifier(Classifier):
     """Классификатор на правилах. Без LLM, без таймаутов."""
+
+    def __init__(
+        self,
+        complexity_high_tech_count: int = _DEFAULT_COMPLEXITY_HIGH_TECH_COUNT,
+        complexity_low_text_len: int = _DEFAULT_COMPLEXITY_LOW_TEXT_LEN,
+    ) -> None:
+        self._high_tech_count = complexity_high_tech_count
+        self._low_text_len = complexity_low_text_len
 
     def classify(self, text: str) -> ClassificationResult:
         text = sanitize_for_classifier(text or "")
@@ -79,8 +147,11 @@ class RuleBasedClassifier(Classifier):
         if "budget_level" not in result:
             result["budget_level"] = "unknown"
 
-        # complexity
-        result["complexity"] = "medium"
+        # complexity: эвристика по ключевым словам, кол-ву технологий и уровню
+        result["complexity"] = _infer_complexity(
+            normalized, len(found), result.get("seniority", "unknown"),
+            self._high_tech_count, self._low_text_len,
+        )
 
         # is_spam
         result["is_spam"] = any(kw in normalized for kw in SPAM_KEYWORDS)

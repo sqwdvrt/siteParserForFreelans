@@ -1,10 +1,11 @@
-"""Тесты Classifier: RuleBasedClassifier, OllamaClassifier fallback."""
+"""Тесты Classifier: RuleBasedClassifier, OllamaClassifier fallback, FallbackClassifier."""
 
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
+from ai_service.adapter.fallback import FallbackClassifier
 from ai_service.adapter.ollama import OllamaClassifier
 from ai_service.adapter.rule_based import RuleBasedClassifier
 
@@ -100,3 +101,94 @@ def test_ollama_fallback_on_disallowed_host() -> None:
     c = OllamaClassifier(base_url="http://evil.example", timeout_sec=1)
     r = c.classify("test project")
     assert r == {}
+
+
+# --- FallbackClassifier ---
+
+
+def test_fallback_uses_fallback_when_primary_empty() -> None:
+    """Если primary вернул пустой dict — используется fallback."""
+    primary = MagicMock()
+    primary.classify.return_value = {}
+    fallback = RuleBasedClassifier()
+    c = FallbackClassifier(primary=primary, fallback=fallback)
+    r = c.classify("Нужен Python разработчик для веб-сайта")
+    assert r.get("project_type") == "web"
+    assert "python" in r.get("technologies", [])
+
+
+def test_fallback_primary_wins_on_conflict() -> None:
+    """Поля primary имеют приоритет над fallback при merge."""
+    primary = MagicMock()
+    primary.classify.return_value = {
+        "project_type": "mobile",
+        "seniority": "senior",
+        "complexity": "high",
+        "is_spam": False,
+    }
+    fallback = MagicMock()
+    fallback.classify.return_value = {
+        "project_type": "web",
+        "seniority": "junior",
+        "complexity": "low",
+        "budget_level": "unknown",
+        "technologies": ["python"],
+        "is_spam": False,
+    }
+    c = FallbackClassifier(primary=primary, fallback=fallback)
+    r = c.classify("any text")
+    assert r["project_type"] == "mobile"
+    assert r["seniority"] == "senior"
+    assert r["complexity"] == "high"
+    # пропущенное поле дополняется из fallback
+    assert r["budget_level"] == "unknown"
+    assert r["technologies"] == ["python"]
+
+
+def test_fallback_merge_missing_fields_from_fallback() -> None:
+    """Primary заполняет часть полей, остальные берутся из fallback."""
+    primary = MagicMock()
+    primary.classify.return_value = {
+        "project_type": "bot",
+        "complexity": "medium",
+        "is_spam": False,
+    }
+    fallback = MagicMock()
+    fallback.classify.return_value = {
+        "project_type": "web",
+        "seniority": "middle",
+        "technologies": ["go"],
+        "budget_level": "high",
+        "is_spam": False,
+    }
+    c = FallbackClassifier(primary=primary, fallback=fallback)
+    r = c.classify("any text")
+    assert r["project_type"] == "bot"       # primary wins
+    assert r["seniority"] == "middle"       # из fallback
+    assert r["technologies"] == ["go"]      # из fallback
+    assert r["budget_level"] == "high"      # из fallback
+    assert r["complexity"] == "medium"      # primary
+
+
+def test_fallback_uses_fallback_when_primary_raises() -> None:
+    """Если primary выбросил исключение — используется fallback."""
+    primary = MagicMock()
+    primary.classify.side_effect = RuntimeError("connection refused")
+    fallback = RuleBasedClassifier()
+    c = FallbackClassifier(primary=primary, fallback=fallback)
+    r = c.classify("Telegram бот для автоматизации")
+    assert r.get("project_type") == "bot"
+    assert r.get("is_spam") is False
+
+
+def test_rule_based_complexity_configurable() -> None:
+    """Пороги complexity настраиваются через конструктор."""
+    # Низкий порог: даже 1 технология → high
+    c = RuleBasedClassifier(complexity_high_tech_count=1)
+    r = c.classify("Нужен Python разработчик")
+    assert r.get("complexity") == "high"
+
+    # Высокий порог и маленький лимит текста: без технологий и короткий текст → low
+    c2 = RuleBasedClassifier(complexity_high_tech_count=10, complexity_low_text_len=10000)
+    r2 = c2.classify("Небольшой простой сайт")
+    assert r2.get("complexity") == "low"

@@ -15,6 +15,8 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from ai_service.adapter.fallback import FallbackClassifier
+from ai_service.adapter.ollama import OllamaClassifier
 from ai_service.adapter.postgres import PostgresJobRepository, PostgresMatchRepository
 from ai_service.adapter.redis import RedisMatchNotifyQueue, RedisQueueConsumer
 from ai_service.adapter.rule_based import RuleBasedClassifier
@@ -87,13 +89,20 @@ def main() -> None:
     model_name = os.getenv("EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")
     threshold = float(os.getenv("SIMILARITY_THRESHOLD", "0.7"))
     max_matches = int(os.getenv("MAX_MATCHES_PER_JOB", "20"))
+    ollama_url = os.getenv("OLLAMA_URL", "http://ollama:11434")
+    ollama_model = os.getenv("OLLAMA_MODEL", "llama3.2:3b-instruct-q4_K_M")
+    ollama_timeout = int(os.getenv("OLLAMA_TIMEOUT_SEC", "30"))
 
     repo = PostgresJobRepository(db_url)
     match_repo = PostgresMatchRepository(db_url)
     match_notify_queue = RedisMatchNotifyQueue(redis_url)
     embedding = SentenceTransformerEmbedding(model_name)
     _warmup_embedding(embedding)
-    classifier = RuleBasedClassifier()
+    classifier = FallbackClassifier(
+        primary=OllamaClassifier(base_url=ollama_url, model=ollama_model, timeout_sec=ollama_timeout),
+        fallback=RuleBasedClassifier(),
+    )
+    logger.info("classifier=FallbackClassifier(primary=Ollama[%s], fallback=RuleBased)", ollama_url)
     process_job = ProcessJobUseCase(
         repo, embedding, classifier, match_repo,
         match_notify_queue=match_notify_queue,
