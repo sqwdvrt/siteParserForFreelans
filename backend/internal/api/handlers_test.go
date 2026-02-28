@@ -254,6 +254,13 @@ func TestHandlers_PostUsers_RepoError(t *testing.T) {
 func TestHandlers_PutUserProfile_Success(t *testing.T) {
 	var gotUserID int64
 	var gotProfile string
+	var enqueuedUserID int64
+	queue := &mockUserEmbedQueue{
+		enqueueFunc: func(ctx context.Context, userID int64) error {
+			enqueuedUserID = userID
+			return nil
+		},
+	}
 	repo := &mockUserRepo{
 		updateProfileFunc: func(ctx context.Context, userID int64, profileText string) error {
 			gotUserID = userID
@@ -261,7 +268,7 @@ func TestHandlers_PutUserProfile_Success(t *testing.T) {
 			return nil
 		},
 	}
-	h := &Handlers{UserRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+	h := &Handlers{UserRepo: repo, UserEmbedQueue: queue, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
 
 	body := []byte(`{"profile_text":"I am a developer"}`)
 	req := newJSONRequest(http.MethodPut, "/users/1/profile", body, newAuthHeadersWithUserSign(http.MethodPut, "/users/1/profile", 123456789, body))
@@ -278,6 +285,9 @@ func TestHandlers_PutUserProfile_Success(t *testing.T) {
 	}
 	if gotProfile != "I am a developer" {
 		t.Errorf("profile_text = %q, want %q", gotProfile, "I am a developer")
+	}
+	if enqueuedUserID != 1 {
+		t.Errorf("enqueued user_id = %d, want 1", enqueuedUserID)
 	}
 }
 
@@ -341,12 +351,17 @@ func TestHandlers_PutUserProfile_BodyTooLarge(t *testing.T) {
 }
 
 func TestHandlers_PutUserProfile_RepoError(t *testing.T) {
+	queue := &mockUserEmbedQueue{
+		enqueueFunc: func(ctx context.Context, userID int64) error {
+			return nil
+		},
+	}
 	repo := &mockUserRepo{
 		updateProfileFunc: func(ctx context.Context, userID int64, profileText string) error {
 			return errors.New("db error")
 		},
 	}
-	h := &Handlers{UserRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+	h := &Handlers{UserRepo: repo, UserEmbedQueue: queue, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
 
 	body := []byte(`{"profile_text":"x"}`)
 	req := newJSONRequest(http.MethodPut, "/users/1/profile", body, newAuthHeadersWithUserSign(http.MethodPut, "/users/1/profile", 123456789, body))
@@ -409,6 +424,71 @@ func TestHandlers_PutUserProfile_EnqueuesUserEmbed(t *testing.T) {
 	}
 	if enqueuedUserID != 42 {
 		t.Errorf("enqueued user_id = %d, want 42", enqueuedUserID)
+	}
+}
+
+func TestHandlers_PutUserProfile_QueueUnavailable(t *testing.T) {
+	var updateCalled bool
+	repo := &mockUserRepo{
+		updateProfileFunc: func(ctx context.Context, userID int64, profileText string) error {
+			updateCalled = true
+			return nil
+		},
+	}
+	h := &Handlers{UserRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+
+	body := []byte(`{"profile_text":"hello"}`)
+	req := newJSONRequest(http.MethodPut, "/users/42/profile", body, newAuthHeadersWithUserSign(http.MethodPut, "/users/42/profile", 123456789, body))
+	req = attachRouteUserID(req, "42")
+	rr := httptest.NewRecorder()
+
+	h.PutUserProfile(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rr.Code)
+	}
+	if updateCalled {
+		t.Error("update profile must not be called when queue is unavailable")
+	}
+}
+
+func TestHandlers_PutUserProfile_EnqueueError_RollsBackAndReturns503(t *testing.T) {
+	profiles := make([]string, 0, 2)
+	oldProfileText := "old profile"
+	queue := &mockUserEmbedQueue{
+		enqueueFunc: func(ctx context.Context, userID int64) error {
+			return errors.New("redis down")
+		},
+	}
+	repo := &mockUserRepo{
+		updateProfileFunc: func(ctx context.Context, userID int64, profileText string) error {
+			profiles = append(profiles, profileText)
+			return nil
+		},
+		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+			return &domain.User{ID: userID, TelegramID: 123456789, ProfileText: &oldProfileText}, nil
+		},
+	}
+	h := &Handlers{UserRepo: repo, UserEmbedQueue: queue, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+
+	body := []byte(`{"profile_text":"new profile"}`)
+	req := newJSONRequest(http.MethodPut, "/users/1/profile", body, newAuthHeadersWithUserSign(http.MethodPut, "/users/1/profile", 123456789, body))
+	req = attachRouteUserID(req, "1")
+	rr := httptest.NewRecorder()
+
+	h.PutUserProfile(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", rr.Code)
+	}
+	if len(profiles) != 2 {
+		t.Fatalf("update profile calls = %d, want 2 (update + rollback)", len(profiles))
+	}
+	if profiles[0] != "new profile" {
+		t.Errorf("first update profile = %q, want %q", profiles[0], "new profile")
+	}
+	if profiles[1] != "old profile" {
+		t.Errorf("rollback profile = %q, want %q", profiles[1], "old profile")
 	}
 }
 

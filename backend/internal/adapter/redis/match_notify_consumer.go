@@ -118,6 +118,21 @@ func (c *MatchNotifyConsumer) Nack(ctx context.Context, msg *port.MatchNotifyMes
 	return err
 }
 
+// Requeue возвращает delivery в основную очередь без изменения payload/retry-счётчика.
+func (c *MatchNotifyConsumer) Requeue(ctx context.Context, msg *port.MatchNotifyMessage) error {
+	if msg == nil || msg.Receipt == "" {
+		return nil
+	}
+	_, err := requeueScript.Run(
+		ctx,
+		c.client,
+		[]string{c.processingQueue, c.queue},
+		msg.Receipt,
+		msg.Receipt,
+	).Int()
+	return err
+}
+
 func (c *MatchNotifyConsumer) ackRaw(ctx context.Context, raw string) error {
 	_, err := c.client.LRem(ctx, c.processingQueue, 1, raw).Result()
 	return err

@@ -36,8 +36,11 @@ class RedisMatchNotifyQueue(MatchNotifyQueue):
 
     @staticmethod
     def _serialize(candidate: MatchCandidate) -> str:
-        return json.dumps({
+        payload: dict = {
             "user_id": candidate.user_id,
             "job_id": candidate.job_id,
             "match_score": round(candidate.match_score, 4),
-        })
+        }
+        if candidate.why_it_fits:
+            payload["why_it_fits"] = candidate.why_it_fits
+        return json.dumps(payload)

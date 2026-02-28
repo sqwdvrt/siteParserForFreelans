@@ -8,6 +8,15 @@ on:
       - develop
 
 jobs:
+  workflow-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run actionlint
+        uses: rhysd/actionlint@v1
+
   backend-unit:
     runs-on: ubuntu-latest
     steps:
@@ -81,7 +90,7 @@ jobs:
           cache-dependency-path: telegram-bot/pyproject.toml
 
       - name: Install Telegram bot dependencies
-        run: python -m pip install "python-dotenv>=1.0" "pytest>=7.0"
+        run: python -m pip install "python-dotenv>=1.0" "pytest>=7.0" "pytest-cov>=4.0"
 
       - name: Run Telegram bot unit tests
         run: |
@@ -188,6 +197,8 @@ jobs:
           python -m pip install "pytest>=7.0" "pytest-cov>=4.0" "python-dotenv>=1.0"
 
       - name: Run coverage gate
+        env:
+          PYTHON_BIN: python
         run: ./scripts/check_coverage.sh
 
   integration:

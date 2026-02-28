@@ -8,16 +8,19 @@
 ## 1) Monitoring
 
 ### 1.0 Базовая инфраструктура мониторинга в репозитории
-- Prometheus compose профиль: `/Users/sqwdvrt/VS Code/siteParserForFreelans/docker-compose.monitoring.yml`
-- Prometheus config: `/Users/sqwdvrt/VS Code/siteParserForFreelans/monitoring/prometheus/prometheus.yml`
-- Alert rules: `/Users/sqwdvrt/VS Code/siteParserForFreelans/monitoring/prometheus/alerts.yml`
-- Alertmanager config: `/Users/sqwdvrt/VS Code/siteParserForFreelans/monitoring/alertmanager/alertmanager.yml`
-- Alertmanager secrets dir: `/Users/sqwdvrt/VS Code/siteParserForFreelans/monitoring/alertmanager/secrets`
-- CI-проверка конфигов: `/Users/sqwdvrt/VS Code/siteParserForFreelans/.github/workflows/monitoring-gate.yml`
+- Prometheus compose профиль: `docker-compose.monitoring.yml`
+- Prometheus config: `monitoring/prometheus/prometheus.yml`
+- Alert rules: `monitoring/prometheus/alerts.yml`
+- Alertmanager config template: `monitoring/alertmanager/alertmanager.yml.tmpl`
+- Alertmanager secrets dir: `monitoring/alertmanager/secrets`
+- Redis exporter: service `redis-exporter` (queue/Redis metrics via key lengths and exporter stats)
+- Postgres exporter: service `postgres-exporter` (DB/pool/runtime metrics)
+- CI-проверка конфигов: `.github/workflows/monitoring-gate.yml`
 
 Для доставки алертов в каналы:
-- Telegram bot token: `/Users/sqwdvrt/VS Code/siteParserForFreelans/monitoring/alertmanager/secrets/telegram_bot_token`
-- Slack webhook URL: `/Users/sqwdvrt/VS Code/siteParserForFreelans/monitoring/alertmanager/secrets/slack_webhook_url`
+- Telegram bot token: `monitoring/alertmanager/secrets/telegram_bot_token`
+- Telegram chat_id: `monitoring/alertmanager/secrets/telegram_chat_id`
+- Slack webhook URL: `monitoring/alertmanager/secrets/slack_webhook_url`
 
 ### 1.1 SLO (рекомендуемые целевые значения)
 - API availability (5xx + timeout): `>= 99.9%` за 30 дней.
@@ -29,7 +32,7 @@
 - `GET /healthz`:
   назначение: liveness.
 - `GET /readyz`:
-  назначение: readiness (БД доступна).
+  назначение: readiness (БД и Redis доступны).
 - `GET /metrics`:
   назначение: scrape endpoint для Prometheus.
 
@@ -92,6 +95,11 @@ redis-cli -u "$REDIS_URL" LLEN match-notify:dlq
   любой `*:dlq` > 0 (или рост > N/мин).
 - `P2 Notification stall`:
   jobs идут, но notifications не отправляются > 15 мин.
+
+Текущая реализация в `monitoring/prometheus/alerts.yml` включает:
+- API: down, high 5xx, high p95 latency.
+- Infra: redis/postgres exporter down, redis/postgres unavailable, postgres connections high.
+- Queues: backlog (`ai-process`, `user-embed`, `match-notify`), DLQ non-empty/growing, stall (`ai-process`, `backend-notifier`).
 
 ## 3) Incident Runbook
 
@@ -159,18 +167,18 @@ done
 
 ### 4.3 Скрипты
 - Backup:
-  `/Users/sqwdvrt/VS Code/siteParserForFreelans/scripts/backup_postgres.sh`
+  `scripts/backup_postgres.sh`
 - Restore:
-  `/Users/sqwdvrt/VS Code/siteParserForFreelans/scripts/restore_postgres.sh`
+  `scripts/restore_postgres.sh`
 
 Пример backup:
 ```bash
-DATABASE_URL='postgres://...' /Users/sqwdvrt/VS Code/siteParserForFreelans/scripts/backup_postgres.sh
+DATABASE_URL='postgres://...' ./scripts/backup_postgres.sh
 ```
 
 Пример restore:
 ```bash
-DATABASE_URL='postgres://...' /Users/sqwdvrt/VS Code/siteParserForFreelans/scripts/restore_postgres.sh /path/to/backup.dump
+DATABASE_URL='postgres://...' ./scripts/restore_postgres.sh /path/to/backup.dump
 ```
 
 ### 4.4 Restore drill checklist

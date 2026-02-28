@@ -43,6 +43,18 @@ def test_validate_secret_accepts_strong_value(bot):
     bot._validate_secret("API_AUTH_TOKEN", "d8xQ9mK2vP6sR0nC4tY7wB1hF5jL3zUa", 32)
 
 
+def test_parse_log_level_accepts_valid_value(bot):
+    level, ok = bot._parse_log_level("debug")
+    assert ok is True
+    assert level == bot.logging.DEBUG
+
+
+def test_parse_log_level_fallback_on_invalid_value(bot):
+    level, ok = bot._parse_log_level("totally-invalid", bot.logging.INFO)
+    assert ok is False
+    assert level == bot.logging.INFO
+
+
 def test_validate_api_url_for_production_requires_https(bot):
     with pytest.raises(ValueError):
         bot._validate_api_url_for_production("http://api.example.com")

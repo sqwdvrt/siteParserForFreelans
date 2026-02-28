@@ -20,8 +20,16 @@ import (
 )
 
 const (
-	popErrorBackoffMin = 500 * time.Millisecond
-	popErrorBackoffMax = 30 * time.Second
+	popErrorBackoffMin    = 500 * time.Millisecond
+	popErrorBackoffMax    = 30 * time.Second
+	nackRecoverBackoffMin = 1 * time.Second
+	nackRecoverBackoffMax = 30 * time.Second
+
+	defaultNotifierMaxRetries      = 3
+	defaultNotifierRetryBaseWait   = 1 * time.Second
+	defaultBreakerFailureThreshold = 3
+	defaultBreakerOpenInterval     = 30 * time.Second
+	defaultBreakerOpenJitter       = 0.2
 )
 
 func main() {
@@ -82,6 +90,11 @@ func main() {
 	if maxPerDay <= 0 {
 		maxPerDay = 5
 	}
+	notifierMaxRetries := getPositiveIntEnv("NOTIFIER_MAX_RETRIES", defaultNotifierMaxRetries)
+	notifierRetryBaseWait := getDurationEnv("NOTIFIER_RETRY_BASE_WAIT", defaultNotifierRetryBaseWait)
+	breakerFailureThreshold := getPositiveIntEnv("NOTIFIER_BREAKER_FAILURE_THRESHOLD", defaultBreakerFailureThreshold)
+	breakerOpenInterval := getDurationEnv("NOTIFIER_BREAKER_OPEN_INTERVAL", defaultBreakerOpenInterval)
+	breakerOpenJitter := getFloatEnvInRange("NOTIFIER_BREAKER_OPEN_JITTER", defaultBreakerOpenJitter, 0, 1)
 
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dbURL)
@@ -107,6 +120,13 @@ func main() {
 	userRepo := postgres.NewUserRepository(pool)
 	jobRepo := postgres.NewJobRepository(pool)
 	notifier := telegram.NewNotifier(token)
+	notifier.Configure(telegram.Config{
+		MaxRetries:              notifierMaxRetries,
+		RetryBaseWait:           notifierRetryBaseWait,
+		BreakerFailureThreshold: breakerFailureThreshold,
+		BreakerOpenInterval:     breakerOpenInterval,
+		BreakerOpenJitter:       breakerOpenJitter,
+	})
 	sendNotif := usecase.NewSendNotification(notifRepo, userRepo, jobRepo, notifier, rateLimit, maxPerDay)
 
 	consumer := redisadapter.NewMatchNotifyConsumer(rdb, queueName)
@@ -130,12 +150,34 @@ func main() {
 
 	slog.Info("notifier started", "queue", queueName)
 	var popErrBackoff time.Duration
+	var pendingRecoverAfterNack bool
+	var nackRecoverBackoff time.Duration
 	for {
 		select {
 		case <-ctx.Done():
 			slog.Info("notifier stopped")
 			return
 		default:
+			if pendingRecoverAfterNack {
+				if err := consumer.Recover(ctx); err != nil {
+					nackRecoverBackoff = nextNackRecoverBackoff(nackRecoverBackoff)
+					slog.Error(
+						"recover processing queue after nack failure failed",
+						"queue", queueName,
+						"err", err,
+						"backoff", nackRecoverBackoff,
+					)
+					if !waitForBackoff(ctx, nackRecoverBackoff) {
+						slog.Info("notifier stopped")
+						return
+					}
+					continue
+				}
+				slog.Warn("processing queue recovered after nack failure", "queue", queueName)
+				pendingRecoverAfterNack = false
+				nackRecoverBackoff = 0
+			}
+
 			msg, err := consumer.Pop(ctx)
 			if err != nil {
 				popErrBackoff = nextPopErrorBackoff(popErrBackoff)
@@ -151,10 +193,42 @@ func main() {
 				continue
 			}
 			p := msg.Payload
-			if err := sendNotif.Execute(ctx, p.UserID, p.JobID, p.MatchScore); err != nil {
+			if err := sendNotif.Execute(ctx, p.UserID, p.JobID, p.MatchScore, p.WhyItFits); err != nil {
 				slog.Error("send notification failed", "user_id", p.UserID, "job_id", p.JobID, "err", err)
+				if retryDelay, retryable := telegram.RetryAfter(err); retryable {
+					slog.Warn(
+						"send notification transient failure; delaying before requeue",
+						"user_id", p.UserID,
+						"job_id", p.JobID,
+						"delay", retryDelay,
+					)
+					if !waitForBackoff(ctx, retryDelay) {
+						slog.Info("notifier stopped")
+						return
+					}
+					if telegram.ShouldRequeueWithoutRetry(err) {
+						if requeueErr := consumer.Requeue(ctx, msg); requeueErr != nil {
+							slog.Error(
+								"requeue without retry increment failed; scheduling processing queue recovery",
+								"user_id", p.UserID,
+								"job_id", p.JobID,
+								"queue", queueName,
+								"err", requeueErr,
+							)
+							pendingRecoverAfterNack = true
+						}
+						continue
+					}
+				}
 				if nackErr := consumer.Nack(ctx, msg); nackErr != nil {
-					slog.Error("nack failed", "user_id", p.UserID, "job_id", p.JobID, "err", nackErr)
+					slog.Error(
+						"nack failed; scheduling processing queue recovery",
+						"user_id", p.UserID,
+						"job_id", p.JobID,
+						"queue", queueName,
+						"err", nackErr,
+					)
+					pendingRecoverAfterNack = true
 				}
 				continue
 			}
@@ -176,6 +250,17 @@ func nextPopErrorBackoff(current time.Duration) time.Duration {
 	return next
 }
 
+func nextNackRecoverBackoff(current time.Duration) time.Duration {
+	if current <= 0 {
+		return nackRecoverBackoffMin
+	}
+	next := current * 2
+	if next > nackRecoverBackoffMax {
+		return nackRecoverBackoffMax
+	}
+	return next
+}
+
 func waitForBackoff(ctx context.Context, d time.Duration) bool {
 	if d <= 0 {
 		return true
@@ -188,4 +273,43 @@ func waitForBackoff(ctx context.Context, d time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
+}
+
+func getPositiveIntEnv(key string, fallback int) int {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 {
+		slog.Warn("invalid env, fallback applied", "key", key, "value", raw, "fallback", fallback)
+		return fallback
+	}
+	return v
+}
+
+func getDurationEnv(key string, fallback time.Duration) time.Duration {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	v, err := time.ParseDuration(raw)
+	if err != nil || v <= 0 {
+		slog.Warn("invalid env, fallback applied", "key", key, "value", raw, "fallback", fallback)
+		return fallback
+	}
+	return v
+}
+
+func getFloatEnvInRange(key string, fallback float64, min, max float64) float64 {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil || v < min || v > max {
+		slog.Warn("invalid env, fallback applied", "key", key, "value", raw, "fallback", fallback)
+		return fallback
+	}
+	return v
 }

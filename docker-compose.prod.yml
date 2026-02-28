@@ -1,4 +1,25 @@
 services:
+  backend-migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["sh", "-c", "echo 'backend migrations applied'"]
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
+      RUN_MIGRATIONS: "1"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /home/app:mode=0700,size=16m
+    restart: "no"
+
   backend-api:
     build:
       context: ./backend
@@ -13,6 +34,7 @@ services:
       API_ADDR: ${API_ADDR:-:8443}
       API_TLS_CERT_FILE: ${API_TLS_CERT_FILE:-/run/secrets/api_tls_cert.pem}
       API_TLS_KEY_FILE: ${API_TLS_KEY_FILE:-/run/secrets/api_tls_key.pem}
+      RUN_MIGRATIONS: "0"
     ports:
       - "${API_BIND_IP:-127.0.0.1}:${API_PORT:-8443}:8443"
     volumes:
@@ -26,6 +48,9 @@ services:
     tmpfs:
       - /tmp:mode=1777,size=64m
       - /home/app:mode=0700,size=16m
+    depends_on:
+      backend-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   backend-crawler:
@@ -39,6 +64,7 @@ services:
       APP_ENV: production
       DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
       REDIS_URL: ${REDIS_URL:?set_REDIS_URL_in_.env.production}
+      RUN_MIGRATIONS: "0"
     read_only: true
     cap_drop:
       - ALL
@@ -47,6 +73,9 @@ services:
     tmpfs:
       - /tmp:mode=1777,size=64m
       - /home/app:mode=0700,size=16m
+    depends_on:
+      backend-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   backend-notifier:
@@ -60,6 +89,7 @@ services:
       APP_ENV: production
       DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
       REDIS_URL: ${REDIS_URL:?set_REDIS_URL_in_.env.production}
+      RUN_MIGRATIONS: "0"
     read_only: true
     cap_drop:
       - ALL
@@ -68,6 +98,9 @@ services:
     tmpfs:
       - /tmp:mode=1777,size=64m
       - /home/app:mode=0700,size=16m
+    depends_on:
+      backend-migrate:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   ai-service:
@@ -104,6 +137,8 @@ services:
 
   ai-user-embed:
     image: ${AI_IMAGE:-siteparserforfreelans-ai-runtime:prod}
+    profiles:
+      - ai-user-embed
     command: ["python", "cmd/user_embed_consumer/main.py"]
     env_file:
       - .env.production

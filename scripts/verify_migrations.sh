@@ -2,8 +2,25 @@
 # Проверка миграций: применяет все SQL-файлы из backend/migrations и проверяет базовые операции
 set -euo pipefail
 
-DB_URL="${DATABASE_URL:-postgres://site_parser:site_parser@localhost:55432/site_parser?sslmode=disable}"
-MIGRATIONS_DIR="${MIGRATIONS_DIR:-backend/migrations}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${ENV_FILE:-${ROOT_DIR}/.env}"
+
+if [[ -f "$ENV_FILE" ]]; then
+  # Auto-load repo .env to reduce false failures when DATABASE_URL is not exported.
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+DB_URL="${DATABASE_URL:-}"
+if [[ -z "$DB_URL" ]]; then
+  echo "ERROR: DATABASE_URL is not set."
+  echo "Set DATABASE_URL in environment or in $ENV_FILE"
+  exit 1
+fi
+
+MIGRATIONS_DIR="${MIGRATIONS_DIR:-${ROOT_DIR}/backend/migrations}"
 
 if [[ ! -d "$MIGRATIONS_DIR" ]]; then
   echo "ERROR: migrations directory not found: $MIGRATIONS_DIR"

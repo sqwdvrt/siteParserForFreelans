@@ -2,7 +2,6 @@ package usecase
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -50,9 +49,9 @@ func NewSendNotification(
 	}
 }
 
-// Execute обрабатывает кандидата: rate limit → запись в notifications → Send.
-// Пропускает при: rate limit, дубликат, отсутствие user/job.
-func (u *SendNotification) Execute(ctx context.Context, userID, jobID int64, matchScore float64) error {
+// Execute обрабатывает кандидата: EnsurePending → rate limit (только для новых) → Send → MarkSent.
+// Пропускает при: уже доставлено, rate limit, daily limit, отсутствие user/job.
+func (u *SendNotification) Execute(ctx context.Context, userID, jobID int64, matchScore float64, whyItFits string) error {
 	user, err := u.userRepo.GetByID(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("get user by id: %w", err)
@@ -71,45 +70,57 @@ func (u *SendNotification) Execute(ctx context.Context, userID, jobID int64, mat
 		return nil
 	}
 
-	recent, err := u.notifRepo.SentRecently(ctx, userID, u.rateLimit)
+	wasInserted, shouldSend, err := u.notifRepo.EnsurePending(ctx, userID, jobID, matchScore)
 	if err != nil {
 		return err
 	}
-	if recent {
-		slog.Debug("send notification: rate limited", "user_id", userID)
+	if !shouldSend {
+		slog.Debug("send notification: already sent, skip", "user_id", userID, "job_id", jobID)
 		return nil
 	}
 
-	count, err := u.notifRepo.CountToday(ctx, userID)
-	if err != nil {
-		return err
-	}
-	if count >= u.maxPerDay {
-		slog.Debug("send notification: daily limit reached", "user_id", userID, "count", count)
-		return nil
-	}
+	// Rate limit и daily limit применяются только к новым уведомлениям, не к retry.
+	if wasInserted {
+		recent, err := u.notifRepo.SentRecently(ctx, userID, u.rateLimit)
+		if err != nil {
+			return err
+		}
+		if recent {
+			slog.Debug("send notification: rate limited", "user_id", userID)
+			if delErr := u.notifRepo.Delete(ctx, userID, jobID); delErr != nil {
+				slog.Error("send notification: delete on rate limit failed", "user_id", userID, "err", delErr)
+			}
+			return nil
+		}
 
-	inserted, err := u.notifRepo.Record(ctx, userID, jobID, matchScore)
-	if err != nil {
-		return err
-	}
-	if !inserted {
-		slog.Debug("send notification: duplicate skipped", "user_id", userID, "job_id", jobID)
-		return nil
+		count, err := u.notifRepo.CountToday(ctx, userID)
+		if err != nil {
+			return err
+		}
+		if count >= u.maxPerDay {
+			slog.Debug("send notification: daily limit reached", "user_id", userID, "count", count)
+			if delErr := u.notifRepo.Delete(ctx, userID, jobID); delErr != nil {
+				slog.Error("send notification: delete on daily limit failed", "user_id", userID, "err", delErr)
+			}
+			return nil
+		}
 	}
 
 	payload := port.NotifyPayload{
 		Job:       job,
 		Score:     matchScore,
-		WhyItFits: "", // заполняется при интеграции с ai_metadata
+		WhyItFits: whyItFits,
 	}
 	if err := u.notifier.Send(ctx, user.TelegramID, payload); err != nil {
-		slog.Error("send notification: telegram failed", "user_id", userID, "err", err)
-		if rollbackErr := u.notifRepo.Delete(ctx, userID, jobID); rollbackErr != nil {
-			slog.Error("send notification: rollback failed", "user_id", userID, "job_id", jobID, "err", rollbackErr)
-			return errors.Join(err, fmt.Errorf("rollback notification record: %w", rollbackErr))
-		}
+		// Запись остаётся 'pending' — Redis-очередь повторит через Nack.
+		slog.Error("send notification: telegram failed, pending record kept for retry",
+			"user_id", userID, "job_id", jobID, "err", err)
 		return err
+	}
+
+	if err := u.notifRepo.MarkSent(ctx, userID, jobID); err != nil {
+		slog.Error("send notification: mark sent failed", "user_id", userID, "job_id", jobID, "err", err)
+		// Уведомление доставлено — не возвращаем ошибку, только логируем
 	}
 	slog.Info("notification sent", "user_id", userID, "job_id", jobID)
 	return nil

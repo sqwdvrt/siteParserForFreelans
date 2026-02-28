@@ -66,41 +66,99 @@ func createTestUserAndJob(t *testing.T, pool *pgxpool.Pool, testName string) (us
 	return uid, jid
 }
 
-func TestNotificationRepository_Record(t *testing.T) {
+func TestNotificationRepository_EnsurePending_New(t *testing.T) {
 	pool := setupTestDBForNotification(t)
 	repo := NewNotificationRepository(pool)
 	ctx := context.Background()
-	userID, jobID := createTestUserAndJob(t, pool, "Record")
+	userID, jobID := createTestUserAndJob(t, pool, "EnsurePendingNew")
 
-	inserted, err := repo.Record(ctx, userID, jobID, 0.85)
+	wasInserted, shouldSend, err := repo.EnsurePending(ctx, userID, jobID, 0.85)
 	if err != nil {
-		t.Fatalf("Record: %v", err)
+		t.Fatalf("EnsurePending: %v", err)
 	}
-	if !inserted {
-		t.Error("want inserted=true on first Record")
+	if !wasInserted {
+		t.Error("want wasInserted=true on first call")
+	}
+	if !shouldSend {
+		t.Error("want shouldSend=true on first call")
 	}
 }
 
-func TestNotificationRepository_Record_Duplicate(t *testing.T) {
+func TestNotificationRepository_EnsurePending_RetryWhenPending(t *testing.T) {
 	pool := setupTestDBForNotification(t)
 	repo := NewNotificationRepository(pool)
 	ctx := context.Background()
-	userID, jobID := createTestUserAndJob(t, pool, "Record_Duplicate")
+	userID, jobID := createTestUserAndJob(t, pool, "EnsurePendingRetry")
 
-	inserted1, err := repo.Record(ctx, userID, jobID, 0.85)
+	// Первый вызов — вставляет pending
+	_, _, err := repo.EnsurePending(ctx, userID, jobID, 0.85)
 	if err != nil {
-		t.Fatalf("Record 1: %v", err)
-	}
-	if !inserted1 {
-		t.Error("want inserted=true on first Record")
+		t.Fatalf("EnsurePending 1: %v", err)
 	}
 
-	inserted2, err := repo.Record(ctx, userID, jobID, 0.9)
+	// Второй вызов при status=pending — wasInserted=false, shouldSend=true
+	wasInserted, shouldSend, err := repo.EnsurePending(ctx, userID, jobID, 0.9)
 	if err != nil {
-		t.Fatalf("Record 2: %v", err)
+		t.Fatalf("EnsurePending 2: %v", err)
 	}
-	if inserted2 {
-		t.Error("want inserted=false on duplicate")
+	if wasInserted {
+		t.Error("want wasInserted=false on duplicate call")
+	}
+	if !shouldSend {
+		t.Error("want shouldSend=true when status=pending (retry)")
+	}
+}
+
+func TestNotificationRepository_EnsurePending_SkipWhenSent(t *testing.T) {
+	pool := setupTestDBForNotification(t)
+	repo := NewNotificationRepository(pool)
+	ctx := context.Background()
+	userID, jobID := createTestUserAndJob(t, pool, "EnsurePendingSkipSent")
+
+	// Вставляем и помечаем как sent
+	_, _, err := repo.EnsurePending(ctx, userID, jobID, 0.85)
+	if err != nil {
+		t.Fatalf("EnsurePending: %v", err)
+	}
+	if err := repo.MarkSent(ctx, userID, jobID); err != nil {
+		t.Fatalf("MarkSent: %v", err)
+	}
+
+	// После MarkSent — shouldSend=false
+	wasInserted, shouldSend, err := repo.EnsurePending(ctx, userID, jobID, 0.9)
+	if err != nil {
+		t.Fatalf("EnsurePending after sent: %v", err)
+	}
+	if wasInserted {
+		t.Error("want wasInserted=false when already sent")
+	}
+	if shouldSend {
+		t.Error("want shouldSend=false when status=sent")
+	}
+}
+
+func TestNotificationRepository_MarkSent(t *testing.T) {
+	pool := setupTestDBForNotification(t)
+	repo := NewNotificationRepository(pool)
+	ctx := context.Background()
+	userID, jobID := createTestUserAndJob(t, pool, "MarkSent")
+
+	_, _, err := repo.EnsurePending(ctx, userID, jobID, 0.85)
+	if err != nil {
+		t.Fatalf("EnsurePending: %v", err)
+	}
+
+	if err := repo.MarkSent(ctx, userID, jobID); err != nil {
+		t.Fatalf("MarkSent: %v", err)
+	}
+
+	// После MarkSent запись должна считаться sent
+	_, shouldSend, err := repo.EnsurePending(ctx, userID, jobID, 0.9)
+	if err != nil {
+		t.Fatalf("EnsurePending after MarkSent: %v", err)
+	}
+	if shouldSend {
+		t.Error("want shouldSend=false after MarkSent")
 	}
 }
 
@@ -110,7 +168,7 @@ func TestNotificationRepository_Delete(t *testing.T) {
 	ctx := context.Background()
 	userID, jobID := createTestUserAndJob(t, pool, "Delete")
 
-	_, _ = repo.Record(ctx, userID, jobID, 0.85)
+	_, _, _ = repo.EnsurePending(ctx, userID, jobID, 0.85)
 
 	err := repo.Delete(ctx, userID, jobID)
 	if err != nil {
@@ -122,6 +180,15 @@ func TestNotificationRepository_Delete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Delete again: %v", err)
 	}
+
+	// После Delete запись должна вставляться снова
+	wasInserted, shouldSend, err := repo.EnsurePending(ctx, userID, jobID, 0.85)
+	if err != nil {
+		t.Fatalf("EnsurePending after Delete: %v", err)
+	}
+	if !wasInserted || !shouldSend {
+		t.Error("want wasInserted=true, shouldSend=true after Delete")
+	}
 }
 
 func TestNotificationRepository_SentRecently(t *testing.T) {
@@ -130,14 +197,26 @@ func TestNotificationRepository_SentRecently(t *testing.T) {
 	ctx := context.Background()
 	userID, jobID := createTestUserAndJob(t, pool, "SentRecently")
 
-	_, _ = repo.Record(ctx, userID, jobID, 0.85)
-
+	// pending-запись НЕ считается за "sent recently"
+	_, _, _ = repo.EnsurePending(ctx, userID, jobID, 0.85)
 	recent, err := repo.SentRecently(ctx, userID, 5*time.Minute)
 	if err != nil {
-		t.Fatalf("SentRecently: %v", err)
+		t.Fatalf("SentRecently (pending): %v", err)
+	}
+	if recent {
+		t.Error("want false for pending record (not yet delivered)")
+	}
+
+	// После MarkSent — считается
+	if err := repo.MarkSent(ctx, userID, jobID); err != nil {
+		t.Fatalf("MarkSent: %v", err)
+	}
+	recent, err = repo.SentRecently(ctx, userID, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("SentRecently (sent): %v", err)
 	}
 	if !recent {
-		t.Error("want true: notification was just recorded with sent_at=NOW()")
+		t.Error("want true: notification was just marked sent")
 	}
 
 	// Другой user — не должно быть recent
@@ -176,17 +255,29 @@ func TestNotificationRepository_CountToday(t *testing.T) {
 		t.Fatalf("CountToday: %v", err)
 	}
 	if n != 0 {
-		t.Errorf("want 0 before Record, got %d", n)
+		t.Errorf("want 0 before EnsurePending, got %d", n)
 	}
 
-	_, _ = repo.Record(ctx, userID, jobID, 0.85)
-
+	// pending-запись НЕ считается в CountToday
+	_, _, _ = repo.EnsurePending(ctx, userID, jobID, 0.85)
 	n, err = repo.CountToday(ctx, userID)
 	if err != nil {
-		t.Fatalf("CountToday after: %v", err)
+		t.Fatalf("CountToday after EnsurePending: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("want 0 for pending record, got %d", n)
+	}
+
+	// После MarkSent — считается
+	if err := repo.MarkSent(ctx, userID, jobID); err != nil {
+		t.Fatalf("MarkSent: %v", err)
+	}
+	n, err = repo.CountToday(ctx, userID)
+	if err != nil {
+		t.Fatalf("CountToday after MarkSent: %v", err)
 	}
 	if n != 1 {
-		t.Errorf("want 1 after Record, got %d", n)
+		t.Errorf("want 1 after MarkSent, got %d", n)
 	}
 
 	// Другой user

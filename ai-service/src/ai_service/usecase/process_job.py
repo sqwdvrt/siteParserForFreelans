@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from ai_service.port.classifier import ClassificationResult
 from ai_service.port.embedding import EmbeddingService
 from ai_service.port.match_repository import MatchRepository
 from ai_service.port.match_notify_queue import MatchNotifyQueue
@@ -15,6 +16,53 @@ if TYPE_CHECKING:
     from ai_service.port.classifier import Classifier
 
 logger = logging.getLogger(__name__)
+
+_PROJECT_TYPE_LABELS: dict[str, str] = {
+    "web": "Веб-проект",
+    "mobile": "Мобильное приложение",
+    "bot": "Telegram-бот",
+    "other": "Проект",
+}
+_SENIORITY_LABELS: dict[str, str] = {
+    "junior": "junior",
+    "middle": "middle",
+    "senior": "senior",
+}
+_BUDGET_LABELS: dict[str, str] = {
+    "low": "небольшой бюджет",
+    "medium": "средний бюджет",
+    "high": "высокий бюджет",
+}
+
+
+def _build_why_it_fits(classification: ClassificationResult) -> str:
+    """Сформировать 1–2 фразы о проекте из данных классификатора."""
+    if not classification:
+        return ""
+
+    project_type = classification.get("project_type", "other")
+    label = _PROJECT_TYPE_LABELS.get(str(project_type), "Проект")
+
+    techs = classification.get("technologies") or []
+    if techs:
+        first_part = f"{label} со стеком {', '.join(techs[:3])}"
+    else:
+        first_part = label
+
+    sub_parts: list[str] = []
+    seniority = classification.get("seniority", "unknown")
+    if seniority and seniority != "unknown":
+        sub_parts.append(f"уровень: {_SENIORITY_LABELS.get(str(seniority), str(seniority))}")
+    budget = classification.get("budget_level", "unknown")
+    if budget and budget != "unknown":
+        budget_label = _BUDGET_LABELS.get(str(budget), "")
+        if budget_label:
+            sub_parts.append(budget_label)
+
+    parts = [first_part]
+    if sub_parts:
+        parts.append(", ".join(sub_parts))
+    return ". ".join(parts) + "."
 
 
 class ProcessJobUseCase:
@@ -58,6 +106,7 @@ class ProcessJobUseCase:
             "model": self._embedding.model_name,
             "text_length": len(text),
         }
+        classification: ClassificationResult = {}
         if self._classifier is not None:
             classification = self._classifier.classify(text)
             if classification:
@@ -72,6 +121,9 @@ class ProcessJobUseCase:
             )
             logger.info("job_id=%s: %d match candidates", job_id, len(candidates))
             if self._match_notify_queue is not None and candidates:
+                why_it_fits = _build_why_it_fits(classification)
+                for c in candidates:
+                    c.why_it_fits = why_it_fits
                 enqueue_many = getattr(self._match_notify_queue, "enqueue_many", None)
                 if callable(enqueue_many):
                     enqueue_many(candidates)

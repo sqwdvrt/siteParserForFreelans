@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"math/rand"
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
@@ -19,13 +23,23 @@ const (
 	maxDescLen    = 500
 	maxRetries    = 3
 	retryBaseWait = 1 * time.Second
+
+	breakerFailureThreshold = 3
+	breakerOpenInterval     = 30 * time.Second
+	breakerOpenJitter       = 0.2
 )
 
 // Notifier реализует port.Notifier через Telegram Bot API sendMessage.
 // Важно: ошибки возвращаются без токена (только "telegram api: http N") — токен не должен попадать в логи.
 type Notifier struct {
-	token  string
-	client *http.Client
+	token                   string
+	client                  *http.Client
+	maxRetries              int
+	retryBaseWait           time.Duration
+	breakerFailureThreshold int
+	breakerOpenInterval     time.Duration
+	breakerOpenJitter       float64
+	breaker                 *circuitBreaker
 }
 
 // NewNotifier создаёт Notifier с заданным токеном бота.
@@ -35,6 +49,12 @@ func NewNotifier(token string) *Notifier {
 		client: &http.Client{
 			Timeout: timeout,
 		},
+		maxRetries:              maxRetries,
+		retryBaseWait:           retryBaseWait,
+		breakerFailureThreshold: breakerFailureThreshold,
+		breakerOpenInterval:     breakerOpenInterval,
+		breakerOpenJitter:       breakerOpenJitter,
+		breaker:                 newCircuitBreaker(breakerFailureThreshold, breakerOpenInterval, breakerOpenJitter),
 	}
 }
 
@@ -43,7 +63,80 @@ func NewNotifierWithClient(token string, client *http.Client) *Notifier {
 	if client == nil {
 		client = &http.Client{Timeout: timeout}
 	}
-	return &Notifier{token: token, client: client}
+	return &Notifier{
+		token:                   token,
+		client:                  client,
+		maxRetries:              maxRetries,
+		retryBaseWait:           retryBaseWait,
+		breakerFailureThreshold: breakerFailureThreshold,
+		breakerOpenInterval:     breakerOpenInterval,
+		breakerOpenJitter:       breakerOpenJitter,
+		breaker:                 newCircuitBreaker(breakerFailureThreshold, breakerOpenInterval, breakerOpenJitter),
+	}
+}
+
+// Config задаёт retry/circuit-breaker параметры Notifier.
+type Config struct {
+	MaxRetries              int
+	RetryBaseWait           time.Duration
+	BreakerFailureThreshold int
+	BreakerOpenInterval     time.Duration
+	BreakerOpenJitter       float64 // 0..1: доля положительного jitter к базовой задержке
+}
+
+// Configure применяет retry/circuit-breaker параметры.
+func (n *Notifier) Configure(cfg Config) {
+	if cfg.MaxRetries > 0 {
+		n.maxRetries = cfg.MaxRetries
+	}
+	if cfg.RetryBaseWait > 0 {
+		n.retryBaseWait = cfg.RetryBaseWait
+	}
+	if cfg.BreakerFailureThreshold > 0 {
+		n.breakerFailureThreshold = cfg.BreakerFailureThreshold
+	}
+	if cfg.BreakerOpenInterval > 0 {
+		n.breakerOpenInterval = cfg.BreakerOpenInterval
+	}
+	if cfg.BreakerOpenJitter >= 0 {
+		n.breakerOpenJitter = clampJitter(cfg.BreakerOpenJitter)
+	}
+	n.breaker = newCircuitBreaker(n.breakerFailureThreshold, n.breakerOpenInterval, n.breakerOpenJitter)
+}
+
+func (n *Notifier) ensureConfigDefaults() {
+	if n.client == nil {
+		n.client = &http.Client{Timeout: timeout}
+	}
+	if n.maxRetries <= 0 {
+		n.maxRetries = maxRetries
+	}
+	if n.retryBaseWait <= 0 {
+		n.retryBaseWait = retryBaseWait
+	}
+	if n.breakerFailureThreshold <= 0 {
+		n.breakerFailureThreshold = breakerFailureThreshold
+	}
+	if n.breakerOpenInterval <= 0 {
+		n.breakerOpenInterval = breakerOpenInterval
+	}
+	if n.breakerOpenJitter < 0 {
+		n.breakerOpenJitter = breakerOpenJitter
+	}
+	n.breakerOpenJitter = clampJitter(n.breakerOpenJitter)
+	if n.breaker == nil {
+		n.breaker = newCircuitBreaker(n.breakerFailureThreshold, n.breakerOpenInterval, n.breakerOpenJitter)
+	}
+}
+
+func clampJitter(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 // Send отправляет уведомление о проекте в Telegram.
@@ -51,6 +144,8 @@ func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayl
 	if p.Job == nil {
 		return fmt.Errorf("job is nil")
 	}
+	n.ensureConfigDefaults()
+
 	text := formatMessage(p)
 
 	url := apiBase + n.token + "/sendMessage"
@@ -65,7 +160,14 @@ func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayl
 	}
 
 	var lastErr error
-	for attempt := 0; attempt < maxRetries; attempt++ {
+	var transientFailed bool
+	var transientImmediateOpen bool
+	var transientDelay time.Duration
+	for attempt := 0; attempt < n.maxRetries; attempt++ {
+		if wait, allowed := n.breaker.beforeRequest(time.Now()); !allowed {
+			return newCircuitOpenError(wait)
+		}
+
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(raw))
 		if err != nil {
 			return fmt.Errorf("create request: %w", err)
@@ -74,30 +176,313 @@ func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayl
 
 		resp, err := n.client.Do(req)
 		if err != nil {
-			lastErr = fmt.Errorf("send request: %w", err)
-			if attempt < maxRetries-1 {
-				if err := waitForRetry(ctx, retryBackoff(attempt)); err != nil {
+			delay := n.retryBackoff(attempt)
+			transientFailed = true
+			if delay > transientDelay {
+				transientDelay = delay
+			}
+			lastErr = newRetryableError(fmt.Sprintf("send request: %v", err), delay)
+			if attempt < n.maxRetries-1 {
+				if err := waitForRetry(ctx, delay); err != nil {
 					return err
 				}
 			}
 			continue
 		}
 		status := resp.StatusCode
+		var rateLimitDelay time.Duration
+		if status == http.StatusTooManyRequests {
+			rateLimitDelay = parseTelegramRetryAfter(resp.Body)
+		}
 		resp.Body.Close()
 
 		if status == http.StatusOK {
+			n.breaker.markSuccess()
 			return nil
 		}
+
 		lastErr = fmt.Errorf("telegram api: http %d", status)
-		if (status == 429 || status >= 500) && attempt < maxRetries-1 {
-			if err := waitForRetry(ctx, retryBackoff(attempt)); err != nil {
-				return err
+		if status == http.StatusTooManyRequests {
+			delay := rateLimitDelay
+			if delay <= 0 {
+				delay = n.retryBackoff(attempt)
+			}
+			transientFailed = true
+			transientImmediateOpen = true
+			if delay > transientDelay {
+				transientDelay = delay
+			}
+			lastErr = newRetryableError(lastErr.Error(), delay)
+			if attempt < n.maxRetries-1 {
+				if err := waitForRetry(ctx, delay); err != nil {
+					return err
+				}
+				continue
 			}
 			continue
 		}
+		if status >= http.StatusInternalServerError {
+			delay := n.retryBackoff(attempt)
+			transientFailed = true
+			if delay > transientDelay {
+				transientDelay = delay
+			}
+			lastErr = newRetryableError(lastErr.Error(), delay)
+			if attempt < n.maxRetries-1 {
+				if err := waitForRetry(ctx, delay); err != nil {
+					return err
+				}
+				continue
+			}
+			continue
+		}
+
+		n.breaker.markPermanentFailure()
 		return lastErr
 	}
+	if transientFailed {
+		n.breaker.markTransientFailure(time.Now(), transientDelay, transientImmediateOpen)
+	}
+	if lastErr == nil {
+		return errors.New("telegram send failed")
+	}
 	return lastErr
+}
+
+func (n *Notifier) retryBackoff(attempt int) time.Duration {
+	d := n.retryBaseWait
+	for i := 0; i < attempt; i++ {
+		d *= 2
+	}
+	return d
+}
+
+type retryableError struct {
+	msg        string
+	retryAfter time.Duration
+	noAttempt  bool
+}
+
+func newRetryableError(msg string, retryAfter time.Duration) *retryableError {
+	if retryAfter <= 0 {
+		retryAfter = retryBaseWait
+	}
+	return &retryableError{msg: msg, retryAfter: retryAfter}
+}
+
+func newCircuitOpenError(retryAfter time.Duration) *retryableError {
+	e := newRetryableError("telegram circuit open", retryAfter)
+	e.noAttempt = true
+	return e
+}
+
+func (e *retryableError) Error() string {
+	return e.msg
+}
+
+func (e *retryableError) RetryAfter() time.Duration {
+	return e.retryAfter
+}
+
+func (e *retryableError) NoAttempt() bool {
+	return e.noAttempt
+}
+
+// RetryAfter возвращает задержку до следующей попытки, если ошибка retryable.
+func RetryAfter(err error) (time.Duration, bool) {
+	if err == nil {
+		return 0, false
+	}
+	var withRetry interface{ RetryAfter() time.Duration }
+	if errors.As(err, &withRetry) {
+		delay := withRetry.RetryAfter()
+		if delay <= 0 {
+			delay = retryBaseWait
+		}
+		return delay, true
+	}
+	return 0, false
+}
+
+// ShouldRequeueWithoutRetry сообщает, что delivery надо вернуть в очередь без роста retry-счётчика.
+func ShouldRequeueWithoutRetry(err error) bool {
+	if err == nil {
+		return false
+	}
+	var mark interface{ NoAttempt() bool }
+	if errors.As(err, &mark) {
+		return mark.NoAttempt()
+	}
+	return false
+}
+
+func parseTelegramRetryAfter(body io.Reader) time.Duration {
+	if body == nil {
+		return 0
+	}
+	raw, err := io.ReadAll(io.LimitReader(body, 8*1024))
+	if err != nil || len(raw) == 0 {
+		return 0
+	}
+	var payload struct {
+		Parameters struct {
+			RetryAfter int `json:"retry_after"`
+		} `json:"parameters"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return 0
+	}
+	if payload.Parameters.RetryAfter <= 0 {
+		return 0
+	}
+	return time.Duration(payload.Parameters.RetryAfter) * time.Second
+}
+
+type breakerState uint8
+
+const (
+	breakerClosed breakerState = iota
+	breakerOpen
+	breakerHalfOpen
+)
+
+type circuitBreaker struct {
+	mu               sync.Mutex
+	state            breakerState
+	failures         int
+	openedUntil      time.Time
+	halfOpenInFlight bool
+
+	failureThreshold int
+	openInterval     time.Duration
+	openJitter       float64
+	randFloat64      func() float64
+}
+
+func newCircuitBreaker(failureThreshold int, openInterval time.Duration, openJitter float64) *circuitBreaker {
+	if failureThreshold <= 0 {
+		failureThreshold = breakerFailureThreshold
+	}
+	if openInterval <= 0 {
+		openInterval = breakerOpenInterval
+	}
+	openJitter = clampJitter(openJitter)
+	return &circuitBreaker{
+		state:            breakerClosed,
+		failureThreshold: failureThreshold,
+		openInterval:     openInterval,
+		openJitter:       openJitter,
+		randFloat64:      rand.Float64,
+	}
+}
+
+func (b *circuitBreaker) beforeRequest(now time.Time) (time.Duration, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	switch b.state {
+	case breakerOpen:
+		if now.Before(b.openedUntil) {
+			return b.openedUntil.Sub(now), false
+		}
+		b.state = breakerHalfOpen
+		b.halfOpenInFlight = false
+	case breakerHalfOpen:
+		if b.halfOpenInFlight {
+			wait := b.openInterval
+			if now.Before(b.openedUntil) {
+				wait = b.openedUntil.Sub(now)
+			}
+			wait = withPositiveJitter(wait, b.openJitter, b.randFloat64)
+			if wait <= 0 {
+				wait = retryBaseWait
+			}
+			return wait, false
+		}
+	}
+
+	if b.state == breakerHalfOpen {
+		b.halfOpenInFlight = true
+	}
+	return 0, true
+}
+
+func (b *circuitBreaker) markSuccess() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	b.state = breakerClosed
+	b.failures = 0
+	b.halfOpenInFlight = false
+	b.openedUntil = time.Time{}
+}
+
+func (b *circuitBreaker) markPermanentFailure() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.state == breakerHalfOpen {
+		b.state = breakerClosed
+	}
+	b.failures = 0
+	b.halfOpenInFlight = false
+}
+
+func (b *circuitBreaker) markTransientFailure(now time.Time, delay time.Duration, immediateOpen bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.state == breakerHalfOpen {
+		b.open(now, delay, immediateOpen)
+		return
+	}
+	b.halfOpenInFlight = false
+
+	if immediateOpen {
+		b.open(now, delay, true)
+		return
+	}
+
+	b.failures++
+	if b.failures >= b.failureThreshold {
+		b.open(now, delay, false)
+	}
+}
+
+func (b *circuitBreaker) open(now time.Time, delay time.Duration, useDelayAsIs bool) {
+	openFor := b.openInterval
+	if useDelayAsIs && delay > 0 {
+		openFor = delay
+	} else if delay > openFor {
+		openFor = delay
+	}
+	if openFor <= 0 {
+		openFor = retryBaseWait
+	}
+	openFor = withPositiveJitter(openFor, b.openJitter, b.randFloat64)
+
+	b.state = breakerOpen
+	b.failures = 0
+	b.halfOpenInFlight = false
+	b.openedUntil = now.Add(openFor)
+}
+
+func withPositiveJitter(base time.Duration, jitter float64, rnd func() float64) time.Duration {
+	if base <= 0 || jitter <= 0 {
+		return base
+	}
+	if rnd == nil {
+		rnd = rand.Float64
+	}
+	v := rnd()
+	if v < 0 {
+		v = 0
+	}
+	if v > 1 {
+		v = 1
+	}
+	extra := float64(base) * jitter * v
+	return base + time.Duration(extra)
 }
 
 func retryBackoff(attempt int) time.Duration {

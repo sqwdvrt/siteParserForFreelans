@@ -26,6 +26,7 @@ _HTTP_ONLY_OPENER = urllib.request.build_opener(
     urllib.request.HTTPHandler(),
     urllib.request.HTTPSHandler(),
 )
+DEFAULT_OLLAMA_MODEL = "llama3.2:3b-instruct-q4_K_M"
 
 
 def _safe_open(request: urllib.request.Request, timeout: int):
@@ -44,7 +45,7 @@ class OllamaClassifier(Classifier):
     def __init__(
         self,
         base_url: str = "http://localhost:11434",
-        model: str = "llama3.2",
+        model: str = DEFAULT_OLLAMA_MODEL,
         timeout_sec: int = DEFAULT_TIMEOUT_SEC,
     ) -> None:
         self._base_url = base_url.rstrip("/")

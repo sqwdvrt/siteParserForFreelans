@@ -66,11 +66,16 @@ psql_compose() {
 wait_for_compose_health() {
   local service="$1"
   local timeout_sec="${2:-180}"
+  local required="${3:-1}"
   local elapsed=0
   local container_id
   container_id="$(docker compose ps -q "$service" | head -n1)"
 
   if [ -z "$container_id" ]; then
+    if [ "$required" = "0" ]; then
+      echo "INFO: сервис '$service' не запущен (optional), пропускаем ожидание"
+      return 0
+    fi
     echo "ERROR: контейнер сервиса '$service' не найден"
     exit 1
   fi
@@ -98,9 +103,9 @@ wait_for_compose_health() {
 }
 
 echo "=== E2E: Запуск docker compose ==="
-docker compose up -d
+docker compose --profile workers up -d
 wait_for_compose_health "ai-service" 180
-wait_for_compose_health "ai-user-embed" 180
+wait_for_compose_health "ai-user-embed" 180 0
 echo "Ожидание API (10 сек)..."
 sleep 10
 

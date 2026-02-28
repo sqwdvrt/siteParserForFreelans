@@ -13,14 +13,11 @@ TELEGRAM_BOT_COVERAGE_MIN="${TELEGRAM_BOT_COVERAGE_MIN:-80}"
 GO_COVERAGE_TOOLCHAIN="${GO_COVERAGE_TOOLCHAIN:-go1.25.7}"
 BACKEND_GOMODCACHE="${BACKEND_GOMODCACHE:-${ROOT_DIR}/backend/.gomodcache-${GO_COVERAGE_TOOLCHAIN}}"
 BACKEND_GOCACHE="${BACKEND_GOCACHE:-${ROOT_DIR}/backend/.gocache-${GO_COVERAGE_TOOLCHAIN}}"
-PYTEST_AI_AUTO_INSTALL="${PYTEST_AI_AUTO_INSTALL:-1}"
-PYTEST_TG_AUTO_INSTALL="${PYTEST_TG_AUTO_INSTALL:-1}"
 
 cleanup() {
   [[ -n "${GO_COVER_FILE:-}" && -f "${GO_COVER_FILE}" ]] && rm -f "${GO_COVER_FILE}"
   [[ -n "${AI_COVER_LOG:-}" && -f "${AI_COVER_LOG}" ]] && rm -f "${AI_COVER_LOG}"
   [[ -n "${TG_COVER_LOG:-}" && -f "${TG_COVER_LOG}" ]] && rm -f "${TG_COVER_LOG}"
-  [[ -n "${TG_COV_VENV_DIR:-}" && -d "${TG_COV_VENV_DIR}" ]] && rm -rf "${TG_COV_VENV_DIR}"
   true
 }
 trap cleanup EXIT
@@ -57,54 +54,18 @@ choose_python_cmd() {
   return 1
 }
 
-is_python_virtualenv() {
-  "$1" - <<'PY' >/dev/null 2>&1
-import sys
-in_venv = (
-    getattr(sys, "base_prefix", sys.prefix) != sys.prefix
-    or hasattr(sys, "real_prefix")
-)
-raise SystemExit(0 if in_venv else 1)
-PY
-}
-
 has_pytest_cov() {
   "$1" -m pytest --help 2>/dev/null | grep -q -- '--cov'
 }
 
-ensure_tg_pytest_coverage_tools() {
+ensure_pytest_coverage_tools() {
   local pybin="$1"
   if has_pytest_cov "${pybin}"; then
-    echo "${pybin}"
     return 0
   fi
 
-  if [[ "${PYTEST_TG_AUTO_INSTALL}" != "1" ]]; then
-    echo "ERROR: pytest/pytest-cov is unavailable for ${pybin}; set PYTEST_TG_AUTO_INSTALL=1 to auto-install" >&2
-    return 1
-  fi
-
-  echo "WARN: pytest/pytest-cov not found for ${pybin}; installing..." >&2
-  if is_python_virtualenv "${pybin}"; then
-    PIP_DISABLE_PIP_VERSION_CHECK=1 "${pybin}" -m pip install --upgrade pytest pytest-cov >/dev/null
-    echo "${pybin}"
-    return 0
-  else
-    # Prefer global install first (works on many CI runners).
-    if PIP_DISABLE_PIP_VERSION_CHECK=1 "${pybin}" -m pip install --upgrade pytest pytest-cov >/dev/null 2>&1; then
-      echo "${pybin}"
-      return 0
-    fi
-
-    # Fallback: isolate tools into a temporary venv to avoid externally-managed Python/user-site issues.
-    TG_COV_VENV_DIR="$(mktemp -d "${TMPDIR:-/tmp}/tg-cov-venv.XXXXXX")"
-    "${pybin}" -m venv "${TG_COV_VENV_DIR}"
-    PIP_DISABLE_PIP_VERSION_CHECK=1 "${TG_COV_VENV_DIR}/bin/python" -m pip install --upgrade pip pytest pytest-cov >/dev/null
-    echo "${TG_COV_VENV_DIR}/bin/python"
-    return 0
-  fi
-
-  echo "ERROR: failed to install pytest/pytest-cov for ${pybin}" >&2
+  echo "ERROR: pytest-cov is unavailable for ${pybin}. Install dependencies before running coverage gate:" >&2
+  echo "  ${pybin} -m pip install \"pytest>=7.0\" \"pytest-cov>=4.0\"" >&2
   return 1
 }
 
@@ -175,7 +136,7 @@ echo "=== Python coverage: ai-service/src ==="
 cd "${ROOT_DIR}"
 AI_COVER_LOG="$(mktemp)"
 set +e
-PYTEST_AI_AUTO_INSTALL="${PYTEST_AI_AUTO_INSTALL}" ./scripts/pytest_ai.sh --cov=src --cov-report=term-missing -q | tee "${AI_COVER_LOG}"
+PYTEST_AI_AUTO_INSTALL=0 ./scripts/pytest_ai.sh --cov=src --cov-report=term-missing -q | tee "${AI_COVER_LOG}"
 PYTEST_STATUS=${PIPESTATUS[0]}
 set -e
 if [[ ${PYTEST_STATUS} -ne 0 ]]; then
@@ -200,7 +161,7 @@ echo "=== Python coverage: telegram-bot/main.py ==="
 cd "${ROOT_DIR}/telegram-bot"
 TG_COVER_LOG="$(mktemp)"
 TG_PYTHON_BIN="$(choose_python_cmd)"
-TG_PYTHON_BIN="$(ensure_tg_pytest_coverage_tools "${TG_PYTHON_BIN}")"
+ensure_pytest_coverage_tools "${TG_PYTHON_BIN}"
 set +e
 "${TG_PYTHON_BIN}" -m pytest --cov=. --cov-report=term-missing -q | tee "${TG_COVER_LOG}"
 PYTEST_TG_STATUS=${PIPESTATUS[0]}

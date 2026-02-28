@@ -3,6 +3,7 @@ package telegram
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -21,7 +22,7 @@ type mockTransport struct {
 func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return &http.Response{
 		StatusCode: m.status,
-		Body:       io.NopCloser(nil),
+		Body:       io.NopCloser(strings.NewReader("")),
 		Header:     make(http.Header),
 	}, nil
 }
@@ -142,7 +143,22 @@ func (m *mockTransportWithCount) RoundTrip(req *http.Request) (*http.Response, e
 	}
 	return &http.Response{
 		StatusCode: status,
-		Body:       io.NopCloser(nil),
+		Body:       io.NopCloser(strings.NewReader("")),
+		Header:     make(http.Header),
+	}, nil
+}
+
+type mockTransportWithBodyAndCount struct {
+	status   int
+	body     string
+	attempts *int
+}
+
+func (m *mockTransportWithBodyAndCount) RoundTrip(req *http.Request) (*http.Response, error) {
+	*m.attempts++
+	return &http.Response{
+		StatusCode: m.status,
+		Body:       io.NopCloser(strings.NewReader(m.body)),
 		Header:     make(http.Header),
 	}, nil
 }
@@ -199,5 +215,219 @@ func TestNotifier_Send_RespectsContextCancel_DuringRetryOnRequestError(t *testin
 	}
 	if elapsed >= retryBaseWait {
 		t.Fatalf("Send waited too long after cancel: %v", elapsed)
+	}
+}
+
+func TestNotifier_Send_429_OpensCircuitWithRetryAfter(t *testing.T) {
+	attempts := 0
+	n := NewNotifierWithClient("token", &http.Client{
+		Transport: &mockTransportWithBodyAndCount{
+			status:   429,
+			body:     `{"ok":false,"parameters":{"retry_after":2}}`,
+			attempts: &attempts,
+		},
+		Timeout: 5 * time.Second,
+	})
+	n.maxRetries = 1
+	n.retryBaseWait = 10 * time.Millisecond
+	n.breaker = newCircuitBreaker(3, 100*time.Millisecond, 0)
+
+	job := &domain.Job{ID: 1, Title: "T", URL: "https://kwork.ru/p/1"}
+	err := n.Send(context.Background(), 999, port.NotifyPayload{Job: job, Score: 0.9})
+	if err == nil {
+		t.Fatal("want error on 429")
+	}
+	delay, ok := RetryAfter(err)
+	if !ok {
+		t.Fatalf("want retryable error on 429, got %v", err)
+	}
+	if delay != 2*time.Second {
+		t.Fatalf("retry delay = %v, want 2s", delay)
+	}
+
+	err = n.Send(context.Background(), 999, port.NotifyPayload{Job: job, Score: 0.9})
+	if err == nil {
+		t.Fatal("want circuit-open error on immediate second send")
+	}
+	if !strings.Contains(err.Error(), "circuit open") {
+		t.Fatalf("want circuit-open error, got %v", err)
+	}
+	if attempts != 1 {
+		t.Fatalf("circuit-open call must not hit transport, attempts=%d", attempts)
+	}
+	if !ShouldRequeueWithoutRetry(err) {
+		t.Fatal("circuit-open error must be requeued without retry increment")
+	}
+}
+
+func TestNotifier_Send_5xx_OpensCircuitAfterThreshold(t *testing.T) {
+	attempts := 0
+	n := NewNotifierWithClient("token", &http.Client{
+		Transport: &mockTransportWithBodyAndCount{
+			status:   500,
+			body:     "",
+			attempts: &attempts,
+		},
+		Timeout: 5 * time.Second,
+	})
+	n.maxRetries = 1
+	n.retryBaseWait = 10 * time.Millisecond
+	n.breaker = newCircuitBreaker(2, 150*time.Millisecond, 0)
+
+	job := &domain.Job{ID: 1, Title: "T", URL: "https://kwork.ru/p/1"}
+
+	if err := n.Send(context.Background(), 999, port.NotifyPayload{Job: job, Score: 0.9}); err == nil {
+		t.Fatal("want first 5xx error")
+	}
+	if err := n.Send(context.Background(), 999, port.NotifyPayload{Job: job, Score: 0.9}); err == nil {
+		t.Fatal("want second 5xx error")
+	}
+	err := n.Send(context.Background(), 999, port.NotifyPayload{Job: job, Score: 0.9})
+	if err == nil {
+		t.Fatal("want circuit-open error")
+	}
+	if !strings.Contains(err.Error(), "circuit open") {
+		t.Fatalf("want circuit-open error, got %v", err)
+	}
+	if attempts != 2 {
+		t.Fatalf("circuit-open call must not hit transport, attempts=%d", attempts)
+	}
+}
+
+func TestNotifier_Send_5xx_ThresholdCountsPerSendNotPerInternalRetry(t *testing.T) {
+	attempts := 0
+	n := NewNotifierWithClient("token", &http.Client{
+		Transport: &mockTransportWithBodyAndCount{
+			status:   500,
+			body:     "",
+			attempts: &attempts,
+		},
+		Timeout: 5 * time.Second,
+	})
+	n.maxRetries = 3
+	n.retryBaseWait = 1 * time.Millisecond
+	n.breaker = newCircuitBreaker(3, 100*time.Millisecond, 0)
+
+	job := &domain.Job{ID: 1, Title: "T", URL: "https://kwork.ru/p/1"}
+
+	if err := n.Send(context.Background(), 999, port.NotifyPayload{Job: job, Score: 0.9}); err == nil {
+		t.Fatal("want first 5xx error")
+	}
+	if err := n.Send(context.Background(), 999, port.NotifyPayload{Job: job, Score: 0.9}); err == nil {
+		t.Fatal("want second 5xx error")
+	}
+	err := n.Send(context.Background(), 999, port.NotifyPayload{Job: job, Score: 0.9})
+	if err == nil {
+		t.Fatal("want third 5xx error")
+	}
+	if strings.Contains(err.Error(), "circuit open") {
+		t.Fatalf("third send must still perform request retries, got %v", err)
+	}
+	if attempts != 9 {
+		t.Fatalf("want 9 real HTTP attempts before opening breaker, got %d", attempts)
+	}
+
+	err = n.Send(context.Background(), 999, port.NotifyPayload{Job: job, Score: 0.9})
+	if err == nil {
+		t.Fatal("want circuit-open error after threshold reached")
+	}
+	if !strings.Contains(err.Error(), "circuit open") {
+		t.Fatalf("want circuit-open error, got %v", err)
+	}
+	if attempts != 9 {
+		t.Fatalf("circuit-open call must not hit transport, attempts=%d", attempts)
+	}
+}
+
+func TestRetryAfter_DetectsWrappedRetryableError(t *testing.T) {
+	err := fmt.Errorf("wrapped: %w", newRetryableError("retryable", 3*time.Second))
+	delay, ok := RetryAfter(err)
+	if !ok {
+		t.Fatal("want wrapped retryable error to be detected")
+	}
+	if delay != 3*time.Second {
+		t.Fatalf("retry delay = %v, want 3s", delay)
+	}
+}
+
+func TestShouldRequeueWithoutRetry_OnlyForCircuitOpen(t *testing.T) {
+	if !ShouldRequeueWithoutRetry(newCircuitOpenError(2 * time.Second)) {
+		t.Fatal("circuit-open should request requeue without retry increment")
+	}
+	if ShouldRequeueWithoutRetry(newRetryableError("telegram api: http 500", time.Second)) {
+		t.Fatal("regular retryable errors must consume retry budget")
+	}
+}
+
+func TestNotifier_Configure_AppliesRetryBreakerConfig(t *testing.T) {
+	n := NewNotifierWithClient("token", &http.Client{Transport: &mockTransport{status: 200}})
+
+	n.Configure(Config{
+		MaxRetries:              7,
+		RetryBaseWait:           250 * time.Millisecond,
+		BreakerFailureThreshold: 9,
+		BreakerOpenInterval:     45 * time.Second,
+		BreakerOpenJitter:       0.35,
+	})
+
+	if n.maxRetries != 7 {
+		t.Fatalf("maxRetries = %d, want 7", n.maxRetries)
+	}
+	if n.retryBaseWait != 250*time.Millisecond {
+		t.Fatalf("retryBaseWait = %v, want 250ms", n.retryBaseWait)
+	}
+	if n.breakerFailureThreshold != 9 {
+		t.Fatalf("breakerFailureThreshold = %d, want 9", n.breakerFailureThreshold)
+	}
+	if n.breakerOpenInterval != 45*time.Second {
+		t.Fatalf("breakerOpenInterval = %v, want 45s", n.breakerOpenInterval)
+	}
+	if n.breakerOpenJitter != 0.35 {
+		t.Fatalf("breakerOpenJitter = %v, want 0.35", n.breakerOpenJitter)
+	}
+	if n.breaker == nil {
+		t.Fatal("breaker must be rebuilt after Configure")
+	}
+	if n.breaker.failureThreshold != 9 {
+		t.Fatalf("breaker.failureThreshold = %d, want 9", n.breaker.failureThreshold)
+	}
+	if n.breaker.openInterval != 45*time.Second {
+		t.Fatalf("breaker.openInterval = %v, want 45s", n.breaker.openInterval)
+	}
+	if n.breaker.openJitter != 0.35 {
+		t.Fatalf("breaker.openJitter = %v, want 0.35", n.breaker.openJitter)
+	}
+}
+
+func TestCircuitBreaker_Open_UsesPositiveJitter(t *testing.T) {
+	now := time.Unix(100, 0)
+	b := newCircuitBreaker(1, 10*time.Second, 0.5)
+	b.randFloat64 = func() float64 { return 1 } // max jitter
+
+	b.markTransientFailure(now, 10*time.Second, false)
+
+	if b.state != breakerOpen {
+		t.Fatalf("state = %v, want open", b.state)
+	}
+	got := b.openedUntil.Sub(now)
+	if got != 15*time.Second {
+		t.Fatalf("open window = %v, want 15s", got)
+	}
+}
+
+func TestCircuitBreaker_HalfOpenInFlight_UsesPositiveJitterOnWait(t *testing.T) {
+	now := time.Unix(200, 0)
+	b := newCircuitBreaker(1, 10*time.Second, 0.5)
+	b.randFloat64 = func() float64 { return 1 } // max jitter
+	b.state = breakerHalfOpen
+	b.halfOpenInFlight = true
+	b.openedUntil = now.Add(10 * time.Second)
+
+	wait, allowed := b.beforeRequest(now)
+	if allowed {
+		t.Fatal("half-open in-flight must reject concurrent probe")
+	}
+	if wait != 15*time.Second {
+		t.Fatalf("wait = %v, want 15s", wait)
 	}
 }

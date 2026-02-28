@@ -10,9 +10,10 @@
 
 **Полный стек с ботом:**
 ```bash
-docker compose up -d
+docker compose --profile workers up -d
 ```
 Запускает: postgres, redis, backend-api, backend-crawler, backend-notifier, ai-service, **telegram-bot**.
+`ai-user-embed` запускается отдельно через profile `ai-user-embed` при необходимости.
 
 Напишите боту в Telegram `/start` → `/profile Ваш профиль` — всё автоматически.
 
@@ -20,6 +21,7 @@ docker compose up -d
 ```bash
 ./scripts/e2e_test.sh
 ```
+Скрипт поднимает compose с профилем `workers`.
 Скрипт берёт `TELEGRAM_ID` из `.env` — уведомления придут вам.
 
 ## Быстрый запуск E2E
@@ -29,7 +31,7 @@ docker compose up -d
 ```
 
 Скрипт выполняет:
-- **9.7:** `docker compose up`, POST /users → проверка User в БД
+- **9.7:** `docker compose --profile workers up`, POST /users → проверка User в БД
 - **9.8:** PUT /profile, вставка job, push в ai-process → проверка job_embeddings, push в match-notify
 - **9.9:** Notifier обрабатывает match-notify → проверка логов (реальное сообщение — при `TELEGRAM_ID` = ваш chat_id)
 
@@ -37,14 +39,16 @@ docker compose up -d
 
 1. Добавьте в `.env`: `TELEGRAM_ID=ваш_chat_id` (узнать: @userinfobot)
 2. Запустите `./scripts/e2e_test.sh` — ID подставится из .env
-3. Или: `TELEGRAM_ID=ваш_chat_id ./scripts/e2e_test.sh`
+3. Или override из окружения (имеет приоритет над `.env`):
+   `TELEGRAM_ID=ваш_chat_id ./scripts/e2e_test.sh`
+   или `E2E_TELEGRAM_ID=ваш_chat_id ./scripts/e2e_test.sh`
 4. Проверьте Telegram — должно прийти уведомление
 
 ## Проверка без скрипта
 
 ```bash
 # 1. Запуск
-docker compose up -d
+docker compose --profile workers up -d
 # Подождать ~30 сек
 
 # 2. POST /users (имитация /start)

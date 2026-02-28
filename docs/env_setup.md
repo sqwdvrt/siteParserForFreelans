@@ -4,10 +4,14 @@
 |------------|-----------|
 | **APP_ENV** | Режим запуска: `development` (локально) или `production` (включает строгие transport-policy проверки) |
 | **TELEGRAM_BOT_TOKEN** | [@BotFather](https://t.me/BotFather) → /newbot → скопировать токен |
+| **LOG_LEVEL** | Уровень логов telegram-bot (`DEBUG`, `INFO`, `WARNING`, `ERROR`), по умолчанию `INFO` |
 | **DATABASE_URL** | PostgreSQL URL. Локально: `...?sslmode=disable`. В production: только `sslmode=require|verify-ca|verify-full` |
 | **POSTGRES_PASSWORD** | Сильный пароль PostgreSQL (обязателен; в `.env.example` только шаблон) |
 | **REDIS_URL** | Redis URL. Локально: `redis://localhost:6379/0`. В production: только `rediss://...` + пароль |
 | **API_URL** | URL Backend API. Локально: `http://localhost:8080`. В production (telegram-bot): только `https://` |
+| **OLLAMA_URL** | URL Ollama для AI classifier. По умолчанию `http://ollama:11434` (docker-compose service `ollama`) |
+| **OLLAMA_MODEL** | Модель Ollama для классификации. По умолчанию `llama3.2:3b-instruct-q4_K_M` |
+| **OLLAMA_TIMEOUT_SEC** | Таймаут запроса к Ollama в секундах. По умолчанию `30` |
 | **API_ADDR** | Порт, на котором слушает API. По умолчанию: `:8080` |
 | **API_TLS_CERT_FILE / API_TLS_KEY_FILE** | TLS-сертификат и ключ API. Обязательны для backend API в `APP_ENV=production` |
 | **API_AUTH_TOKEN** | Секрет для Bearer-auth backend API (должен совпадать у backend и telegram-bot) |
@@ -16,6 +20,11 @@
 | **API_RATE_LIMIT_WINDOW_SEC** | Окно rate-limit backend API, по умолчанию `60` секунд |
 | **API_RATE_LIMIT_IP_RPM** | Лимит запросов API на IP в окне (`window`), по умолчанию `120` |
 | **API_RATE_LIMIT_TG_RPM** | Лимит запросов API на Telegram ID в окне (`window`), по умолчанию `60` |
+| **NOTIFIER_MAX_RETRIES** | Количество внутренних retry отправки в Telegram за один `Send` (по умолчанию `3`) |
+| **NOTIFIER_RETRY_BASE_WAIT** | Базовая задержка retry в формате duration (`1s`, `500ms`), по умолчанию `1s` |
+| **NOTIFIER_BREAKER_FAILURE_THRESHOLD** | Порог неуспешных `Send` до открытия circuit breaker (по умолчанию `3`) |
+| **NOTIFIER_BREAKER_OPEN_INTERVAL** | Базовый интервал open-состояния breaker в формате duration, по умолчанию `30s` |
+| **NOTIFIER_BREAKER_OPEN_JITTER** | Положительный jitter open/half-open окна breaker (`0..1`), по умолчанию `0.2` |
 | **API_ALLOW_REDIS_DEGRADED** | Явный opt-in для запуска API без Redis (`1=true`) только в development. По умолчанию `0`: если Redis недоступен, backend API завершится с ошибкой (fail-closed). В `APP_ENV=production` значение `1` запрещено |
 | **API_TRUSTED_PROXY_CIDRS** | CIDR-allowlist доверенных reverse-proxy (через запятую). `X-Forwarded-For`/`X-Real-IP` используются только для запросов от этих proxy |
 | **POSTGRES_BIND_IP / REDIS_BIND_IP / API_BIND_IP** | Интерфейс публикации портов Docker на хосте. По умолчанию `127.0.0.1` (локальный доступ) |
@@ -44,7 +53,9 @@ Production compose не поднимает локальные PostgreSQL/Redis �
 - **Python:** `>=3.11` (по `ai-service/pyproject.toml`).
 - **Go (security baseline):** использовать патч-версию `>=1.25.7`.
   Для локальных запусков можно явно задавать:
-  `GOTOOLCHAIN=go1.25.7 go test ./...`
+  `GO_TOOLCHAIN=go1.25.7 bash ./scripts/go_test_backend.sh ./...`
+  Если host-сеть ограничена (proxy.golang.org/github.com недоступны), используй:
+  `BACKEND_GO_TEST_MODE=docker bash ./scripts/go_test_backend.sh ./...`
 - Проверка Python:
   `python3.11 --version`
 

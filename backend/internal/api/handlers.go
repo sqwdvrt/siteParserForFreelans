@@ -11,7 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -54,6 +54,7 @@ type Handlers struct {
 	UserEmbedQueue    port.UserEmbedQueue // nil — очередь не используется
 	AuthToken         string              // обязательный bearer token для API
 	UserHMACSecret    string              // обязательный секрет подписи user-level запросов
+	Logger            *slog.Logger        // optional structured logger; defaults to slog.Default()
 	NonceStore        NonceStore          // optional: anti-replay (nonce)
 	RateLimiter       RequestRateLimiter  // optional: rate limit (per ip/per telegram id)
 	TrustedProxyCIDRs []*net.IPNet        // optional: trusted reverse proxies for forwarded headers
@@ -134,13 +135,13 @@ func (h *Handlers) PostUsers(w http.ResponseWriter, r *http.Request) {
 	}
 	userID, err := h.UserRepo.Save(r.Context(), int64(req.TelegramID))
 	if err != nil {
-		log.Printf("POST /users error: %v", err)
+		h.logger().Error("post users save failed", "err", err)
 		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(PostUsersResponse{UserID: userID}); err != nil {
-		log.Printf("POST /users encode response: %v", err)
+		h.logger().Error("post users encode response failed", "user_id", userID, "err", err)
 	}
 }
 
@@ -190,7 +191,7 @@ func (h *Handlers) PutUserProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := h.UserRepo.GetByID(r.Context(), userID)
 	if err != nil {
-		log.Printf("PUT /users/%d/profile get user: %v", userID, err)
+		h.logger().Error("put user profile get user failed", "user_id", userID, "err", err)
 		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
 		return
 	}
@@ -202,15 +203,33 @@ func (h *Handlers) PutUserProfile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
+	if h.UserEmbedQueue == nil {
+		h.logger().Error("put user profile user embed queue unavailable", "user_id", userID)
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		return
+	}
 	if err := h.UserRepo.UpdateProfile(r.Context(), userID, req.ProfileText); err != nil {
-		log.Printf("PUT /users/%d/profile update: %v", userID, err)
+		h.logger().Error("put user profile update failed", "user_id", userID, "err", err)
 		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
 		return
 	}
-	if h.UserEmbedQueue != nil {
-		if err := h.UserEmbedQueue.Enqueue(r.Context(), userID); err != nil {
-			log.Printf("PUT /users/%d/profile enqueue user-embed: %v", userID, err)
+	if err := h.UserEmbedQueue.Enqueue(r.Context(), userID); err != nil {
+		h.logger().Error("put user profile enqueue user embed failed", "user_id", userID, "err", err)
+		rollbackProfileText := ""
+		if user.ProfileText != nil {
+			rollbackProfileText = *user.ProfileText
 		}
+		if rollbackErr := h.UserRepo.UpdateProfile(r.Context(), userID, rollbackProfileText); rollbackErr != nil {
+			h.logger().Error(
+				"put user profile rollback failed after enqueue error",
+				"user_id", userID,
+				"err", rollbackErr,
+			)
+		} else {
+			h.logger().Warn("put user profile rolled back after enqueue error", "user_id", userID)
+		}
+		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -298,7 +317,7 @@ func (h *Handlers) authorizeUserRequest(w http.ResponseWriter, r *http.Request, 
 		nonceKey := fmt.Sprintf("tg:%d:%s", telegramID, nonce)
 		ok, err := h.NonceStore.Use(r.Context(), nonceKey, h.nonceTTL())
 		if err != nil {
-			log.Printf("nonce store error: %v", err)
+			h.logger().Error("nonce store failed", "telegram_id", telegramID, "err", err)
 			http.Error(w, internalErrorMessage, http.StatusInternalServerError)
 			return false
 		}
@@ -375,7 +394,7 @@ func (h *Handlers) enforceIPRateLimit(w http.ResponseWriter, r *http.Request) bo
 	}
 	allowed, err := h.RateLimiter.Allow(r.Context(), "ip:"+ip, h.ipRateLimit(), h.rateLimitWindow())
 	if err != nil {
-		log.Printf("ip rate-limit error: %v", err)
+		h.logger().Error("ip rate limit check failed", "ip", ip, "err", err)
 		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
 		return false
 	}
@@ -397,7 +416,7 @@ func (h *Handlers) enforceTelegramRateLimit(w http.ResponseWriter, r *http.Reque
 		h.rateLimitWindow(),
 	)
 	if err != nil {
-		log.Printf("telegram rate-limit error: %v", err)
+		h.logger().Error("telegram rate limit check failed", "telegram_id", telegramID, "err", err)
 		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
 		return false
 	}
@@ -499,4 +518,11 @@ func parseRemoteIP(raw string) net.IP {
 		return ip
 	}
 	return nil
+}
+
+func (h *Handlers) logger() *slog.Logger {
+	if h != nil && h.Logger != nil {
+		return h.Logger
+	}
+	return slog.Default()
 }

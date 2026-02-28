@@ -116,39 +116,17 @@ func TestValidateRuntimeSecurityPolicy_AllowsSafeCombinations(t *testing.T) {
 	}
 }
 
-func TestHealthz_RedisReady(t *testing.T) {
-	redis := &stubPinger{}
+func TestHealthz_AlwaysOK(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
 	rr := httptest.NewRecorder()
 
-	healthz(redis).ServeHTTP(rr, req)
+	healthz().ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rr.Code)
 	}
 	if strings.TrimSpace(rr.Body.String()) != "ok" {
 		t.Fatalf("expected body ok, got %q", rr.Body.String())
-	}
-	if redis.calls != 1 {
-		t.Fatalf("expected 1 redis ping, got %d", redis.calls)
-	}
-}
-
-func TestHealthz_RedisNotReady(t *testing.T) {
-	redis := &stubPinger{err: errors.New("redis down")}
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
-	rr := httptest.NewRecorder()
-
-	healthz(redis).ServeHTTP(rr, req)
-
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Fatalf("expected 503, got %d", rr.Code)
-	}
-	if !strings.Contains(rr.Body.String(), "redis not ready") {
-		t.Fatalf("expected redis error body, got %q", rr.Body.String())
-	}
-	if redis.calls != 1 {
-		t.Fatalf("expected 1 redis ping, got %d", redis.calls)
 	}
 }
 

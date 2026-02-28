@@ -21,6 +21,24 @@
 - **Python:** `>=3.11` (для `ai-service`).
 - **Go (security baseline):** `>=1.25.7` (рекомендуется запускать команды через `GOTOOLCHAIN=go1.25.7`).
 
+## Локальный Toolchain
+
+- В `backend/go.mod` зафиксирован `toolchain go1.25.7`, поэтому для повторяемых запусков используйте `GOTOOLCHAIN=go1.25.7`.
+- Для `ai-service` и проверок (`pytest`, `pip-audit`, coverage) нужен Python `>=3.11`.
+
+Быстрая проверка локального окружения:
+```bash
+go version
+GOTOOLCHAIN=go1.25.7 go version
+python3.11 --version
+```
+
+Рекомендуемые переменные окружения для локальной работы:
+```bash
+export GOTOOLCHAIN=go1.25.7
+export PYTHON_BIN=python3.11
+```
+
 ## Быстрый старт
 
 ```bash
@@ -28,8 +46,14 @@
 cp .env.example .env
 # Отредактировать .env: POSTGRES_PASSWORD, DATABASE_URL, REDIS_URL, API_AUTH_TOKEN, API_USER_HMAC_SECRET, TELEGRAM_BOT_TOKEN
 
-# 2. Запустить всё (PostgreSQL, Redis, API, Crawler, Notifier, AI Service, Telegram-бот)
+# 2. Запустить core (always-on: PostgreSQL, Redis, backend-migrate, API, Telegram-бот)
 docker compose up -d
+
+# (опционально) включить вторичные воркеры
+docker compose --profile workers up -d
+
+# (опционально) точечно включить только user-embed consumer
+docker compose --profile ai-user-embed up -d ai-user-embed
 
 # 3. Написать боту в Telegram: /start → /profile Ваш профиль
 # Уведомления придут на TELEGRAM_ID из .env
@@ -38,7 +62,7 @@ docker compose up -d
 ./scripts/e2e_test.sh
 ```
 
-Миграции применяются автоматически при старте backend. Подробнее: `docs/e2e.md`.
+Миграции применяются автоматически отдельным one-shot сервисом `backend-migrate` (остальные backend-сервисы стартуют с `RUN_MIGRATIONS=0`). Подробнее: `docs/e2e.md`.
 
 ## Operations
 
@@ -51,6 +75,8 @@ docker compose up -d
 ## Deployment Profiles
 
 - `docker-compose.yml` — локальный dev-профиль (включает локальные PostgreSQL/Redis и допускает `sslmode=disable`, `redis://`, `http://`).
+  Вторичные воркеры (`backend-crawler`, `backend-notifier`, `ai-service`) вынесены в profile `workers` и запускаются on-demand.
+  Для точечного запуска `ai-user-embed` доступен отдельный profile `ai-user-embed`.
 - `docker-compose.prod.yml` — production-профиль (только внешние TLS endpoints, `APP_ENV=production`).
 - `docker-compose.monitoring.yml` — профиль мониторинга (Prometheus + Alertmanager, profile `monitoring`).
 
@@ -92,6 +118,9 @@ cp .env.production.example .env.production
 
 # 2. Запуск production-профиля
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+
+# (опционально) включить user-embed consumer
+docker compose --env-file .env.production -f docker-compose.prod.yml --profile ai-user-embed up -d ai-user-embed
 ```
 
 В production compose **не** поднимает локальные PostgreSQL/Redis контейнеры: используются внешние managed endpoints.
@@ -155,17 +184,24 @@ cd backend && go run ./cmd/crawler
 | `CRAWL_RATE_SEC` | Интервал между запросами (по умолчанию 15) |
 | `EMBEDDING_MODEL` | Модель эмбеддингов `sentence-transformers` (должна совпадать с preloaded моделью в Docker image) |
 | `EMBEDDING_REQUIRE_LOCAL` | `1` (рекомендуется): запрещает runtime-загрузку модели из сети; сервис падает, если модель не найдена локально/в `EMBEDDING_MODELS_DIR` |
+| `OLLAMA_URL` | URL Ollama для AI classifier (локально по умолчанию `http://ollama:11434`) |
+| `OLLAMA_MODEL` | Модель Ollama для classifier (по умолчанию `llama3.2:3b-instruct-q4_K_M`) |
+| `OLLAMA_TIMEOUT_SEC` | Таймаут запроса к Ollama в секундах (по умолчанию `30`) |
 
 Полный список: `.env.example`. Документация: `docs/env_setup.md`.
 
 ## Тесты
 
 ```bash
+# Полный локальный прогон gate'ов (workflow lint + unit + coverage + monitoring + security)
+make test-all
+
 # Backend (Go) — покрытие ≥70% по internal/
-cd backend
-source ../.env  # для postgres-тестов
-go test ./... -cover
+bash ./scripts/go_test_backend.sh ./... -cover
 # С DATABASE_URL: internal packages ~82%
+
+# если в host-окружении недоступны proxy.golang.org/github.com:
+BACKEND_GO_TEST_MODE=docker bash ./scripts/go_test_backend.sh ./... -cover
 
 # AI Service (Python) — покрытие ≥70%
 cd ai-service

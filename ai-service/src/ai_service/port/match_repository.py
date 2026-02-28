@@ -8,11 +8,12 @@ from dataclasses import dataclass
 
 @dataclass
 class MatchCandidate:
-    """Кандидат на уведомление: user_id, job_id, match_score (0–1)."""
+    """Кандидат на уведомление: user_id, job_id, match_score (0–1), why_it_fits (опционально)."""
 
     user_id: int
     job_id: int
     match_score: float
+    why_it_fits: str = ""
 
 
 class MatchRepository(ABC):

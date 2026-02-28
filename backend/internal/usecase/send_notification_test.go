@@ -12,17 +12,25 @@ import (
 )
 
 type mockNotifRepo struct {
-	recordFunc       func(ctx context.Context, userID, jobID int64, score float64) (bool, error)
-	deleteFunc       func(ctx context.Context, userID, jobID int64) error
-	sentRecentlyFunc func(ctx context.Context, userID int64, within time.Duration) (bool, error)
-	countTodayFunc   func(ctx context.Context, userID int64) (int, error)
+	ensurePendingFunc func(ctx context.Context, userID, jobID int64, score float64) (bool, bool, error)
+	markSentFunc      func(ctx context.Context, userID, jobID int64) error
+	deleteFunc        func(ctx context.Context, userID, jobID int64) error
+	sentRecentlyFunc  func(ctx context.Context, userID int64, within time.Duration) (bool, error)
+	countTodayFunc    func(ctx context.Context, userID int64) (int, error)
 }
 
-func (m *mockNotifRepo) Record(ctx context.Context, userID, jobID int64, score float64) (bool, error) {
-	if m.recordFunc != nil {
-		return m.recordFunc(ctx, userID, jobID, score)
+func (m *mockNotifRepo) EnsurePending(ctx context.Context, userID, jobID int64, score float64) (bool, bool, error) {
+	if m.ensurePendingFunc != nil {
+		return m.ensurePendingFunc(ctx, userID, jobID, score)
 	}
-	return true, nil
+	return true, true, nil // default: новое, нужно отправить
+}
+
+func (m *mockNotifRepo) MarkSent(ctx context.Context, userID, jobID int64) error {
+	if m.markSentFunc != nil {
+		return m.markSentFunc(ctx, userID, jobID)
+	}
+	return nil
 }
 
 func (m *mockNotifRepo) Delete(ctx context.Context, userID, jobID int64) error {
@@ -93,9 +101,14 @@ func (m *mockNotifier) Send(ctx context.Context, telegramID int64, p port.Notify
 func TestSendNotification_Execute_RateLimited(t *testing.T) {
 	sent := false
 	uc := NewSendNotification(
-		&mockNotifRepo{sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) {
-			return true, nil
-		}},
+		&mockNotifRepo{
+			ensurePendingFunc: func(context.Context, int64, int64, float64) (bool, bool, error) {
+				return true, true, nil // новое уведомление
+			},
+			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) {
+				return true, nil // rate limited
+			},
+		},
 		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
 			return &domain.User{ID: 1, TelegramID: 999}, nil
 		}},
@@ -107,7 +120,7 @@ func TestSendNotification_Execute_RateLimited(t *testing.T) {
 		5*time.Minute,
 		5,
 	)
-	err := uc.Execute(context.Background(), 1, 1, 0.9)
+	err := uc.Execute(context.Background(), 1, 1, 0.9, "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -120,6 +133,9 @@ func TestSendNotification_Execute_DailyLimitReached(t *testing.T) {
 	sent := false
 	uc := NewSendNotification(
 		&mockNotifRepo{
+			ensurePendingFunc: func(context.Context, int64, int64, float64) (bool, bool, error) {
+				return true, true, nil
+			},
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
 			countTodayFunc:   func(context.Context, int64) (int, error) { return 5, nil },
 		},
@@ -134,7 +150,7 @@ func TestSendNotification_Execute_DailyLimitReached(t *testing.T) {
 		5*time.Minute,
 		5,
 	)
-	err := uc.Execute(context.Background(), 1, 1, 0.9)
+	err := uc.Execute(context.Background(), 1, 1, 0.9, "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -143,13 +159,13 @@ func TestSendNotification_Execute_DailyLimitReached(t *testing.T) {
 	}
 }
 
-func TestSendNotification_Execute_DuplicateSkipped(t *testing.T) {
+func TestSendNotification_Execute_AlreadySentSkipped(t *testing.T) {
 	sent := false
 	uc := NewSendNotification(
 		&mockNotifRepo{
-			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
-			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
-			recordFunc:       func(context.Context, int64, int64, float64) (bool, error) { return false, nil },
+			ensurePendingFunc: func(context.Context, int64, int64, float64) (bool, bool, error) {
+				return false, false, nil // shouldSend=false → уже доставлено
+			},
 		},
 		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
 			return &domain.User{ID: 1, TelegramID: 999}, nil
@@ -162,22 +178,57 @@ func TestSendNotification_Execute_DuplicateSkipped(t *testing.T) {
 		5*time.Minute,
 		5,
 	)
-	err := uc.Execute(context.Background(), 1, 1, 0.9)
+	err := uc.Execute(context.Background(), 1, 1, 0.9, "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if sent {
-		t.Error("must not send when Record returns false (duplicate)")
+		t.Error("must not send when EnsurePending returns shouldSend=false (already sent)")
+	}
+}
+
+func TestSendNotification_Execute_RetrySkipsRateLimit(t *testing.T) {
+	sent := false
+	uc := NewSendNotification(
+		&mockNotifRepo{
+			ensurePendingFunc: func(context.Context, int64, int64, float64) (bool, bool, error) {
+				return false, true, nil // wasInserted=false → retry, пропустить rate limit
+			},
+		},
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 999}, nil
+		}},
+		&mockJobRepo{},
+		&mockNotifier{sendFunc: func(context.Context, int64, port.NotifyPayload) error {
+			sent = true
+			return nil
+		}},
+		5*time.Minute,
+		5,
+	)
+	err := uc.Execute(context.Background(), 1, 1, 0.9, "")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !sent {
+		t.Error("must send on retry even if rate limit would apply")
 	}
 }
 
 func TestSendNotification_Execute_Success(t *testing.T) {
 	sent := false
+	markSentCalled := false
 	uc := NewSendNotification(
 		&mockNotifRepo{
+			ensurePendingFunc: func(context.Context, int64, int64, float64) (bool, bool, error) {
+				return true, true, nil
+			},
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
 			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
-			recordFunc:       func(context.Context, int64, int64, float64) (bool, error) { return true, nil },
+			markSentFunc: func(context.Context, int64, int64) error {
+				markSentCalled = true
+				return nil
+			},
 		},
 		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
 			return &domain.User{ID: 1, TelegramID: 888}, nil
@@ -198,12 +249,43 @@ func TestSendNotification_Execute_Success(t *testing.T) {
 		5*time.Minute,
 		5,
 	)
-	err := uc.Execute(context.Background(), 1, 1, 0.85)
+	err := uc.Execute(context.Background(), 1, 1, 0.85, "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if !sent {
 		t.Error("must send when all checks pass")
+	}
+	if !markSentCalled {
+		t.Error("must call MarkSent after successful send")
+	}
+}
+
+func TestSendNotification_Execute_WhyItFits_Passed(t *testing.T) {
+	var gotPayload port.NotifyPayload
+	uc := NewSendNotification(
+		&mockNotifRepo{
+			ensurePendingFunc: func(context.Context, int64, int64, float64) (bool, bool, error) {
+				return true, true, nil
+			},
+			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
+			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
+		},
+		&mockUserRepo{},
+		&mockJobRepo{},
+		&mockNotifier{sendFunc: func(_ context.Context, _ int64, p port.NotifyPayload) error {
+			gotPayload = p
+			return nil
+		}},
+		5*time.Minute,
+		5,
+	)
+	err := uc.Execute(context.Background(), 1, 1, 0.85, "Веб-проект со стеком python, react.")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if gotPayload.WhyItFits != "Веб-проект со стеком python, react." {
+		t.Errorf("WhyItFits not passed through: got %q", gotPayload.WhyItFits)
 	}
 }
 
@@ -221,7 +303,7 @@ func TestSendNotification_Execute_UserNotFound(t *testing.T) {
 		5*time.Minute,
 		5,
 	)
-	err := uc.Execute(context.Background(), 999, 1, 0.9)
+	err := uc.Execute(context.Background(), 999, 1, 0.9, "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -239,7 +321,7 @@ func TestSendNotification_Execute_UserLookupError(t *testing.T) {
 		5,
 	)
 
-	err := uc.Execute(context.Background(), 1, 1, 0.9)
+	err := uc.Execute(context.Background(), 1, 1, 0.9, "")
 	if err == nil {
 		t.Fatal("want error on user lookup failure")
 	}
@@ -265,7 +347,7 @@ func TestSendNotification_Execute_JobNotFound(t *testing.T) {
 		5,
 	)
 
-	err := uc.Execute(context.Background(), 1, 999, 0.9)
+	err := uc.Execute(context.Background(), 1, 999, 0.9, "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -285,7 +367,7 @@ func TestSendNotification_Execute_JobLookupError(t *testing.T) {
 		5,
 	)
 
-	err := uc.Execute(context.Background(), 1, 1, 0.9)
+	err := uc.Execute(context.Background(), 1, 1, 0.9, "")
 	if err == nil {
 		t.Fatal("want error on job lookup failure")
 	}
@@ -294,13 +376,17 @@ func TestSendNotification_Execute_JobLookupError(t *testing.T) {
 	}
 }
 
-func TestSendNotification_Execute_SendFailed_RollbackRecord(t *testing.T) {
+// TestSendNotification_Execute_SendFailed_KeepsPending проверяет, что при ошибке Telegram
+// pending-запись НЕ удаляется (остаётся для retry через Redis Nack).
+func TestSendNotification_Execute_SendFailed_KeepsPending(t *testing.T) {
 	deleteCalled := false
 	uc := NewSendNotification(
 		&mockNotifRepo{
+			ensurePendingFunc: func(context.Context, int64, int64, float64) (bool, bool, error) {
+				return true, true, nil
+			},
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
 			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
-			recordFunc:       func(context.Context, int64, int64, float64) (bool, error) { return true, nil },
 			deleteFunc: func(context.Context, int64, int64) error {
 				deleteCalled = true
 				return nil
@@ -319,46 +405,52 @@ func TestSendNotification_Execute_SendFailed_RollbackRecord(t *testing.T) {
 		5,
 	)
 
-	err := uc.Execute(context.Background(), 1, 1, 0.85)
+	err := uc.Execute(context.Background(), 1, 1, 0.85, "")
 	if err == nil {
 		t.Fatal("want error when notifier send fails")
 	}
-	if !deleteCalled {
-		t.Fatal("must rollback notification record on send failure")
+	if !strings.Contains(err.Error(), "telegram down") {
+		t.Fatalf("error must contain send failure, got: %v", err)
+	}
+	if deleteCalled {
+		t.Fatal("must NOT delete pending record on send failure — retry via Redis Nack")
 	}
 }
 
-func TestSendNotification_Execute_SendFailed_RollbackFails(t *testing.T) {
+// TestSendNotification_Execute_RateLimited_DeletesRecord проверяет, что при rate limit
+// только что созданная pending-запись удаляется.
+func TestSendNotification_Execute_RateLimited_DeletesRecord(t *testing.T) {
+	deleteCalled := false
 	uc := NewSendNotification(
 		&mockNotifRepo{
-			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
-			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
-			recordFunc:       func(context.Context, int64, int64, float64) (bool, error) { return true, nil },
+			ensurePendingFunc: func(context.Context, int64, int64, float64) (bool, bool, error) {
+				return true, true, nil // wasInserted=true → проверяем rate limit
+			},
+			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) {
+				return true, nil // rate limited
+			},
 			deleteFunc: func(context.Context, int64, int64) error {
-				return errors.New("rollback db error")
+				deleteCalled = true
+				return nil
 			},
 		},
 		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
 			return &domain.User{ID: 1, TelegramID: 888}, nil
 		}},
-		&mockJobRepo{getByIDFunc: func(context.Context, int64) (*domain.Job, error) {
-			return &domain.Job{ID: 1, Title: "T", URL: "https://kwork.ru/p/1"}, nil
-		}},
+		&mockJobRepo{},
 		&mockNotifier{sendFunc: func(context.Context, int64, port.NotifyPayload) error {
-			return errors.New("telegram down")
+			t.Error("must not send when rate limited")
+			return nil
 		}},
 		5*time.Minute,
 		5,
 	)
 
-	err := uc.Execute(context.Background(), 1, 1, 0.85)
-	if err == nil {
-		t.Fatal("want joined error when send and rollback fail")
+	err := uc.Execute(context.Background(), 1, 1, 0.9, "")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(err.Error(), "telegram down") {
-		t.Fatalf("error must contain send failure, got: %v", err)
-	}
-	if !strings.Contains(err.Error(), "rollback notification record") {
-		t.Fatalf("error must contain rollback context, got: %v", err)
+	if !deleteCalled {
+		t.Fatal("must delete pending record when rate limited")
 	}
 }

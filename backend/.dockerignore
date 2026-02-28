@@ -4,4 +4,26 @@
 .git
 .gitignore
 *.md
+
+# Local build caches/artifacts (major context bloat source)
 .gocache
+.gocache*/
+.gomodcache
+.gomodcache*/
+bin/
+api
+crawler
+notifier
+coverage.out
+coverage_*.out
+*.log
+
+# Test/bench artifacts not required for docker image build
+testdata/
+*_test.go
+
+# OS/editor noise
+.DS_Store
+.idea/
+.vscode/
+.cursor/

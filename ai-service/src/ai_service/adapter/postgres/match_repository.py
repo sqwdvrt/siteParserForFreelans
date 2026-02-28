@@ -23,8 +23,8 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
         limit: int = 100,
     ) -> list[MatchCandidate]:
         """
-        SQL: 1 - (embedding <=> $1) as score.
-        WHERE embedding IS NOT NULL, score >= threshold.
+        SQL: score = 1 - (embedding <=> $1) считается в CTE.
+        WHERE embedding IS NOT NULL, фильтрация по готовому score >= threshold.
         Исключает user_id уже в notifications для job_id.
         ORDER BY score DESC. match_score = similarity (0–1).
         """
@@ -35,20 +35,26 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
                 vec = Vector(embedding)
                 cur.execute(
                     """
-                    SELECT u.id AS user_id, 1 - (u.embedding <=> %s) AS similarity
-                    FROM users u
-                    WHERE u.embedding IS NOT NULL
-                      AND 1 - (u.embedding <=> %s) >= %s
+                    WITH scored_users AS (
+                      SELECT
+                        u.id AS user_id,
+                        1 - (u.embedding <=> %s) AS similarity
+                      FROM users u
+                      WHERE u.embedding IS NOT NULL
+                    )
+                    SELECT s.user_id, s.similarity
+                    FROM scored_users s
+                    WHERE s.similarity >= %s
                       AND NOT EXISTS (
                           SELECT 1
                           FROM notifications n
                           WHERE n.job_id = %s
-                            AND n.user_id = u.id
+                            AND n.user_id = s.user_id
                       )
-                    ORDER BY similarity DESC
+                    ORDER BY s.similarity DESC
                     LIMIT %s
                     """,
-                    (vec, vec, threshold, job_id, limit),
+                    (vec, threshold, job_id, limit),
                 )
                 rows = cur.fetchall()
         return [

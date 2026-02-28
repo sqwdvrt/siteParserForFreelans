@@ -1,5 +1,6 @@
 .env
 .env.production
+backups/
 *.log
 backend/bin/
 backend/api

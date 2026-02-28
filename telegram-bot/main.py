@@ -24,11 +24,29 @@ try:
 except ImportError:
     pass
 
+
+def _parse_log_level(raw: str | None, default: int = logging.INFO) -> tuple[int, bool]:
+    if raw is None:
+        return default, True
+    value = raw.strip().upper()
+    if value == "":
+        return default, True
+    level = logging.getLevelName(value)
+    if isinstance(level, int):
+        return level, True
+    return default, False
+
+
+_LOG_LEVEL_RAW = os.getenv("LOG_LEVEL", "INFO")
+_LOG_LEVEL, _LOG_LEVEL_VALID = _parse_log_level(_LOG_LEVEL_RAW, logging.INFO)
+
 logging.basicConfig(
-    level=logging.INFO,
+    level=_LOG_LEVEL,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+if not _LOG_LEVEL_VALID:
+    logger.warning("LOG_LEVEL=%r is invalid; using INFO", _LOG_LEVEL_RAW)
 
 TELEGRAM_BASE = "https://api.telegram.org/bot"
 FORBIDDEN_SECRET_PREFIXES = (
@@ -205,7 +223,7 @@ def _http_post(url: str, data: dict, headers: dict[str, str] | None = None) -> t
                 time.sleep(delay)
                 continue
             if e.code >= 500 and err_body:
-                logger.warning("API error %s: %s", e.code, err_body[:200])
+                logger.error("API error %s: %s", e.code, err_body[:200])
             return e.code, None
         except Exception as e:
             if attempt < API_RETRY_ATTEMPTS - 1:
@@ -217,7 +235,7 @@ def _http_post(url: str, data: dict, headers: dict[str, str] | None = None) -> t
                 )
                 time.sleep(delay)
                 continue
-            logger.debug("HTTP POST failed: %s", _exception_name(e))
+            logger.error("HTTP POST failed: %s", _exception_name(e))
             return 0, None
     return 0, None
 
@@ -251,7 +269,7 @@ def _http_put(url: str, data: dict, headers: dict[str, str] | None = None) -> in
                 )
                 time.sleep(delay)
                 continue
-            logger.debug("HTTP PUT failed: %s", _exception_name(e))
+            logger.error("HTTP PUT failed: %s", _exception_name(e))
             return 0
     return 0
 
@@ -316,7 +334,7 @@ def post_users(api_url: str, telegram_id: int, api_auth_token: str, api_user_hma
     )
     if status != 200 or data is None:
         err = "API не отвечает" if status == 0 else f"HTTP {status}"
-        logger.warning("POST /users failed: %s (url=%s)", err, url)
+        logger.error("POST /users failed: %s (url=%s)", err, url)
         return None
     return data.get("user_id")
 
@@ -339,7 +357,7 @@ def put_user_profile(
         headers=_signed_user_headers(api_auth_token, api_user_hmac_secret, "PUT", url, telegram_id, body),
     )
     if status != 204:
-        logger.warning("PUT /users/:id/profile failed: status=%s", status)
+        logger.error("PUT /users/:id/profile failed: status=%s", status)
         return False
     return True
 
@@ -376,7 +394,7 @@ def send_message(token: str, chat_id: int, text: str) -> bool:
     url = f"{TELEGRAM_BASE}{token}/sendMessage"
     status, _ = _http_post(url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
     if status != 200:
-        logger.warning("sendMessage failed: status=%s", status)
+        logger.error("sendMessage failed: status=%s", status)
         return False
     return True
 
@@ -418,7 +436,7 @@ def run_polling(token: str, api_url: str, api_auth_token: str, api_user_hmac_sec
             updates, offset = result  # type: ignore[misc]
         if not poll_ok:
             delay = _poll_retry_delay_sec(poll_error_streak)
-            logger.warning("getUpdates failed, retry in %.2fs", delay)
+            logger.error("getUpdates failed, retry in %.2fs", delay)
             time.sleep(delay)
             poll_error_streak += 1
             continue

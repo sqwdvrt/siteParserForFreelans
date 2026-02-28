@@ -173,6 +173,56 @@ func TestMatchNotifyConsumer_Nack_RequeuesMessage(t *testing.T) {
 	}
 }
 
+func TestMatchNotifyConsumer_Requeue_DoesNotIncreaseRetryCount(t *testing.T) {
+	mr := mustRunMiniRedis(t)
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	client.LPush(context.Background(), "match-notify", `{"user_id":10,"job_id":20,"match_score":0.9,"_retry_count":5}`)
+
+	consumer := NewMatchNotifyConsumer(client, "match-notify")
+	ctx := context.Background()
+
+	msg, err := consumer.Pop(ctx)
+	if err != nil {
+		t.Fatalf("Pop: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("Pop: want message, got nil")
+	}
+	if err := consumer.Requeue(ctx, msg); err != nil {
+		t.Fatalf("Requeue: %v", err)
+	}
+
+	got, err := client.LLen(ctx, "match-notify").Result()
+	if err != nil {
+		t.Fatalf("LLen queue: %v", err)
+	}
+	if got != 1 {
+		t.Fatalf("expected 1 message in source queue after requeue, got %d", got)
+	}
+	gotProcessing, err := client.LLen(ctx, "match-notify:processing").Result()
+	if err != nil {
+		t.Fatalf("LLen processing: %v", err)
+	}
+	if gotProcessing != 0 {
+		t.Fatalf("expected empty processing queue after requeue, got %d", gotProcessing)
+	}
+
+	raw, err := client.LIndex(ctx, "match-notify", 0).Result()
+	if err != nil {
+		t.Fatalf("LIndex queue: %v", err)
+	}
+	var gotPayload map[string]interface{}
+	if err := json.Unmarshal([]byte(raw), &gotPayload); err != nil {
+		t.Fatalf("json unmarshal requeued payload: %v", err)
+	}
+	if gotPayload["_retry_count"] != float64(5) {
+		t.Fatalf("expected _retry_count to stay 5, got %v", gotPayload["_retry_count"])
+	}
+}
+
 func TestMatchNotifyConsumer_Recover_MovesProcessingToSource(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 

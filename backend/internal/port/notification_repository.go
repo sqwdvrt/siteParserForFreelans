@@ -5,17 +5,26 @@ import (
 	"time"
 )
 
-// NotificationRepository — репозиторий уведомлений (дедупликация, rate limit).
+// NotificationRepository — репозиторий уведомлений (дедупликация, retry, rate limit).
 type NotificationRepository interface {
-	// Record записывает уведомление. Возвращает true если вставлено, false при дубликате (user_id, job_id).
-	Record(ctx context.Context, userID, jobID int64, matchScore float64) (inserted bool, err error)
+	// EnsurePending вставляет запись со статусом 'pending', если её ещё нет.
+	// Если запись уже 'sent' — shouldSend=false (уже доставлено, пропустить).
+	// Если запись уже 'pending' — wasInserted=false, shouldSend=true (retry, rate limit не применяется).
+	// Если записи не было — wasInserted=true, shouldSend=true (новое уведомление).
+	EnsurePending(ctx context.Context, userID, jobID int64, matchScore float64) (wasInserted bool, shouldSend bool, err error)
 
-	// Delete удаляет запись уведомления (используется для отката при неуспешной отправке).
+	// MarkSent переводит запись в статус 'sent' и фиксирует время доставки.
+	// Вызывается только после подтверждённой доставки в Telegram.
+	MarkSent(ctx context.Context, userID, jobID int64) error
+
+	// Delete удаляет pending-запись (используется при отмене по rate limit / daily limit).
 	Delete(ctx context.Context, userID, jobID int64) error
 
-	// SentRecently возвращает true, если пользователю отправляли уведомление в течение within.
+	// SentRecently возвращает true, если пользователю успешно (status='sent') отправляли
+	// уведомление в течение within.
 	SentRecently(ctx context.Context, userID int64, within time.Duration) (bool, error)
 
-	// CountToday возвращает количество уведомлений пользователю за сегодня (UTC).
+	// CountToday возвращает количество успешно (status='sent') отправленных уведомлений
+	// пользователю за текущие сутки (UTC).
 	CountToday(ctx context.Context, userID int64) (int, error)
 }

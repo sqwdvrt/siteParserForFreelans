@@ -25,6 +25,28 @@ services:
       timeout: 5s
       retries: 5
 
+  backend-migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["sh", "-c", "echo 'backend migrations applied'"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
+      RUN_MIGRATIONS: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /home/app:mode=0700,size=16m
+
   backend-api:
     build:
       context: ./backend
@@ -34,9 +56,12 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
       REDIS_URL: redis://redis:6379/0
+      RUN_MIGRATIONS: "0"
     ports:
       - "${API_BIND_IP:-127.0.0.1}:${API_PORT:-8080}:8080"
     depends_on:
+      backend-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -51,6 +76,8 @@ services:
       - /home/app:mode=0700,size=16m
 
   backend-crawler:
+    profiles:
+      - workers
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -59,7 +86,10 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
       REDIS_URL: redis://redis:6379/0
+      RUN_MIGRATIONS: "0"
     depends_on:
+      backend-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -74,6 +104,8 @@ services:
       - /home/app:mode=0700,size=16m
 
   backend-notifier:
+    profiles:
+      - workers
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -82,7 +114,10 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
       REDIS_URL: redis://redis:6379/0
+      RUN_MIGRATIONS: "0"
     depends_on:
+      backend-migrate:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
@@ -97,6 +132,8 @@ services:
       - /home/app:mode=0700,size=16m
 
   ai-service:
+    profiles:
+      - workers
     image: ${AI_IMAGE:-siteparserforfreelans-ai-runtime:local}
     build:
       context: ./ai-service
@@ -108,12 +145,15 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
       REDIS_URL: redis://redis:6379/0
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
       EMBEDDING_REQUIRE_LOCAL: "1"
       AI_READY_FILE: /tmp/ai-consumer-ready
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      ollama:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "test -f /tmp/ai-consumer-ready"]
@@ -130,8 +170,27 @@ services:
       - /tmp:mode=1777,size=512m
       - /home/app:mode=0700,size=64m
 
+  ollama:
+    profiles:
+      - workers
+    image: ollama/ollama:latest
+    ports:
+      - "${OLLAMA_BIND_IP:-127.0.0.1}:${OLLAMA_PORT:-11434}:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+
   ai-user-embed:
     image: ${AI_IMAGE:-siteparserforfreelans-ai-runtime:local}
+    profiles:
+      - ai-user-embed
     command: ["python", "cmd/user_embed_consumer/main.py"]
     env_file: .env
     environment:
@@ -180,3 +239,4 @@ services:
 
 volumes:
   postgres_data:
+  ollama_data:

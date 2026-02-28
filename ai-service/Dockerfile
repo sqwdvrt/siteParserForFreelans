@@ -54,9 +54,7 @@ COPY --from=builder /opt/models /opt/models
 COPY src ./src
 COPY cmd ./cmd
 
-RUN /usr/local/bin/python -m pip install --upgrade "setuptools>=80.9.0" "wheel>=0.46.2" && \
-    "${VENV_PATH}/bin/pip" install --upgrade "setuptools>=80.9.0" "wheel>=0.46.2" && \
-    groupadd --system app && useradd --system --gid app --create-home --home-dir /home/app --shell /usr/sbin/nologin app && \
+RUN groupadd --system app && useradd --system --gid app --create-home --home-dir /home/app --shell /usr/sbin/nologin app && \
     mkdir -p /tmp/hf /tmp/transformers /tmp/torch /tmp/.cache && \
     chown -R app:app /app /home/app /tmp /opt/models
 

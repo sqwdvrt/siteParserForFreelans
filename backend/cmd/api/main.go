@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -36,29 +36,29 @@ func main() {
 
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		log.Fatal("DATABASE_URL not set")
+		fatal("DATABASE_URL not set")
 	}
 	if err := security.ValidateURLPassword("DATABASE_URL", dbURL, 16); err != nil {
-		log.Fatalf("invalid DATABASE_URL secret policy: %v", err)
+		fatal("invalid DATABASE_URL secret policy", "err", err)
 	}
 	if isProd {
 		if err := security.ValidatePostgresTLSForProduction("DATABASE_URL", dbURL); err != nil {
-			log.Fatalf("invalid DATABASE_URL transport policy: %v", err)
+			fatal("invalid DATABASE_URL transport policy", "err", err)
 		}
 	}
 	apiToken := os.Getenv("API_AUTH_TOKEN")
 	if apiToken == "" {
-		log.Fatal("API_AUTH_TOKEN not set")
+		fatal("API_AUTH_TOKEN not set")
 	}
 	if err := security.ValidateSecret("API_AUTH_TOKEN", apiToken, 32); err != nil {
-		log.Fatalf("invalid API_AUTH_TOKEN secret policy: %v", err)
+		fatal("invalid API_AUTH_TOKEN secret policy", "err", err)
 	}
 	userHMACSecret := os.Getenv("API_USER_HMAC_SECRET")
 	if userHMACSecret == "" {
-		log.Fatal("API_USER_HMAC_SECRET not set")
+		fatal("API_USER_HMAC_SECRET not set")
 	}
 	if err := security.ValidateSecret("API_USER_HMAC_SECRET", userHMACSecret, 32); err != nil {
-		log.Fatalf("invalid API_USER_HMAC_SECRET secret policy: %v", err)
+		fatal("invalid API_USER_HMAC_SECRET secret policy", "err", err)
 	}
 	redisURL := os.Getenv("REDIS_URL")
 	if redisURL == "" {
@@ -66,20 +66,20 @@ func main() {
 	}
 	allowRedisDegraded, err := parseOptionalBoolEnv("API_ALLOW_REDIS_DEGRADED", os.Getenv("API_ALLOW_REDIS_DEGRADED"))
 	if err != nil {
-		log.Fatal(err)
+		fatal("invalid API_ALLOW_REDIS_DEGRADED", "err", err)
 	}
 	if err := validateRuntimeSecurityPolicy(isProd, allowRedisDegraded); err != nil {
-		log.Fatal(err)
+		fatal("invalid runtime security policy", "err", err)
 	}
 	if isProd {
 		if err := security.ValidateRedisTLSForProduction("REDIS_URL", redisURL, 16); err != nil {
-			log.Fatalf("invalid REDIS_URL transport policy: %v", err)
+			fatal("invalid REDIS_URL transport policy", "err", err)
 		}
 	}
 
 	pool, err := pgxpool.New(context.Background(), dbURL)
 	if err != nil {
-		log.Fatalf("pgxpool: %v", err)
+		fatal("pgxpool init failed", "err", err)
 	}
 	defer pool.Close()
 
@@ -93,22 +93,16 @@ func main() {
 	opt, err := redisclient.ParseURL(redisURL)
 	if err != nil {
 		if !allowRedisDegraded {
-			log.Fatalf(
-				"REDIS_URL parse error (%v); refusing insecure degraded mode: set API_ALLOW_REDIS_DEGRADED=1 to explicitly allow start without redis-backed queue/rate-limit/nonce",
-				err,
-			)
+			fatal("REDIS_URL parse error; refusing insecure degraded mode", "err", err)
 		}
-		log.Printf("REDIS_URL parse error (%v); starting API in EXPLICITLY ALLOWED degraded mode without redis-backed queue/rate-limit/nonce", err)
+		slog.Warn("REDIS_URL parse error; starting in explicitly allowed degraded mode without redis-backed queue/rate-limit/nonce", "err", err)
 	} else {
 		rdb = redisclient.NewClient(opt)
 		if err := rdb.Ping(context.Background()).Err(); err != nil {
 			if !allowRedisDegraded {
-				log.Fatalf(
-					"redis unavailable (%v); refusing insecure degraded mode: set API_ALLOW_REDIS_DEGRADED=1 to explicitly allow start without redis-backed queue/rate-limit/nonce",
-					err,
-				)
+				fatal("redis unavailable; refusing insecure degraded mode", "err", err)
 			}
-			log.Printf("redis unavailable (%v); starting API in EXPLICITLY ALLOWED degraded mode without redis-backed queue/rate-limit/nonce", err)
+			slog.Warn("redis unavailable; starting in explicitly allowed degraded mode without redis-backed queue/rate-limit/nonce", "err", err)
 			_ = rdb.Close()
 			rdb = nil
 		} else {
@@ -143,7 +137,7 @@ func main() {
 	}
 	trustedProxyCIDRs, err := parseTrustedProxyCIDRs(os.Getenv("API_TRUSTED_PROXY_CIDRS"))
 	if err != nil {
-		log.Fatalf("invalid API_TRUSTED_PROXY_CIDRS: %v", err)
+		fatal("invalid API_TRUSTED_PROXY_CIDRS", "err", err)
 	}
 
 	handlers := &api.Handlers{
@@ -151,6 +145,7 @@ func main() {
 		UserEmbedQueue:    userEmbedQueue,
 		AuthToken:         apiToken,
 		UserHMACSecret:    userHMACSecret,
+		Logger:            slog.Default(),
 		NonceStore:        nonceStore,
 		RateLimiter:       rateLimiter,
 		TrustedProxyCIDRs: trustedProxyCIDRs,
@@ -168,6 +163,7 @@ func main() {
 	)
 	httpMetrics := telemetry.NewHTTPMetrics(registry)
 	r.Use(httpMetrics.Middleware)
+	r.Use(api.RequestLoggingMiddleware(slog.Default()))
 	var redisHealth redisPinger
 	if rdb != nil {
 		redisHealth = redisClientPinger{client: rdb}
@@ -187,12 +183,12 @@ func main() {
 	useTLS := false
 	if tlsCertFile != "" || tlsKeyFile != "" {
 		if tlsCertFile == "" || tlsKeyFile == "" {
-			log.Fatal("both API_TLS_CERT_FILE and API_TLS_KEY_FILE must be set")
+			fatal("both API_TLS_CERT_FILE and API_TLS_KEY_FILE must be set")
 		}
 		useTLS = true
 	}
 	if isProd && !useTLS {
-		log.Fatal("APP_ENV=production requires API TLS: set API_TLS_CERT_FILE and API_TLS_KEY_FILE")
+		fatal("APP_ENV=production requires API TLS: set API_TLS_CERT_FILE and API_TLS_KEY_FILE")
 	}
 
 	srv := &http.Server{
@@ -205,28 +201,28 @@ func main() {
 	}
 	go func() {
 		if useTLS {
-			log.Printf("API listening with TLS on %s", addr)
+			slog.Info("API listening with TLS", "addr", addr)
 			if err := srv.ListenAndServeTLS(tlsCertFile, tlsKeyFile); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("API listen TLS: %v", err)
+				fatal("API listen TLS failed", "err", err)
 			}
 			return
 		}
-		log.Printf("API listening on %s", addr)
+		slog.Info("API listening", "addr", addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("API listen: %v", err)
+			fatal("API listen failed", "err", err)
 		}
 	}()
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 	signal.Stop(sigCh)
-	log.Println("shutdown signal received")
+	slog.Info("shutdown signal received")
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("API shutdown: %v", err)
+		slog.Error("API shutdown failed", "err", err)
 	}
-	log.Println("API stopped")
+	slog.Info("API stopped")
 }
 
 func parseTrustedProxyCIDRs(raw string) ([]*net.IPNet, error) {
@@ -303,6 +299,11 @@ func readyz(db dbPinger, redis redisPinger) http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}
+}
+
+func fatal(msg string, args ...any) {
+	slog.Error(msg, args...)
+	os.Exit(1)
 }
 
 func parseOptionalBoolEnv(name, raw string) (bool, error) {
