@@ -29,12 +29,12 @@ jobs:
         id: gitleaks
         run: |
           set +e
-          config_arg=""
+          config_args=()
           if [ -f /repo/.gitleaks.toml ]; then
-            config_arg="--config /repo/.gitleaks.toml"
+            config_args=(--config /repo/.gitleaks.toml)
           fi
           docker run --rm -v "${PWD}:/repo" zricethezav/gitleaks:latest \
-            detect --source /repo ${config_arg} --no-banner --redact \
+            detect --source /repo "${config_args[@]}" --no-banner --redact \
             --report-format sarif --report-path /repo/gitleaks.sarif
           exit_code=$?
           if [ ! -f gitleaks.sarif ]; then

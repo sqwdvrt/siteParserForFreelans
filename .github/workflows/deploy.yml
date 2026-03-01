@@ -64,11 +64,13 @@ jobs:
             run_production="true"
           fi
 
-          echo "deploy_sha=${deploy_sha}" >> "${GITHUB_OUTPUT}"
-          echo "deploy_ref=${deploy_ref}" >> "${GITHUB_OUTPUT}"
-          echo "target_environment=${target_environment}" >> "${GITHUB_OUTPUT}"
-          echo "run_staging=${run_staging}" >> "${GITHUB_OUTPUT}"
-          echo "run_production=${run_production}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "deploy_sha=${deploy_sha}"
+            echo "deploy_ref=${deploy_ref}"
+            echo "target_environment=${target_environment}"
+            echo "run_staging=${run_staging}"
+            echo "run_production=${run_production}"
+          } >> "${GITHUB_OUTPUT}"
 
   verify-gates:
     runs-on: ubuntu-latest
