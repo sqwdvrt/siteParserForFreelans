@@ -28,6 +28,8 @@ from ai_service.adapter.sentence_transformers import SentenceTransformerEmbeddin
 from ai_service.usecase.accumulate_matches import AccumulateMatchesUseCase
 from ai_service.usecase.consumer_loop import run_consumer
 from ai_service.usecase.process_job import ProcessJobUseCase
+from ai_service.util.fallback_metrics import start_metrics_server_from_env
+from ai_service.util.ollama_probe import probe_ollama
 from ai_service.util.transport_security import (
     is_production_env,
     validate_postgres_tls_for_production,
@@ -125,6 +127,10 @@ def main() -> None:
         except ValueError as e:
             logger.error("%s", e)
             sys.exit(1)
+    start_metrics_server_from_env(
+        port_env="AI_CONSUMER_METRICS_PORT",
+        default_port=0,
+    )
 
     queue_name = os.getenv("AI_QUEUE", "ai-process")
     model_name = os.getenv("EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")
@@ -133,6 +139,9 @@ def main() -> None:
     ollama_url = os.getenv("OLLAMA_URL", "http://ollama:11434")
     ollama_model = os.getenv("OLLAMA_MODEL", "llama3.2:3b-instruct-q4_K_M")
     ollama_timeout = int(os.getenv("OLLAMA_TIMEOUT_SEC", "30"))
+    ollama_required = os.getenv("OLLAMA_REQUIRED", "1" if is_production_env(app_env) else "0") == "1"
+    if not probe_ollama(ollama_url, required=ollama_required) and ollama_required:
+        sys.exit(1)
 
     repo = PostgresJobRepository(db_url)
     match_repo = PostgresMatchRepository(db_url)

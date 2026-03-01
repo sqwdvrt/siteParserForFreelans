@@ -13,6 +13,9 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	redisclient "github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/http"
@@ -21,6 +24,7 @@ import (
 	redisqueue "github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/redis"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/observability"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/security"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/telemetry"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/usecase"
 )
 
@@ -130,6 +134,12 @@ func main() {
 		queueName = "ai-process"
 	}
 	queue := redisqueue.NewQueue(rdb, queueName)
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+	)
+	crawlerMetrics := telemetry.NewCrawlerMetrics(registry, queueName)
 
 	fetcher := http.NewFetcher(http.Config{
 		Timeout:                 30 * time.Second,
@@ -154,6 +164,7 @@ func main() {
 	healthMux := stdhttp.NewServeMux()
 	healthMux.HandleFunc("/healthz", crawlerHealthz())
 	healthMux.HandleFunc("/readyz", crawlerReadyz(pool, crawlerRedisClientPinger{client: rdb}))
+	healthMux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	healthSrv := &stdhttp.Server{
 		Addr:         healthAddr,
 		Handler:      healthMux,
@@ -174,18 +185,23 @@ func main() {
 	}()
 
 	runCrawl := func() {
+		startedAt := time.Now()
+		defer observeCrawlerQueueDepth(rdb, crawlerMetrics, queueName)
 		traceID := observability.NewTraceID()
 		crawlCtx := observability.WithTraceID(ctx, traceID)
 		slog.Info("crawl run started", "url", listURL, "trace_id", traceID)
 		saved, err := crawl.Execute(crawlCtx, listURL)
 		if err != nil {
 			if crawlCtx.Err() != nil {
+				crawlerMetrics.ObserveRunInterrupted(time.Since(startedAt))
 				slog.Info("crawl interrupted by shutdown")
 				return
 			}
+			crawlerMetrics.ObserveRunFailure(time.Since(startedAt))
 			slog.Error("crawl failed", "err", err, "trace_id", traceID)
 			return
 		}
+		crawlerMetrics.ObserveRunSuccess(saved, time.Since(startedAt))
 		slog.Info("CrawlOnce done", "saved", saved, "trace_id", traceID)
 	}
 
@@ -295,4 +311,29 @@ func parsePositiveDurationEnv(key string, fallback time.Duration) (time.Duration
 		return 0, fmt.Errorf("%s must be > 0", key)
 	}
 	return v, nil
+}
+
+func observeCrawlerQueueDepth(client *redisclient.Client, metrics *telemetry.CrawlerMetrics, queueName string) {
+	if client == nil || metrics == nil || queueName == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	ready, err := client.LLen(ctx, queueName).Result()
+	if err != nil {
+		slog.Warn("crawler queue depth collect failed", "queue", queueName, "err", err)
+		return
+	}
+	processing, err := client.LLen(ctx, queueName+":processing").Result()
+	if err != nil {
+		slog.Warn("crawler queue depth collect failed", "queue", queueName+":processing", "err", err)
+		return
+	}
+	dlq, err := client.LLen(ctx, queueName+":dlq").Result()
+	if err != nil {
+		slog.Warn("crawler queue depth collect failed", "queue", queueName+":dlq", "err", err)
+		return
+	}
+	metrics.SetQueueDepth(ready, processing, dlq)
 }

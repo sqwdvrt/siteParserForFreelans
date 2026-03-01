@@ -68,6 +68,73 @@ def test_upsert_with_trace_id_normalizes_and_persists(monkeypatch) -> None:
     assert params == (10, 20, 0.85, "trace-x")
 
 
+def test_upsert_many_executes_single_bulk_query(monkeypatch) -> None:
+    repo = PostgresPendingJobsRepository("postgresql://fake/fake")
+    cursor = _FakeCursor()
+    conn = _FakeConn(cursor)
+    monkeypatch.setattr(repo, "_conn", lambda: _fake_conn_ctx(conn))
+    calls: list[tuple[str, list[tuple[int, int, float, str]], str | None]] = []
+
+    def fake_execute_values(cur, sql, argslist, template=None, **_kwargs) -> None:
+        assert cur is cursor
+        calls.append((sql, list(argslist), template))
+
+    monkeypatch.setattr(
+        "ai_service.adapter.postgres.pending_jobs_repository.execute_values",
+        fake_execute_values,
+    )
+
+    repo.upsert_many(
+        [
+            (10, 20, 0.85, " trace-1 "),
+            (30, 40, 0.65, ""),
+        ]
+    )
+
+    assert cursor.execute_calls == []
+    assert len(calls) == 1
+    sql, argslist, template = calls[0]
+    assert "INSERT INTO pending_ac_jobs" in sql
+    assert "ON CONFLICT (user_id, job_id)" in sql
+    assert template == "(%s, %s, %s, NULLIF(%s, ''))"
+    assert argslist == [
+        (10, 20, 0.85, "trace-1"),
+        (30, 40, 0.65, ""),
+    ]
+
+
+def test_upsert_many_merges_duplicate_rows(monkeypatch) -> None:
+    repo = PostgresPendingJobsRepository("postgresql://fake/fake")
+    cursor = _FakeCursor()
+    conn = _FakeConn(cursor)
+    monkeypatch.setattr(repo, "_conn", lambda: _fake_conn_ctx(conn))
+    captured_argslist: list[tuple[int, int, float, str]] = []
+
+    def fake_execute_values(cur, _sql, argslist, template=None, **_kwargs) -> None:
+        assert cur is cursor
+        _ = template
+        captured_argslist.extend(list(argslist))
+
+    monkeypatch.setattr(
+        "ai_service.adapter.postgres.pending_jobs_repository.execute_values",
+        fake_execute_values,
+    )
+
+    repo.upsert_many(
+        [
+            (10, 20, 0.4, ""),
+            (10, 20, 0.9, "trace-first"),
+            (10, 20, 0.6, "trace-last"),
+            (11, 21, 0.3, ""),
+        ]
+    )
+
+    assert captured_argslist == [
+        (10, 20, 0.9, "trace-last"),
+        (11, 21, 0.3, ""),
+    ]
+
+
 def test_mark_processed_skips_when_job_ids_empty(monkeypatch) -> None:
     repo = PostgresPendingJobsRepository("postgresql://fake/fake")
     cursor = _FakeCursor()
@@ -143,3 +210,70 @@ def test_list_unprocessed_job_ids_with_trace_returns_first_non_empty_trace(monke
     sql, params = cursor.execute_calls[0]
     assert "SELECT job_id, COALESCE(trace_id, '') AS trace_id" in sql
     assert params == (10, 20)
+
+
+def test_claim_unprocessed_job_ids_returns_ints(monkeypatch) -> None:
+    repo = PostgresPendingJobsRepository("postgresql://fake/fake")
+    cursor = _FakeCursor(rows=[{"job_id": 5, "trace_id": ""}, {"job_id": 8, "trace_id": "trace-8"}])
+    conn = _FakeConn(cursor)
+    monkeypatch.setattr(repo, "_conn", lambda: _fake_conn_ctx(conn))
+
+    result = repo.claim_unprocessed_job_ids(user_id=10, limit=20, lease_timeout_sec=900)
+
+    assert result == [5, 8]
+    assert len(cursor.execute_calls) == 1
+    sql, params = cursor.execute_calls[0]
+    assert "WITH to_claim AS (" in sql
+    assert "eligible AS (" in sql
+    assert "eligible.cnt >= %s" in sql
+    assert "RETURNING p.job_id, to_claim.trace_id" in sql
+    assert params == (10, 900, 20, 1)
+
+
+def test_claim_unprocessed_job_ids_with_trace_returns_first_non_empty_trace(monkeypatch) -> None:
+    repo = PostgresPendingJobsRepository("postgresql://fake/fake")
+    cursor = _FakeCursor(
+        rows=[
+            {"job_id": 5, "trace_id": ""},
+            {"job_id": 8, "trace_id": "trace-8"},
+            {"job_id": 9, "trace_id": "trace-9"},
+        ]
+    )
+    conn = _FakeConn(cursor)
+    monkeypatch.setattr(repo, "_conn", lambda: _fake_conn_ctx(conn))
+
+    job_ids, trace_id = repo.claim_unprocessed_job_ids_with_trace(
+        user_id=10,
+        limit=20,
+        lease_timeout_sec=600,
+    )
+
+    assert job_ids == [5, 8, 9]
+    assert trace_id == "trace-8"
+    assert len(cursor.execute_calls) == 1
+    sql, params = cursor.execute_calls[0]
+    assert "WITH to_claim AS (" in sql
+    assert "eligible AS (" in sql
+    assert "eligible.cnt >= %s" in sql
+    assert "RETURNING p.job_id, to_claim.trace_id" in sql
+    assert params == (10, 600, 20, 1)
+
+
+def test_claim_unprocessed_job_ids_with_trace_respects_min_jobs_param(monkeypatch) -> None:
+    repo = PostgresPendingJobsRepository("postgresql://fake/fake")
+    cursor = _FakeCursor(rows=[])
+    conn = _FakeConn(cursor)
+    monkeypatch.setattr(repo, "_conn", lambda: _fake_conn_ctx(conn))
+
+    job_ids, trace_id = repo.claim_unprocessed_job_ids_with_trace(
+        user_id=10,
+        limit=20,
+        lease_timeout_sec=600,
+        min_jobs=3,
+    )
+
+    assert job_ids == []
+    assert trace_id == ""
+    assert len(cursor.execute_calls) == 1
+    _sql, params = cursor.execute_calls[0]
+    assert params == (10, 600, 20, 3)

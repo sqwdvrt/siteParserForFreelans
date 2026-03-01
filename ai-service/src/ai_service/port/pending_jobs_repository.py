@@ -13,6 +13,16 @@ class PendingJobsRepository(ABC):
         """Insert or update pending match."""
         ...
 
+    def upsert_many(self, rows: list[tuple[int, int, float, str]]) -> None:
+        """Insert or update multiple pending matches."""
+        for user_id, job_id, match_score, trace_id in rows:
+            self.upsert(
+                user_id=user_id,
+                job_id=job_id,
+                match_score=match_score,
+                trace_id=trace_id,
+            )
+
     @abstractmethod
     def mark_processed(self, user_id: int, job_ids: list[int]) -> None:
         """Mark selected pending jobs as processed."""
@@ -39,11 +49,30 @@ class PendingJobsRepository(ABC):
         user_id: int,
         limit: int = 100,
         lease_timeout_sec: int = 600,
+        min_jobs: int = 1,
     ) -> list[int]:
         """Atomically mark up to *limit* unprocessed jobs as queued and return their IDs.
 
         Uses SELECT … FOR UPDATE SKIP LOCKED so concurrent scheduler instances
         cannot claim the same rows.  Rows whose queued_at is older than
         *lease_timeout_sec* are eligible for re-claiming (crash-recovery path).
+        Claim succeeds only when at least *min_jobs* rows are selected; otherwise
+        returns empty list and leaves queued_at unchanged.
+        """
+        ...
+
+    @abstractmethod
+    def claim_unprocessed_job_ids_with_trace(
+        self,
+        user_id: int,
+        limit: int = 100,
+        lease_timeout_sec: int = 600,
+        min_jobs: int = 1,
+    ) -> tuple[list[int], str]:
+        """Claim pending jobs and return (job_ids, trace_id) for one batch.
+
+        Returned trace_id may be empty when none of claimed rows has trace_id.
+        If selected rows are fewer than *min_jobs*, returns empty result and
+        keeps rows unqueued.
         """
         ...

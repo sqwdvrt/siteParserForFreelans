@@ -162,6 +162,8 @@ services:
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
       EMBEDDING_REQUIRE_LOCAL: "1"
       AI_READY_FILE: /tmp/ai-consumer-ready
+      AI_METRICS_BIND: ${AI_METRICS_BIND:-0.0.0.0}
+      AI_CONSUMER_METRICS_PORT: ${AI_CONSUMER_METRICS_PORT:-9108}
     depends_on:
       postgres:
         condition: service_healthy
@@ -255,6 +257,8 @@ services:
       REDIS_URL: redis://redis:6379/0
       OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
       AI_READY_FILE: /tmp/ai-ac-consumer-ready
+      AI_METRICS_BIND: ${AI_METRICS_BIND:-0.0.0.0}
+      AI_AC_CONSUMER_METRICS_PORT: ${AI_AC_CONSUMER_METRICS_PORT:-9109}
     depends_on:
       postgres:
         condition: service_healthy

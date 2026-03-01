@@ -10,6 +10,8 @@ from pgvector.psycopg2 import register_vector
 from psycopg2.extensions import connection as PGConnection
 from psycopg2.pool import AbstractConnectionPool, ThreadedConnectionPool
 
+from ai_service.util.fallback_metrics import PoolStats, deregister_pool_provider, register_pool_provider
+
 
 class _VectorThreadedConnectionPool(ThreadedConnectionPool):
     """Thread-safe pool that auto-registers pgvector on new connections."""
@@ -43,6 +45,11 @@ class PooledPostgresRepository:
         self._statement_timeout_ms = statement_timeout_ms
         self._pool: AbstractConnectionPool | None = None
         self._pool_lock = threading.Lock()
+        # Register metrics provider keyed by concrete class name.
+        # _pool_stats() reads psycopg2 internal attributes (_pool, _used) which
+        # are stable across psycopg2 versions and already used by our _connect override.
+        self._pool_metrics_name = type(self).__name__
+        register_pool_provider(self._pool_metrics_name, self._pool_stats)
 
     def _get_pool(self) -> AbstractConnectionPool:
         pool = self._pool
@@ -85,7 +92,23 @@ class PooledPostgresRepository:
                 with contextlib.suppress(Exception):
                     conn.close()
 
+    def _pool_stats(self) -> PoolStats:
+        """Return active/idle/max connection counts for Prometheus metrics.
+
+        Reads psycopg2 pool internals:
+          _pool  – list of idle connections available for checkout
+          _used  – dict mapping connection → key for in-use connections
+        Values are approximate (no extra locking) which is acceptable for gauges.
+        """
+        pool = self._pool
+        if pool is None:
+            return PoolStats(active=0, idle=0, max=self._maxconn)
+        idle = len(getattr(pool, "_pool", []))
+        active = len(getattr(pool, "_used", {}))
+        return PoolStats(active=active, idle=idle, max=self._maxconn)
+
     def close(self) -> None:
+        deregister_pool_provider(self._pool_metrics_name)
         with self._pool_lock:
             if self._pool is not None:
                 self._pool.closeall()

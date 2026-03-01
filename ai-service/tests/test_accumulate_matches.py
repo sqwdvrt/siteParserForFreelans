@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -20,17 +20,17 @@ def test_execute_upserts_all_matches() -> None:
 
     uc.execute(matches)
 
-    pending_repo.upsert.assert_has_calls(
+    pending_repo.upsert_many.assert_called_once_with(
         [
-            call(user_id=10, job_id=1, match_score=0.85, trace_id=""),
-            call(user_id=20, job_id=1, match_score=0.72, trace_id=""),
+            (10, 1, 0.85, ""),
+            (20, 1, 0.72, ""),
         ]
     )
 
 
 def test_execute_raises_and_stops_when_upsert_fails() -> None:
     pending_repo = MagicMock()
-    pending_repo.upsert.side_effect = [RuntimeError("boom"), None]
+    pending_repo.upsert_many.side_effect = RuntimeError("boom")
     uc = AccumulateMatchesUseCase(pending_repo)
     matches = [
         MatchCandidate(user_id=10, job_id=1, match_score=0.85),
@@ -40,7 +40,7 @@ def test_execute_raises_and_stops_when_upsert_fails() -> None:
     with pytest.raises(RuntimeError, match="boom"):
         uc.execute(matches)
 
-    assert pending_repo.upsert.call_count == 1
+    pending_repo.upsert_many.assert_called_once()
 
 
 def test_execute_passes_trace_id_to_repository() -> None:
@@ -52,9 +52,8 @@ def test_execute_passes_trace_id_to_repository() -> None:
 
     uc.execute(matches)
 
-    pending_repo.upsert.assert_called_once_with(
-        user_id=10,
-        job_id=1,
-        match_score=0.85,
-        trace_id="trace-ac-1",
+    pending_repo.upsert_many.assert_called_once_with(
+        [
+            (10, 1, 0.85, "trace-ac-1"),
+        ]
     )

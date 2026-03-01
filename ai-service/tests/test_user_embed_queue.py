@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from ai_service.adapter.redis.user_embed_queue import RedisUserEmbedQueueConsumer
 
@@ -152,3 +152,43 @@ def test_reclaim_stuck_moves_more_than_thousand(mock_from_url: MagicMock) -> Non
     c.reclaim_stuck()
 
     assert mock_client.rpoplpush.call_count == 1206
+
+
+@patch("ai_service.adapter.redis.user_embed_queue.redis.from_url")
+def test_nack_all_inflight_requeues_all_local_messages(mock_from_url: MagicMock) -> None:
+    mock_client = MagicMock()
+    mock_from_url.return_value = mock_client
+    pipe = MagicMock()
+    mock_client.pipeline.return_value = pipe
+    c = RedisUserEmbedQueueConsumer("redis://localhost:6379/0")
+    raw1 = json.dumps({"user_id": 1})
+    raw2 = json.dumps({"user_id": 2})
+    mock_client.brpoplpush.side_effect = [raw1, raw2, None]
+
+    assert c.pop_blocking(timeout_sec=1) == 1
+    assert c.pop_blocking(timeout_sec=1) == 2
+
+    assert c.nack_all_inflight() == 2
+
+    assert mock_client.pipeline.call_count == 2
+    assert pipe.lrem.call_args_list == [
+        call("user-embed:processing", 1, raw1),
+        call("user-embed:processing", 1, raw2),
+    ]
+    assert pipe.rpush.call_args_list == [
+        call("user-embed", '{"user_id":1,"_retry_count":1}'),
+        call("user-embed", '{"user_id":2,"_retry_count":1}'),
+    ]
+    assert pipe.execute.call_count == 2
+
+    c.ack(1)
+    c.nack(2)
+    assert mock_client.pipeline.call_count == 2
+
+
+@patch("ai_service.adapter.redis.user_embed_queue.redis.from_url")
+def test_nack_all_inflight_returns_zero_when_nothing_inflight(mock_from_url: MagicMock) -> None:
+    mock_from_url.return_value = MagicMock()
+    c = RedisUserEmbedQueueConsumer("redis://localhost:6379/0")
+
+    assert c.nack_all_inflight() == 0

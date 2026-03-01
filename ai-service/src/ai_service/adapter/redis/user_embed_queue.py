@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections import defaultdict, deque
 from typing import Any
 
@@ -27,6 +28,7 @@ class RedisUserEmbedQueueConsumer(UserEmbedQueueConsumer):
         self._dlq_queue = f"{queue_name}:dlq"
         self._max_nack_retries = DEFAULT_MAX_NACK_RETRIES
         self._inflight_by_user_id: dict[int, deque[tuple[str, str]]] = defaultdict(deque)
+        self._inflight_lock = threading.Lock()
 
     def pop_blocking(self, timeout_sec: int = 5) -> int | None:
         payload = self._client.brpoplpush(self._queue, self._processing_queue, timeout=timeout_sec)
@@ -54,7 +56,8 @@ class RedisUserEmbedQueueConsumer(UserEmbedQueueConsumer):
             self._ack_raw(payload)  # invalid payload: discard
             return None
         trace_id = self._normalize_trace_id(data.get("trace_id"))
-        self._inflight_by_user_id[uid].append((payload, trace_id))
+        with self._inflight_lock:
+            self._inflight_by_user_id[uid].append((payload, trace_id))
         return uid
 
     def ack(self, user_id: int) -> None:
@@ -65,11 +68,12 @@ class RedisUserEmbedQueueConsumer(UserEmbedQueueConsumer):
         self._ack_raw(raw)
 
     def trace_id(self, user_id: int) -> str:
-        inflight = self._inflight_by_user_id.get(user_id)
-        if not inflight:
-            return ""
-        _raw, trace_id = inflight[0]
-        return trace_id
+        with self._inflight_lock:
+            inflight = self._inflight_by_user_id.get(user_id)
+            if not inflight:
+                return ""
+            _raw, trace_id = inflight[0]
+            return trace_id
 
     def nack(self, user_id: int) -> None:
         inflight = self._take_inflight(user_id)
@@ -90,6 +94,20 @@ class RedisUserEmbedQueueConsumer(UserEmbedQueueConsumer):
             moved = self._client.rpoplpush(self._processing_queue, self._queue)
             if moved is None:
                 break
+
+    def nack_all_inflight(self) -> int:
+        with self._inflight_lock:
+            raws: list[str] = [raw for values in self._inflight_by_user_id.values() for raw, _trace_id in values]
+            self._inflight_by_user_id.clear()
+
+        for raw in raws:
+            out_raw, to_dlq = self._prepare_nack_payload(raw)
+            target_queue = self._dlq_queue if to_dlq else self._queue
+            pipe = self._client.pipeline(transaction=True)
+            pipe.lrem(self._processing_queue, 1, raw)
+            pipe.rpush(target_queue, out_raw)
+            pipe.execute()
+        return len(raws)
 
     def _ack_raw(self, raw: str) -> None:
         self._client.lrem(self._processing_queue, 1, raw)
@@ -113,13 +131,14 @@ class RedisUserEmbedQueueConsumer(UserEmbedQueueConsumer):
         )
 
     def _take_inflight(self, user_id: int) -> tuple[str, str] | None:
-        inflight = self._inflight_by_user_id.get(user_id)
-        if not inflight:
-            return None
-        raw = inflight.popleft()
-        if not inflight:
-            self._inflight_by_user_id.pop(user_id, None)
-        return raw
+        with self._inflight_lock:
+            inflight = self._inflight_by_user_id.get(user_id)
+            if not inflight:
+                return None
+            raw = inflight.popleft()
+            if not inflight:
+                self._inflight_by_user_id.pop(user_id, None)
+            return raw
 
     @staticmethod
     def _normalize_trace_id(raw: object) -> str:

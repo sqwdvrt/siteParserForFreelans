@@ -39,6 +39,8 @@ READY_FILE_ENV = "AI_READY_FILE"
 DEFAULT_READY_FILE = "/tmp/ai-user-embed-ready"
 WARMUP_TEXT_ENV = "AI_WARMUP_TEXT"
 DEFAULT_WARMUP_TEXT = "Warmup embedding probe"
+SHUTDOWN_GRACE_SEC_ENV = "AI_SHUTDOWN_GRACE_SEC"
+DEFAULT_SHUTDOWN_GRACE_SEC = 20.0
 
 
 def _cleanup_ready_file(ready_file: str) -> None:
@@ -63,6 +65,40 @@ def _warmup_embedding(embedding: SentenceTransformerEmbedding) -> None:
     warmup_text = os.getenv(WARMUP_TEXT_ENV, DEFAULT_WARMUP_TEXT)
     vec = embedding.encode(warmup_text)
     logger.info("embedding warmup completed, dim=%d", len(vec))
+
+
+def _shutdown_grace_sec() -> float:
+    raw = os.getenv(SHUTDOWN_GRACE_SEC_ENV, str(DEFAULT_SHUTDOWN_GRACE_SEC))
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "invalid %s=%r, fallback to %.1fs",
+            SHUTDOWN_GRACE_SEC_ENV,
+            raw,
+            DEFAULT_SHUTDOWN_GRACE_SEC,
+        )
+        return DEFAULT_SHUTDOWN_GRACE_SEC
+    if value <= 0:
+        logger.warning(
+            "non-positive %s=%r, fallback to %.1fs",
+            SHUTDOWN_GRACE_SEC_ENV,
+            raw,
+            DEFAULT_SHUTDOWN_GRACE_SEC,
+        )
+        return DEFAULT_SHUTDOWN_GRACE_SEC
+    return value
+
+
+def _nack_inflight_messages(queue: object) -> int:
+    nack_all_inflight = getattr(queue, "nack_all_inflight", None)
+    if not callable(nack_all_inflight):
+        return 0
+    try:
+        return int(nack_all_inflight())
+    except Exception as e:  # noqa: BLE001
+        logger.exception("nack_all_inflight failed: %s", e)
+        return 0
 
 
 def main() -> None:
@@ -96,16 +132,57 @@ def main() -> None:
     _mark_ready(ready_file)
 
     stop_event = threading.Event()
+    consumer_stopped = threading.Event()
+    grace_sec = _shutdown_grace_sec()
+    force_exit_lock = threading.Lock()
+    force_exit_started = False
 
     def on_signal(signum: int, frame: object) -> None:
-        logger.info("shutdown signal received")
+        nonlocal force_exit_started
+        _ = frame
+        try:
+            signal_name = signal.Signals(signum).name
+        except ValueError:
+            signal_name = str(signum)
+        logger.info("shutdown signal received: %s", signal_name)
         stop_event.set()
+
+        def force_exit(exit_code: int) -> None:
+            requeued = _nack_inflight_messages(queue)
+            if requeued > 0:
+                logger.warning("requeued %d in-flight user-embed messages before forced shutdown", requeued)
+            os._exit(exit_code)
+
+        def force_exit_on_timeout() -> None:
+            if consumer_stopped.wait(timeout=grace_sec):
+                return
+            logger.error(
+                "graceful shutdown timed out after %.1fs; forcing process exit",
+                grace_sec,
+            )
+            force_exit(1)
+
+        with force_exit_lock:
+            if not force_exit_started:
+                force_exit_started = True
+                t = threading.Thread(
+                    target=force_exit_on_timeout,
+                    daemon=True,
+                    name="user-embed-consumer-force-exit",
+                )
+                t.start()
+                return
+        logger.warning("second shutdown signal received, forcing immediate exit")
+        force_exit(1)
 
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
     logger.info("user-embed consumer started, queue=%s", queue_name)
-    run_user_embed_consumer(queue, process_user_embed, timeout_sec=5, stop_event=stop_event)
+    try:
+        run_user_embed_consumer(queue, process_user_embed, timeout_sec=5, stop_event=stop_event)
+    finally:
+        consumer_stopped.set()
     logger.info("user-embed consumer stopped")
 
 

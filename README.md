@@ -193,6 +193,9 @@ cd backend && go run ./cmd/crawler
 | `OLLAMA_URL` | URL Ollama для AI classifier (локально по умолчанию `http://ollama:11434`) |
 | `OLLAMA_MODEL` | Модель Ollama для classifier (по умолчанию `llama3.2:3b-instruct-q4_K_M`) |
 | `OLLAMA_TIMEOUT_SEC` | Таймаут запроса к Ollama в секундах (по умолчанию `30`) |
+| `AI_METRICS_BIND` | Bind-address для `/metrics` endpoint AI-consumer процессов (по умолчанию `0.0.0.0`) |
+| `AI_CONSUMER_METRICS_PORT` | Порт `/metrics` для `ai-service` consumer (по умолчанию `9108`, `0` = выключить exporter) |
+| `AI_AC_CONSUMER_METRICS_PORT` | Порт `/metrics` для `ai-ac-consumer` (по умолчанию `9109`, `0` = выключить exporter) |
 | `AC_BATCH_QUEUE` | Redis-очередь batch-задач Actor-Critic (по умолчанию `ac-batch`) |
 | `AC_BATCH_INTERVAL_SEC` | Интервал планировщика batch в `ai-ac-consumer` (по умолчанию `300`) |
 | `AC_BATCH_MIN_JOBS`/`AC_BATCH_MAX_JOBS` | Границы размера batch из pending-совпадений (по умолчанию `1` и `20`) |

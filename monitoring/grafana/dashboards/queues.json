@@ -24,7 +24,7 @@
       "id": 1,
       "title": "ai-process depth",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 0 },
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -58,7 +58,7 @@
       "id": 2,
       "title": "user-embed depth",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 8, "x": 8, "y": 0 },
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -90,9 +90,43 @@
     },
     {
       "id": 3,
+      "title": "ac-batch depth",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "redis_key_size{job=\"redis-exporter\",key=\"ac-batch\"}",
+          "legendFormat": "ac-batch",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "area",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 200 },
+              { "color": "red", "value": 1000 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 9,
       "title": "match-notify depth",
       "type": "stat",
-      "gridPos": { "h": 4, "w": 8, "x": 16, "y": 0 },
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -131,7 +165,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "redis_key_size{job=\"redis-exporter\",key=~\"ai-process|user-embed|match-notify\"}",
+          "expr": "redis_key_size{job=\"redis-exporter\",key=~\"ai-process|user-embed|ac-batch|match-notify\"}",
           "legendFormat": "{{key}}",
           "refId": "A"
         }

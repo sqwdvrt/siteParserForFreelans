@@ -31,8 +31,8 @@ var blockedHosts = map[string]bool{
 }
 
 var (
-	cgnatNet     = mustCIDR("100.64.0.0/10")
-	benchmarkNet = mustCIDR("198.18.0.0/15")
+	cgnatNet, cgnatNetErr         = parseCIDR("100.64.0.0/10")
+	benchmarkNet, benchmarkNetErr = parseCIDR("198.18.0.0/15")
 )
 
 type ResolveIPFunc func(ctx context.Context, host string) ([]net.IPAddr, error)
@@ -257,41 +257,36 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 }
 
 func (f *Fetcher) waitForRateLimitAndOpenCircuitCheck(ctx context.Context, domain string) error {
-	now := time.Now()
-	f.mu.Lock()
-	if err := f.checkCircuitOpenLocked(domain, now); err != nil {
+	for {
+		now := time.Now()
+		wait := time.Duration(0)
+
+		f.mu.Lock()
+		if err := f.checkCircuitOpenLocked(domain, now); err != nil {
+			f.mu.Unlock()
+			return err
+		}
+		if last, ok := f.lastFetch[domain]; ok {
+			elapsed := now.Sub(last)
+			if elapsed < f.rateLimit {
+				wait = f.rateLimit - elapsed
+			}
+		}
+		if wait <= 0 {
+			f.lastFetch[domain] = now
+			f.mu.Unlock()
+			return nil
+		}
 		f.mu.Unlock()
-		return err
-	}
-	wait := time.Duration(0)
-	if last, ok := f.lastFetch[domain]; ok {
-		elapsed := now.Sub(last)
-		if elapsed < f.rateLimit {
-			wait = f.rateLimit - elapsed
+
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
 		}
 	}
-	if wait <= 0 {
-		f.lastFetch[domain] = now
-		f.mu.Unlock()
-		return nil
-	}
-	f.mu.Unlock()
-
-	timer := time.NewTimer(wait)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-	}
-
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if err := f.checkCircuitOpenLocked(domain, time.Now()); err != nil {
-		return err
-	}
-	f.lastFetch[domain] = time.Now()
-	return nil
 }
 
 func (f *Fetcher) checkCircuitOpenLocked(domain string, now time.Time) error {
@@ -435,15 +430,23 @@ func isDisallowedIP(ip net.IP) bool {
 		ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 		return true
 	}
-	return cgnatNet.Contains(ip) || benchmarkNet.Contains(ip)
+	return ipInNetwork(ip, cgnatNet, cgnatNetErr) || ipInNetwork(ip, benchmarkNet, benchmarkNetErr)
 }
 
-func mustCIDR(raw string) *net.IPNet {
+func parseCIDR(raw string) (*net.IPNet, error) {
 	_, n, err := net.ParseCIDR(raw)
 	if err != nil {
-		panic(err)
+		return nil, fmt.Errorf("parse cidr %q: %w", raw, err)
 	}
-	return n
+	return n, nil
+}
+
+func ipInNetwork(ip net.IP, network *net.IPNet, parseErr error) bool {
+	if parseErr != nil || network == nil {
+		// Fail closed: malformed CIDR constant must not disable SSRF protections.
+		return true
+	}
+	return network.Contains(ip)
 }
 
 func cloneIP(ip net.IP) net.IP {

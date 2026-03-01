@@ -8,6 +8,7 @@ from ai_service.domain.job import Job
 from ai_service.domain.ranked_job import RankedJob
 from ai_service.domain.user import User
 from ai_service.port.actor import ActorAgent
+from ai_service.util import fallback_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -35,10 +36,20 @@ class FallbackActorAgent(ActorAgent):
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("primary actor failed: %s", exc)
-            selection = []
+            fallback_metrics.record_primary_outcome("actor", "error")
+            fallback_metrics.record_fallback("actor", "primary_error")
+            return self._fallback.select(
+                user=user,
+                candidates=candidates,
+                max_jobs=max_jobs,
+                critique=critique,
+            )
 
         if selection:
+            fallback_metrics.record_primary_outcome("actor", "success")
             return selection
+        fallback_metrics.record_primary_outcome("actor", "empty")
+        fallback_metrics.record_fallback("actor", "primary_empty")
 
         return self._fallback.select(
             user=user,

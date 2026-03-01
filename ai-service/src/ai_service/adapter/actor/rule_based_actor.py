@@ -30,7 +30,7 @@ class RuleBasedActorAgent(ActorAgent):
                 RankedJob(
                     job_id=job.id,
                     title=job.title,
-                    why_it_fits="Matches your profile based on similarity ranking.",
+                    why_it_fits="Соответствует вашему профилю по схожести.",
                     rank=index + 1,
                     actor_confidence=confidence,
                 )

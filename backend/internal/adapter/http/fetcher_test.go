@@ -504,3 +504,72 @@ func TestFetcher_CircuitBreaker_DoesNotOpenOn404(t *testing.T) {
 		t.Fatalf("want no circuit-open fast fail for 404, calls=%d", transport.calls)
 	}
 }
+
+func TestParseCIDR_Valid(t *testing.T) {
+	network, err := parseCIDR("100.64.0.0/10")
+	if err != nil {
+		t.Fatalf("parseCIDR: %v", err)
+	}
+	if network == nil {
+		t.Fatal("want non-nil network")
+	}
+	if !network.Contains(net.ParseIP("100.64.0.1")) {
+		t.Fatal("want parsed network to contain test IP")
+	}
+}
+
+func TestParseCIDR_Invalid(t *testing.T) {
+	network, err := parseCIDR("bad-cidr")
+	if err == nil {
+		t.Fatal("want parse error")
+	}
+	if network != nil {
+		t.Fatal("want nil network on parse error")
+	}
+}
+
+func TestIPInNetwork_FailClosedOnParseError(t *testing.T) {
+	ip := net.ParseIP("93.184.216.34")
+	if !ipInNetwork(ip, nil, errors.New("parse failed")) {
+		t.Fatal("want fail-closed behavior when cidr parse failed")
+	}
+}
+
+func TestFetcher_WaitForRateLimitAndOpenCircuitCheck_SerializesConcurrentWaiters(t *testing.T) {
+	rateLimit := 80 * time.Millisecond
+	f := newTestFetcher(Config{RateLimit: rateLimit})
+	domain := "kwork.ru"
+	f.mu.Lock()
+	f.lastFetch[domain] = time.Now()
+	f.mu.Unlock()
+
+	type result struct {
+		at  time.Time
+		err error
+	}
+	results := make(chan result, 2)
+	run := func() {
+		err := f.waitForRateLimitAndOpenCircuitCheck(context.Background(), domain)
+		results <- result{at: time.Now(), err: err}
+	}
+
+	go run()
+	time.Sleep(5 * time.Millisecond)
+	go run()
+
+	first := <-results
+	second := <-results
+	if first.err != nil {
+		t.Fatalf("first waiter err: %v", first.err)
+	}
+	if second.err != nil {
+		t.Fatalf("second waiter err: %v", second.err)
+	}
+	if second.at.Before(first.at) {
+		first, second = second, first
+	}
+	gap := second.at.Sub(first.at)
+	if gap < rateLimit/2 {
+		t.Fatalf("waiters released too close: gap=%s, want >=%s", gap, rateLimit/2)
+	}
+}

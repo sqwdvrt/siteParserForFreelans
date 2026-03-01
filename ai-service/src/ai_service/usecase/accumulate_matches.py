@@ -17,18 +17,19 @@ class AccumulateMatchesUseCase:
         self._repo = pending_repo
 
     def execute(self, matches: list[MatchCandidate]) -> None:
-        for candidate in matches:
-            try:
-                self._repo.upsert(
-                    user_id=candidate.user_id,
-                    job_id=candidate.job_id,
-                    match_score=candidate.match_score,
-                    trace_id=candidate.trace_id,
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception(
-                    "failed to store pending match user=%d job=%d",
-                    candidate.user_id,
-                    candidate.job_id,
-                )
-                raise
+        rows = [
+            (
+                candidate.user_id,
+                candidate.job_id,
+                candidate.match_score,
+                candidate.trace_id,
+            )
+            for candidate in matches
+        ]
+        if not rows:
+            return
+        try:
+            self._repo.upsert_many(rows)
+        except Exception:  # noqa: BLE001
+            logger.exception("failed to store pending matches batch size=%d", len(rows))
+            raise

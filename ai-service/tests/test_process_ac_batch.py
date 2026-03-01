@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from ai_service.domain.ac_result import ActorCriticResult
 from ai_service.domain.job import Job
 from ai_service.domain.ranked_job import RankedJob
@@ -112,7 +114,9 @@ def test_execute_enqueues_batch_when_passed() -> None:
     pending_repo.mark_processed.assert_called_once_with(1, [1, 2])
 
 
-def test_execute_skips_notification_when_not_passed() -> None:
+def test_execute_sends_best_selection_even_when_not_passed() -> None:
+    """Уведомление отправляется даже если score < threshold.
+    Critic используется для качества (retry), не для блокировки доставки."""
     user_repo = MagicMock()
     user_repo.get_by_id.return_value = _user_with_profile()
     job_repo = MagicMock()
@@ -130,7 +134,11 @@ def test_execute_skips_notification_when_not_passed() -> None:
 
     uc.execute(ACBatch(user_id=1, job_ids=[1, 2]))
 
-    notify_queue.enqueue_batch.assert_not_called()
+    notify_queue.enqueue_batch.assert_called_once()
+    kwargs = notify_queue.enqueue_batch.call_args.kwargs
+    assert kwargs["user_id"] == 1
+    assert kwargs["critic_score"] == 4.0
+    assert len(kwargs["ranked_jobs"]) == 1
     pending_repo.mark_processed.assert_called_once_with(1, [1, 2])
 
 
@@ -155,3 +163,22 @@ def test_execute_skips_notification_when_queue_has_no_batch_method() -> None:
     uc.execute(ACBatch(user_id=1, job_ids=[1, 2]))
 
     pending_repo.mark_processed.assert_called_once_with(1, [1, 2])
+
+
+def test_execute_propagates_ollama_timeout_and_keeps_batch_unprocessed() -> None:
+    """Если Actor-Critic падает по timeout (например, Ollama), batch не mark_processed."""
+    user_repo = MagicMock()
+    user_repo.get_by_id.return_value = _user_with_profile()
+    job_repo = MagicMock()
+    job_repo.get_with_scores.return_value = _jobs_with_scores()
+    pending_repo = MagicMock()
+    ac_loop = MagicMock()
+    ac_loop.run.side_effect = TimeoutError("ollama timeout")
+    notify_queue = MagicMock()
+    uc = ProcessACBatchUseCase(user_repo, job_repo, pending_repo, ac_loop, notify_queue)
+
+    with pytest.raises(TimeoutError, match="ollama timeout"):
+        uc.execute(ACBatch(user_id=1, job_ids=[1, 2]))
+
+    notify_queue.enqueue_batch.assert_not_called()
+    pending_repo.mark_processed.assert_not_called()

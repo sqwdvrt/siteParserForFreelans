@@ -28,6 +28,8 @@ from ai_service.adapter.postgres import (
 from ai_service.adapter.redis import ACBatchMessage, RedisACBatchQueueConsumer, RedisMatchNotifyQueue
 from ai_service.usecase.actor_critic_loop import ActorCriticConfig, ActorCriticLoop
 from ai_service.usecase.process_ac_batch import ACBatch, ProcessACBatchUseCase
+from ai_service.util.fallback_metrics import start_metrics_server_from_env
+from ai_service.util.ollama_probe import probe_ollama
 from ai_service.util.trace_context import reset_trace_id, set_trace_id
 from ai_service.util.transport_security import (
     is_production_env,
@@ -74,12 +76,15 @@ def _schedule_pending_batches(
     scheduled = 0
     user_ids = pending_repo.list_unprocessed_user_ids(lease_timeout_sec=lease_timeout_sec)
     for user_id in user_ids:
-        job_ids = pending_repo.claim_unprocessed_job_ids(
-            user_id, limit=max_jobs, lease_timeout_sec=lease_timeout_sec
+        job_ids, trace_id = pending_repo.claim_unprocessed_job_ids_with_trace(
+            user_id,
+            limit=max_jobs,
+            lease_timeout_sec=lease_timeout_sec,
+            min_jobs=min_jobs,
         )
         if len(job_ids) < min_jobs:
             continue
-        queue.enqueue(ACBatchMessage(user_id=user_id, job_ids=job_ids))
+        queue.enqueue(ACBatchMessage(user_id=user_id, job_ids=job_ids, trace_id=trace_id))
         scheduled += 1
     if scheduled > 0:
         logger.info("scheduled %d ac batches", scheduled)
@@ -104,6 +109,10 @@ def main() -> None:
         except ValueError as exc:
             logger.error("%s", exc)
             sys.exit(1)
+    start_metrics_server_from_env(
+        port_env="AI_AC_CONSUMER_METRICS_PORT",
+        default_port=0,
+    )
 
     ac_batch_queue_name = os.getenv("AC_BATCH_QUEUE", "ac-batch")
     batch_interval = int(os.getenv("AC_BATCH_INTERVAL_SEC", "300"))
@@ -120,6 +129,9 @@ def main() -> None:
     critic_model = os.getenv("CRITIC_OLLAMA_MODEL", "llama3.2:3b-instruct-q4_K_M")
     actor_timeout = int(os.getenv("ACTOR_OLLAMA_TIMEOUT_SEC", "45"))
     critic_timeout = int(os.getenv("CRITIC_OLLAMA_TIMEOUT_SEC", "30"))
+    ollama_required = os.getenv("OLLAMA_REQUIRED", "1" if is_production_env(app_env) else "0") == "1"
+    if not probe_ollama(ollama_url, required=ollama_required) and ollama_required:
+        sys.exit(1)
 
     user_repo = PostgresUserRepository(db_url)
     job_repo = PostgresJobRepository(db_url)

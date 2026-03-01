@@ -16,6 +16,56 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import OrderedDict
+from contextlib import contextmanager
+from typing import Callable, Generic, TypeVar
+
+try:
+    from cachetools import TTLCache as _TTLCache
+except ImportError:
+    KT = TypeVar("KT")
+    VT = TypeVar("VT")
+
+    class _TTLCache(Generic[KT, VT]):
+        """Minimal TTL+LRU cache fallback used when cachetools isn't installed."""
+
+        def __init__(self, maxsize: int, ttl: float, timer: Callable[[], float]):
+            self.maxsize = maxsize
+            self.ttl = ttl
+            self._timer = timer
+            self._store: OrderedDict[KT, tuple[VT, float]] = OrderedDict()
+
+        def _expire(self, now: float | None = None) -> None:
+            current = self._timer() if now is None else now
+            expired_keys = [k for k, (_, expires_at) in self._store.items() if current >= expires_at]
+            for key in expired_keys:
+                self._store.pop(key, None)
+
+        def clear(self) -> None:
+            self._store.clear()
+
+        def __setitem__(self, key: KT, value: VT) -> None:
+            now = self._timer()
+            self._expire(now)
+            if key in self._store:
+                self._store.pop(key, None)
+            self._store[key] = (value, now + self.ttl)
+            self._store.move_to_end(key)
+            while len(self._store) > self.maxsize:
+                self._store.popitem(last=False)
+
+        def get(self, key: KT, default: VT | None = None) -> VT | None:
+            now = self._timer()
+            self._expire(now)
+            entry = self._store.get(key)
+            if entry is None:
+                return default
+            value, expires_at = entry
+            if now >= expires_at:
+                self._store.pop(key, None)
+                return default
+            self._store.move_to_end(key)
+            return value
 
 try:
     from dotenv import load_dotenv
@@ -85,7 +135,25 @@ def _read_positive_int_env(name: str, default: int) -> int:
 
 
 USER_ID_CACHE_TTL_SEC = _read_positive_int_env("USER_ID_CACHE_TTL_SEC", 300)
-_USER_ID_CACHE: dict[int, tuple[int, float]] = {}
+USER_ID_CACHE_MAXSIZE = _read_positive_int_env("USER_ID_CACHE_MAXSIZE", 1000)
+_USER_ID_CACHE_NOW_OVERRIDE: float | None = None
+
+
+def _user_id_cache_timer() -> float:
+    if _USER_ID_CACHE_NOW_OVERRIDE is not None:
+        return _USER_ID_CACHE_NOW_OVERRIDE
+    return time.monotonic()
+
+
+def _build_user_id_cache(
+    *,
+    maxsize: int = USER_ID_CACHE_MAXSIZE,
+    ttl_sec: int = USER_ID_CACHE_TTL_SEC,
+) -> _TTLCache[int, int]:
+    return _TTLCache(maxsize=maxsize, ttl=ttl_sec, timer=_user_id_cache_timer)
+
+
+_USER_ID_CACHE = _build_user_id_cache()
 
 
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -362,21 +430,26 @@ def put_user_profile(
     return True
 
 
+@contextmanager
+def _with_cache_time(now_monotonic: float | None):
+    global _USER_ID_CACHE_NOW_OVERRIDE
+    prev = _USER_ID_CACHE_NOW_OVERRIDE
+    if now_monotonic is not None:
+        _USER_ID_CACHE_NOW_OVERRIDE = now_monotonic
+    try:
+        yield
+    finally:
+        _USER_ID_CACHE_NOW_OVERRIDE = prev
+
+
 def _cache_user_id(telegram_id: int, user_id: int, *, now_monotonic: float | None = None) -> None:
-    now = now_monotonic if now_monotonic is not None else time.monotonic()
-    _USER_ID_CACHE[telegram_id] = (user_id, now + USER_ID_CACHE_TTL_SEC)
+    with _with_cache_time(now_monotonic):
+        _USER_ID_CACHE[telegram_id] = user_id
 
 
 def _get_cached_user_id(telegram_id: int, *, now_monotonic: float | None = None) -> int | None:
-    now = now_monotonic if now_monotonic is not None else time.monotonic()
-    cached = _USER_ID_CACHE.get(telegram_id)
-    if cached is None:
-        return None
-    user_id, expires_at = cached
-    if now >= expires_at:
-        _USER_ID_CACHE.pop(telegram_id, None)
-        return None
-    return user_id
+    with _with_cache_time(now_monotonic):
+        return _USER_ID_CACHE.get(telegram_id)
 
 
 def _resolve_user_id(api_url: str, telegram_id: int, api_auth_token: str, api_user_hmac_secret: str) -> int | None:

@@ -97,6 +97,53 @@ groups:
           summary: "High PostgreSQL connection count"
           description: "Active PostgreSQL backends are above 80 for 10 minutes."
 
+  - name: siteparser-ai-fallback
+    rules:
+      - alert: SiteParserClassifierFallbackRatioHigh
+        expr: |
+          (
+            sum(rate(ai_ollama_fallback_total{job="ai-service", pipeline="classifier"}[10m]))
+            /
+            clamp_min(sum(rate(ai_ollama_primary_total{job="ai-service", pipeline="classifier"}[10m])), 0.001)
+          ) > 0.30
+        for: 15m
+        labels:
+          severity: warning
+          service: ai-service
+        annotations:
+          summary: "Classifier fallback ratio is high"
+          description: "RuleBasedClassifier fallback ratio is above 30% for 15 minutes; Ollama may be degraded."
+
+      - alert: SiteParserActorFallbackRatioHigh
+        expr: |
+          (
+            sum(rate(ai_ollama_fallback_total{job="ai-ac-consumer", pipeline="actor"}[10m]))
+            /
+            clamp_min(sum(rate(ai_ollama_primary_total{job="ai-ac-consumer", pipeline="actor"}[10m])), 0.001)
+          ) > 0.40
+        for: 15m
+        labels:
+          severity: warning
+          service: ai-ac-consumer
+        annotations:
+          summary: "Actor fallback ratio is high"
+          description: "RuleBasedActor fallback ratio is above 40% for 15 minutes; Ollama Actor may be degraded."
+
+      - alert: SiteParserCriticFallbackRatioHigh
+        expr: |
+          (
+            sum(rate(ai_ollama_fallback_total{job="ai-ac-consumer", pipeline="critic"}[10m]))
+            /
+            clamp_min(sum(rate(ai_ollama_primary_total{job="ai-ac-consumer", pipeline="critic"}[10m])), 0.001)
+          ) > 0.40
+        for: 15m
+        labels:
+          severity: warning
+          service: ai-ac-consumer
+        annotations:
+          summary: "Critic fallback ratio is high"
+          description: "RuleBasedCritic fallback ratio is above 40% for 15 minutes; Ollama Critic may be degraded."
+
   - name: siteparser-queues
     rules:
       # Queue metrics rely on redis-exporter --check-keys for:
@@ -217,3 +264,45 @@ groups:
         annotations:
           summary: "ac-batch consumer stall suspected"
           description: "ac-batch backlog exists but processing queue stays empty for 15 minutes."
+
+  - name: siteparser-ai-quality
+    rules:
+      - alert: SiteParserOllamaFallbackRateHigh
+        expr: |
+          sum by (pipeline) (
+            rate(ai_ollama_fallback_total[10m])
+          )
+          /
+          clamp_min(
+            sum by (pipeline) (
+              rate(ai_ollama_primary_total[10m])
+            ),
+            0.0001
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          service: ai-service
+        annotations:
+          summary: "Ollama fallback rate is high ({{ $labels.pipeline }})"
+          description: "Pipeline {{ $labels.pipeline }} falling back to rule-based logic in >50% of calls for 5 minutes. Ollama may be degraded."
+
+      - alert: SiteParserOllamaFullyDegraded
+        expr: |
+          sum by (pipeline) (
+            rate(ai_ollama_fallback_total[5m])
+          )
+          /
+          clamp_min(
+            sum by (pipeline) (
+              rate(ai_ollama_primary_total[5m])
+            ),
+            0.0001
+          ) > 0.95
+        for: 5m
+        labels:
+          severity: critical
+          service: ai-service
+        annotations:
+          summary: "Ollama fully degraded — all requests use rule-based fallback ({{ $labels.pipeline }})"
+          description: "Pipeline {{ $labels.pipeline }} is using rule-based fallback for >95% of calls. Ollama is likely down."

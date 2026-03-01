@@ -22,18 +22,24 @@ def test_schedule_pending_batches_respects_min_jobs() -> None:
     class FakePendingRepo:
         def __init__(self) -> None:
             self.list_calls: list[int] = []
-            self.claim_calls: list[tuple[int, int, int]] = []
+            self.claim_calls: list[tuple[int, int, int, int]] = []
 
         def list_unprocessed_user_ids(self, lease_timeout_sec: int):
             self.list_calls.append(lease_timeout_sec)
             return [10, 20, 30]
 
-        def claim_unprocessed_job_ids(self, user_id: int, limit: int, lease_timeout_sec: int):
-            self.claim_calls.append((user_id, limit, lease_timeout_sec))
+        def claim_unprocessed_job_ids_with_trace(
+            self,
+            user_id: int,
+            limit: int,
+            lease_timeout_sec: int,
+            min_jobs: int,
+        ):
+            self.claim_calls.append((user_id, limit, lease_timeout_sec, min_jobs))
             jobs_map = {
-                10: [1],
-                20: [2, 3],
-                30: [],
+                10: ([1], "trace-10"),
+                20: ([2, 3], "trace-20"),
+                30: ([], "trace-30"),
             }
             return jobs_map[user_id]
 
@@ -58,9 +64,9 @@ def test_schedule_pending_batches_respects_min_jobs() -> None:
     assert len(queue.messages) == 1
     assert queue.messages[0].user_id == 20
     assert queue.messages[0].job_ids == [2, 3]
-    assert queue.messages[0].trace_id == ""
+    assert queue.messages[0].trace_id == "trace-20"
     assert pending_repo.list_calls == [600]
-    assert pending_repo.claim_calls == [(10, 20, 600), (20, 20, 600), (30, 20, 600)]
+    assert pending_repo.claim_calls == [(10, 20, 600, 2), (20, 20, 600, 2), (30, 20, 600, 2)]
 
 
 def test_schedule_pending_batches_passes_custom_lease_timeout() -> None:
@@ -69,15 +75,21 @@ def test_schedule_pending_batches_passes_custom_lease_timeout() -> None:
     class FakePendingRepo:
         def __init__(self) -> None:
             self.list_calls: list[int] = []
-            self.claim_calls: list[tuple[int, int, int]] = []
+            self.claim_calls: list[tuple[int, int, int, int]] = []
 
         def list_unprocessed_user_ids(self, lease_timeout_sec: int):
             self.list_calls.append(lease_timeout_sec)
             return [20]
 
-        def claim_unprocessed_job_ids(self, user_id: int, limit: int, lease_timeout_sec: int):
-            self.claim_calls.append((user_id, limit, lease_timeout_sec))
-            return [2, 3]
+        def claim_unprocessed_job_ids_with_trace(
+            self,
+            user_id: int,
+            limit: int,
+            lease_timeout_sec: int,
+            min_jobs: int,
+        ):
+            self.claim_calls.append((user_id, limit, lease_timeout_sec, min_jobs))
+            return [2, 3], "trace-custom"
 
     class FakeQueue:
         def __init__(self) -> None:
@@ -100,9 +112,9 @@ def test_schedule_pending_batches_passes_custom_lease_timeout() -> None:
     assert len(queue.messages) == 1
     assert queue.messages[0].user_id == 20
     assert queue.messages[0].job_ids == [2, 3]
-    assert queue.messages[0].trace_id == ""
+    assert queue.messages[0].trace_id == "trace-custom"
     assert pending_repo.list_calls == [123]
-    assert pending_repo.claim_calls == [(20, 20, 123)]
+    assert pending_repo.claim_calls == [(20, 20, 123, 1)]
 
 
 def test_ready_file_lifecycle(tmp_path: Path) -> None:

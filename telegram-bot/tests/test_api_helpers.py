@@ -1,0 +1,137 @@
+from __future__ import annotations
+
+import urllib.error
+import urllib.parse
+import urllib.request
+
+import pytest
+
+
+def test_sign_user_request_is_deterministic(bot):
+    sig = bot._sign_user_request(
+        "secret123456789012345678901234567890",
+        "POST",
+        "/users",
+        123,
+        "1700000000",
+        "nonce1234567890abcd",
+        b'{"telegram_id":123}',
+    )
+    assert len(sig) == 64
+    assert sig == bot._sign_user_request(
+        "secret123456789012345678901234567890",
+        "POST",
+        "/users",
+        123,
+        "1700000000",
+        "nonce1234567890abcd",
+        b'{"telegram_id":123}',
+    )
+
+
+def test_signed_user_headers_contains_auth_and_signature(bot, monkeypatch):
+    monkeypatch.setattr(bot.time, "time", lambda: 1700000000)
+    monkeypatch.setattr(bot.secrets, "token_hex", lambda _: "abcd" * 8)
+    headers = bot._signed_user_headers(
+        "api_token_abcdefghijklmnopqrstuvwxyz123456",
+        "hmac_secret_abcdefghijklmnopqrstuvwxyz123456",
+        "POST",
+        "https://api.example.com/users",
+        123456789,
+        b'{"telegram_id":123456789}',
+    )
+    assert headers["Authorization"].startswith("Bearer ")
+    assert headers["X-Telegram-ID"] == "123456789"
+    assert headers["X-Request-Timestamp"] == "1700000000"
+    assert len(headers["X-Request-Signature"]) == 64
+
+
+def test_post_users_success(bot, monkeypatch):
+    monkeypatch.setattr(bot, "_http_post", lambda *args, **kwargs: (200, {"user_id": 77}))
+    assert bot.post_users("https://api.example.com", 123, "tok", "hmac") == 77
+
+
+def test_post_users_failure_returns_none(bot, monkeypatch):
+    monkeypatch.setattr(bot, "_http_post", lambda *args, **kwargs: (503, None))
+    assert bot.post_users("https://api.example.com", 123, "tok", "hmac") is None
+
+
+def test_put_user_profile_success(bot, monkeypatch):
+    monkeypatch.setattr(bot, "_http_put", lambda *args, **kwargs: 204)
+    assert bot.put_user_profile("https://api.example.com", 1, 123, "python", "tok", "hmac")
+
+
+def test_put_user_profile_failure(bot, monkeypatch):
+    monkeypatch.setattr(bot, "_http_put", lambda *args, **kwargs: 500)
+    assert not bot.put_user_profile("https://api.example.com", 1, 123, "python", "tok", "hmac")
+
+
+def test_get_updates_returns_next_offset(bot, monkeypatch):
+    monkeypatch.setattr(
+        bot,
+        "_http_get",
+        lambda *args, **kwargs: {"ok": True, "result": [{"update_id": 4}, {"update_id": 5}]},
+    )
+    updates, next_offset = bot.get_updates("token", offset=1)
+    assert len(updates) == 2
+    assert next_offset == 6
+
+
+def test_get_updates_returns_empty_when_not_ok(bot, monkeypatch):
+    monkeypatch.setattr(bot, "_http_get", lambda *args, **kwargs: {"ok": False})
+    updates, next_offset = bot.get_updates("token", offset=42)
+    assert updates == []
+    assert next_offset == 42
+
+
+def test_get_updates_returns_status_when_requested(bot, monkeypatch):
+    monkeypatch.setattr(bot, "_http_get", lambda *args, **kwargs: None)
+    updates, next_offset, ok = bot.get_updates("token", offset=7, include_status=True)
+    assert updates == []
+    assert next_offset == 7
+    assert ok is False
+
+
+def test_send_message_returns_false_on_error_status(bot, monkeypatch):
+    monkeypatch.setattr(bot, "_http_post", lambda *args, **kwargs: (500, None))
+    assert not bot.send_message("token", 123, "hello")
+
+
+def test_send_message_returns_true_on_200(bot, monkeypatch):
+    monkeypatch.setattr(bot, "_http_post", lambda *args, **kwargs: (200, {"ok": True}))
+    assert bot.send_message("token", 123, "hello")
+
+
+def test_safe_open_uses_http_only_opener(bot, monkeypatch):
+    called = {}
+
+    def fake_open(url_or_request, timeout):
+        called["args"] = (url_or_request, timeout)
+        return "ok"
+
+    monkeypatch.setattr(bot._HTTP_ONLY_OPENER, "open", fake_open)
+    req = object()
+    assert bot._safe_open(req, timeout=7) == "ok"
+    assert called["args"] == (req, 7)
+
+
+def test_safe_redirect_handler_blocks_disallowed_host(bot):
+    bot._register_allowed_host("https://api.example.com")
+    handler = bot._SafeRedirectHandler()
+    req = urllib.request.Request("https://api.example.com/start")
+
+    with pytest.raises(urllib.error.HTTPError) as exc:
+        handler.redirect_request(req, None, 302, "Found", {}, "https://evil.example/collect")
+
+    assert exc.value.code == 403
+
+
+def test_safe_redirect_handler_allows_relative_redirect_on_allowed_host(bot):
+    bot._register_allowed_host("https://api.example.com")
+    handler = bot._SafeRedirectHandler()
+    req = urllib.request.Request("https://api.example.com/start")
+
+    redirected = handler.redirect_request(req, None, 302, "Found", {}, "/next")
+
+    assert redirected is not None
+    assert urllib.parse.urlsplit(redirected.full_url).hostname == "api.example.com"

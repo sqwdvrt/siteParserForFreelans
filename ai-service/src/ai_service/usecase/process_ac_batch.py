@@ -65,7 +65,11 @@ class ProcessACBatchUseCase:
             result.attempts,
         )
 
-        if result.passed and result.selection:
+        # Отправляем best_selection независимо от passed.
+        # Critic используется для улучшения качества через retry, но не должен
+        # блокировать доставку: пользователь должен получить лучшее из найденного,
+        # даже если порог score не достигнут.
+        if result.selection:
             self._enqueue_batch_notification(
                 user_id=batch.user_id,
                 ranked_jobs=result.selection,

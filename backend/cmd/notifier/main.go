@@ -12,12 +12,16 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/collectors"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	redisclient "github.com/redis/go-redis/v9"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/postgres"
 	redisadapter "github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/redis"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/telegram"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/security"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/telemetry"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/usecase"
 )
 
@@ -32,6 +36,7 @@ const (
 	defaultBreakerFailureThreshold = 3
 	defaultBreakerOpenInterval     = 30 * time.Second
 	defaultBreakerOpenJitter       = 0.2
+	defaultQueueDepthSamplePeriod  = 10 * time.Second
 )
 
 func main() {
@@ -81,6 +86,12 @@ func main() {
 	if queueName == "" {
 		queueName = "match-notify"
 	}
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+	)
+	notifierMetrics := telemetry.NewNotifierMetrics(registry, queueName)
 
 	rateSec, _ := strconv.Atoi(os.Getenv("NOTIFY_RATE_LIMIT_SEC"))
 	rateLimit := time.Duration(rateSec) * time.Second
@@ -97,6 +108,7 @@ func main() {
 	breakerFailureThreshold := getPositiveIntEnv("NOTIFIER_BREAKER_FAILURE_THRESHOLD", defaultBreakerFailureThreshold)
 	breakerOpenInterval := getDurationEnv("NOTIFIER_BREAKER_OPEN_INTERVAL", defaultBreakerOpenInterval)
 	breakerOpenJitter := getFloatEnvInRange("NOTIFIER_BREAKER_OPEN_JITTER", defaultBreakerOpenJitter, 0, 1)
+	queueDepthSamplePeriod := getDurationEnv("NOTIFIER_QUEUE_DEPTH_SAMPLE_PERIOD", defaultQueueDepthSamplePeriod)
 
 	ctx := context.Background()
 	pool, err := postgres.NewConfiguredPool(ctx, dbURL)
@@ -157,6 +169,7 @@ func main() {
 	healthMux := http.NewServeMux()
 	healthMux.HandleFunc("/healthz", notifierHealthz())
 	healthMux.HandleFunc("/readyz", notifierReadyz(pool, notifierRedisClientPinger{client: rdb}))
+	healthMux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	healthSrv := &http.Server{
 		Addr:         healthAddr,
 		Handler:      healthMux,
@@ -177,6 +190,20 @@ func main() {
 	}()
 
 	slog.Info("notifier started", "queue", queueName)
+	observeNotifierQueueDepth(rdb, notifierMetrics, queueName)
+	queueDepthTicker := time.NewTicker(queueDepthSamplePeriod)
+	defer queueDepthTicker.Stop()
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-queueDepthTicker.C:
+				observeNotifierQueueDepth(rdb, notifierMetrics, queueName)
+			}
+		}
+	}()
+
 	var popErrBackoff time.Duration
 	var pendingRecoverAfterNack bool
 	var nackRecoverBackoff time.Duration
@@ -228,6 +255,7 @@ func main() {
 				sendErr = sendNotif.Execute(ctx, p.UserID, p.JobID, p.MatchScore, p.WhyItFits)
 			}
 			if sendErr != nil {
+				notifierMetrics.ObserveFailed()
 				slog.Error(
 					"send notification failed",
 					"user_id", p.UserID,
@@ -276,6 +304,7 @@ func main() {
 				}
 				continue
 			}
+			notifierMetrics.ObserveSent()
 			if ackErr := consumer.Ack(ctx, msg); ackErr != nil {
 				slog.Error("ack failed", "user_id", p.UserID, "job_id", p.JobID, "trace_id", p.TraceID, "err", ackErr)
 			}
@@ -367,6 +396,31 @@ func getFloatEnvInRange(key string, fallback float64, min, max float64) float64 
 		return fallback
 	}
 	return v
+}
+
+func observeNotifierQueueDepth(client *redisclient.Client, metrics *telemetry.NotifierMetrics, queueName string) {
+	if client == nil || metrics == nil || queueName == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	ready, err := client.LLen(ctx, queueName).Result()
+	if err != nil {
+		slog.Warn("notifier queue depth collect failed", "queue", queueName, "err", err)
+		return
+	}
+	processing, err := client.LLen(ctx, queueName+":processing").Result()
+	if err != nil {
+		slog.Warn("notifier queue depth collect failed", "queue", queueName+":processing", "err", err)
+		return
+	}
+	dlq, err := client.LLen(ctx, queueName+":dlq").Result()
+	if err != nil {
+		slog.Warn("notifier queue depth collect failed", "queue", queueName+":dlq", "err", err)
+		return
+	}
+	metrics.SetQueueDepth(ready, processing, dlq)
 }
 
 type notifierDBPinger interface {
