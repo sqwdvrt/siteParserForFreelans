@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from ai_service.domain.user import User
 from ai_service.usecase.process_user_embed import ProcessUserEmbedUseCase
 

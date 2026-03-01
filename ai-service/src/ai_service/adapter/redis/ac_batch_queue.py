@@ -1,0 +1,167 @@
+"""Redis adapter for Actor-Critic batch queue."""
+
+from __future__ import annotations
+
+import json
+import logging
+from collections import defaultdict, deque
+from dataclasses import dataclass
+from typing import Any
+
+import redis
+
+logger = logging.getLogger(__name__)
+
+DEFAULT_QUEUE = "ac-batch"
+DEFAULT_MAX_NACK_RETRIES = 5
+
+
+@dataclass(frozen=True)
+class ACBatchMessage:
+    """Queue payload for one user's Actor-Critic batch."""
+
+    user_id: int
+    job_ids: list[int]
+    trace_id: str = ""
+
+
+class RedisACBatchQueueConsumer:
+    """Consumer/publisher for ac-batch queue."""
+
+    def __init__(self, redis_url: str, queue_name: str = DEFAULT_QUEUE) -> None:
+        self._client = redis.from_url(redis_url, decode_responses=True)
+        self._queue = queue_name
+        self._processing_queue = f"{queue_name}:processing"
+        self._dlq_queue = f"{queue_name}:dlq"
+        self._max_nack_retries = DEFAULT_MAX_NACK_RETRIES
+        self._inflight_by_user_id: dict[int, deque[tuple[str, str]]] = defaultdict(deque)
+
+    def enqueue(self, message: ACBatchMessage) -> None:
+        self._client.lpush(self._queue, self._serialize(message))
+
+    def pop_blocking(self, timeout_sec: int = 5) -> ACBatchMessage | None:
+        payload = self._client.brpoplpush(self._queue, self._processing_queue, timeout=timeout_sec)
+        if payload is None:
+            return None
+        try:
+            data: dict[str, Any] = json.loads(payload)
+        except json.JSONDecodeError as exc:
+            logger.warning("invalid ac-batch payload JSON: %s", exc)
+            self._ack_raw(payload)
+            return None
+
+        parsed = self._parse_payload(data)
+        if parsed is None:
+            self._ack_raw(payload)
+            return None
+        self._inflight_by_user_id[parsed.user_id].append((payload, parsed.trace_id))
+        return parsed
+
+    def ack(self, user_id: int) -> None:
+        inflight = self._take_inflight(user_id)
+        if inflight is None:
+            return
+        raw, _trace_id = inflight
+        self._ack_raw(raw)
+
+    def trace_id(self, user_id: int) -> str:
+        inflight = self._inflight_by_user_id.get(user_id)
+        if not inflight:
+            return ""
+        _raw, trace_id = inflight[0]
+        return trace_id
+
+    def nack(self, user_id: int) -> None:
+        inflight = self._take_inflight(user_id)
+        if inflight is None:
+            return
+        raw, _trace_id = inflight
+        out_raw, to_dlq = self._prepare_nack_payload(raw)
+        target_queue = self._dlq_queue if to_dlq else self._queue
+        pipe = self._client.pipeline(transaction=True)
+        pipe.lrem(self._processing_queue, 1, raw)
+        pipe.rpush(target_queue, out_raw)
+        pipe.execute()
+
+    def reclaim_stuck(self) -> None:
+        while True:
+            moved = self._client.rpoplpush(self._processing_queue, self._queue)
+            if moved is None:
+                break
+
+    @staticmethod
+    def _serialize(message: ACBatchMessage) -> str:
+        payload: dict[str, Any] = {
+            "user_id": message.user_id,
+            "job_ids": message.job_ids,
+        }
+        normalized_trace = RedisACBatchQueueConsumer._normalize_trace_id(message.trace_id)
+        if normalized_trace:
+            payload["trace_id"] = normalized_trace
+        return json.dumps(payload)
+
+    @staticmethod
+    def _parse_payload(data: dict[str, Any]) -> ACBatchMessage | None:
+        user_id = data.get("user_id")
+        job_ids = data.get("job_ids")
+        try:
+            uid = int(user_id)
+        except (TypeError, ValueError):
+            return None
+        if uid <= 0:
+            return None
+        if not isinstance(job_ids, list) or not job_ids:
+            return None
+        parsed_job_ids: list[int] = []
+        for raw_job_id in job_ids:
+            try:
+                jid = int(raw_job_id)
+            except (TypeError, ValueError):
+                return None
+            if jid <= 0:
+                return None
+            parsed_job_ids.append(jid)
+        return ACBatchMessage(
+            user_id=uid,
+            job_ids=parsed_job_ids,
+            trace_id=RedisACBatchQueueConsumer._normalize_trace_id(data.get("trace_id")),
+        )
+
+    def _ack_raw(self, raw: str) -> None:
+        self._client.lrem(self._processing_queue, 1, raw)
+
+    def _prepare_nack_payload(self, raw: str) -> tuple[str, bool]:
+        try:
+            data: dict[str, Any] = json.loads(raw)
+        except json.JSONDecodeError:
+            return raw, True
+        if not isinstance(data, dict):
+            return raw, True
+        try:
+            retries = int(data.get("_retry_count", 0))
+        except (TypeError, ValueError):
+            retries = 0
+        retries = max(0, retries) + 1
+        data["_retry_count"] = retries
+        return (
+            json.dumps(data, separators=(",", ":"), ensure_ascii=False),
+            retries > self._max_nack_retries,
+        )
+
+    def _take_inflight(self, user_id: int) -> tuple[str, str] | None:
+        inflight = self._inflight_by_user_id.get(user_id)
+        if not inflight:
+            return None
+        raw = inflight.popleft()
+        if not inflight:
+            self._inflight_by_user_id.pop(user_id, None)
+        return raw
+
+    @staticmethod
+    def _normalize_trace_id(raw: object) -> str:
+        if not isinstance(raw, str):
+            return ""
+        trace_id = raw.strip()
+        if not trace_id:
+            return ""
+        return trace_id[:128]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections import defaultdict, deque
 from typing import Any
 
@@ -26,7 +27,8 @@ class RedisQueueConsumer(JobQueueConsumer):
         self._processing_queue = f"{queue_name}:processing"
         self._dlq_queue = f"{queue_name}:dlq"
         self._max_nack_retries = DEFAULT_MAX_NACK_RETRIES
-        self._inflight_by_job_id: dict[int, deque[str]] = defaultdict(deque)
+        self._inflight_by_job_id: dict[int, deque[tuple[str, str]]] = defaultdict(deque)
+        self._inflight_lock = threading.Lock()
 
     def pop_blocking(self, timeout_sec: int = 5) -> int | None:
         payload = self._client.brpoplpush(self._queue, self._processing_queue, timeout=timeout_sec)
@@ -53,19 +55,31 @@ class RedisQueueConsumer(JobQueueConsumer):
             logger.warning("job_id must be positive, got %d", jid)
             self._ack_raw(payload)  # invalid payload: discard
             return None
-        self._inflight_by_job_id[jid].append(payload)
+        trace_id = self._normalize_trace_id(data.get("trace_id"))
+        with self._inflight_lock:
+            self._inflight_by_job_id[jid].append((payload, trace_id))
         return jid
 
     def ack(self, job_id: int) -> None:
-        raw = self._take_inflight_raw(job_id)
-        if raw is None:
+        inflight = self._take_inflight(job_id)
+        if inflight is None:
             return
+        raw, _trace_id = inflight
         self._ack_raw(raw)
 
+    def trace_id(self, job_id: int) -> str:
+        with self._inflight_lock:
+            inflight = self._inflight_by_job_id.get(job_id)
+            if not inflight:
+                return ""
+            _raw, trace_id = inflight[0]
+            return trace_id
+
     def nack(self, job_id: int) -> None:
-        raw = self._take_inflight_raw(job_id)
-        if raw is None:
+        inflight = self._take_inflight(job_id)
+        if inflight is None:
             return
+        raw, _trace_id = inflight
         out_raw, to_dlq = self._prepare_nack_payload(raw)
         target_queue = self._dlq_queue if to_dlq else self._queue
         if to_dlq:
@@ -80,6 +94,20 @@ class RedisQueueConsumer(JobQueueConsumer):
             moved = self._client.rpoplpush(self._processing_queue, self._queue)
             if moved is None:
                 break
+
+    def nack_all_inflight(self) -> int:
+        with self._inflight_lock:
+            raws: list[str] = [raw for values in self._inflight_by_job_id.values() for raw, _trace_id in values]
+            self._inflight_by_job_id.clear()
+
+        for raw in raws:
+            out_raw, to_dlq = self._prepare_nack_payload(raw)
+            target_queue = self._dlq_queue if to_dlq else self._queue
+            pipe = self._client.pipeline(transaction=True)
+            pipe.lrem(self._processing_queue, 1, raw)
+            pipe.rpush(target_queue, out_raw)
+            pipe.execute()
+        return len(raws)
 
     def _ack_raw(self, raw: str) -> None:
         self._client.lrem(self._processing_queue, 1, raw)
@@ -102,11 +130,21 @@ class RedisQueueConsumer(JobQueueConsumer):
             retries > self._max_nack_retries,
         )
 
-    def _take_inflight_raw(self, job_id: int) -> str | None:
-        inflight = self._inflight_by_job_id.get(job_id)
-        if not inflight:
-            return None
-        raw = inflight.popleft()
-        if not inflight:
-            self._inflight_by_job_id.pop(job_id, None)
-        return raw
+    def _take_inflight(self, job_id: int) -> tuple[str, str] | None:
+        with self._inflight_lock:
+            inflight = self._inflight_by_job_id.get(job_id)
+            if not inflight:
+                return None
+            raw = inflight.popleft()
+            if not inflight:
+                self._inflight_by_job_id.pop(job_id, None)
+            return raw
+
+    @staticmethod
+    def _normalize_trace_id(raw: object) -> str:
+        if not isinstance(raw, str):
+            return ""
+        trace_id = raw.strip()
+        if not trace_id:
+            return ""
+        return trace_id[:128]

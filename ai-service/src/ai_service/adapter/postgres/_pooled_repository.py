@@ -23,14 +23,24 @@ class _VectorThreadedConnectionPool(ThreadedConnectionPool):
 class PooledPostgresRepository:
     """Base class with lazy-initialized PostgreSQL connection pool."""
 
-    def __init__(self, dsn: str, *, minconn: int = 1, maxconn: int = 10) -> None:
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        minconn: int = 1,
+        maxconn: int = 10,
+        statement_timeout_ms: int = 10_000,
+    ) -> None:
         if minconn < 1:
             raise ValueError("minconn must be >= 1")
         if maxconn < minconn:
             raise ValueError("maxconn must be >= minconn")
+        if statement_timeout_ms < 0:
+            raise ValueError("statement_timeout_ms must be >= 0")
         self._dsn = dsn
         self._minconn = minconn
         self._maxconn = maxconn
+        self._statement_timeout_ms = statement_timeout_ms
         self._pool: AbstractConnectionPool | None = None
         self._pool_lock = threading.Lock()
 
@@ -53,6 +63,12 @@ class PooledPostgresRepository:
         conn = pool.getconn()
         rollback_failed = False
         try:
+            if self._statement_timeout_ms > 0:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SET LOCAL statement_timeout = %s",
+                        (f"{self._statement_timeout_ms}ms",),
+                    )
             yield conn
             conn.commit()
         except Exception:

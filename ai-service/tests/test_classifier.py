@@ -9,7 +9,6 @@ from ai_service.adapter.fallback import FallbackClassifier
 from ai_service.adapter.ollama import OllamaClassifier
 from ai_service.adapter.rule_based import RuleBasedClassifier
 
-
 # --- RuleBasedClassifier ---
 
 
@@ -84,7 +83,10 @@ def test_ollama_fallback_on_bad_json() -> None:
 def test_ollama_parse_valid_response() -> None:
     """Корректный JSON от LLM парсится."""
     c = OllamaClassifier(base_url="http://localhost:11434", timeout_sec=1)
-    valid_json = '{"project_type":"web","seniority":"middle","technologies":["Python"],"complexity":"medium","budget_level":"unknown","is_spam":false}'
+    valid_json = (
+        '{"project_type":"web","seniority":"middle","technologies":["Python"],'
+        '"complexity":"medium","budget_level":"unknown","is_spam":false}'
+    )
 
     with patch("ai_service.adapter.ollama.classifier._safe_open") as mock_open:
         mock_resp = mock_open.return_value.__enter__.return_value

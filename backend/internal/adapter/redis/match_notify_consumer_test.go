@@ -82,6 +82,61 @@ func TestMatchNotifyConsumer_Pop_InvalidPayload_Skip(t *testing.T) {
 	}
 }
 
+func TestMatchNotifyConsumer_Pop_BatchPayload(t *testing.T) {
+	mr := mustRunMiniRedis(t)
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	client.LPush(
+		context.Background(),
+		"match-notify",
+		`{"user_id":10,"critic_score":8.2,"jobs":[{"job_id":101,"title":"Backend","why_it_fits":"Django","rank":1}]}`,
+	)
+
+	consumer := NewMatchNotifyConsumer(client, "match-notify")
+	ctx := context.Background()
+
+	msg, err := consumer.Pop(ctx)
+	if err != nil {
+		t.Fatalf("Pop: %v", err)
+	}
+	if msg == nil {
+		t.Fatal("Pop: want payload, got nil")
+	}
+	if msg.Payload.UserID != 10 {
+		t.Fatalf("want user_id=10, got %d", msg.Payload.UserID)
+	}
+	if len(msg.Payload.Jobs) != 1 {
+		t.Fatalf("want jobs len=1, got %d", len(msg.Payload.Jobs))
+	}
+	if msg.Payload.Jobs[0].JobID != 101 {
+		t.Fatalf("want jobs[0].job_id=101, got %d", msg.Payload.Jobs[0].JobID)
+	}
+}
+
+func TestMatchNotifyConsumer_Pop_InvalidBatchPayload_Skip(t *testing.T) {
+	mr := mustRunMiniRedis(t)
+
+	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	// batch с невалидным job_id
+	client.LPush(context.Background(), "match-notify", `{"user_id":10,"jobs":[{"job_id":0,"rank":1}]}`)
+
+	consumer := NewMatchNotifyConsumer(client, "match-notify")
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	msg, err := consumer.Pop(ctx)
+	if err != nil {
+		t.Fatalf("Pop: %v", err)
+	}
+	if msg != nil {
+		t.Fatalf("Pop: want nil for invalid batch payload, got %+v", msg)
+	}
+}
+
 func TestMatchNotifyConsumer_Pop_InvalidJSON(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 

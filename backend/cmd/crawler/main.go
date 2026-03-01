@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	stdhttp "net/http"
 	"os"
 	"os/signal"
 	"strconv"
@@ -10,7 +12,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	redisclient "github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
@@ -18,6 +19,7 @@ import (
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/kwork"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/postgres"
 	redisqueue "github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/redis"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/observability"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/security"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/usecase"
 )
@@ -59,6 +61,35 @@ func main() {
 		rateSec = 15
 	}
 	rateLimit := time.Duration(rateSec) * time.Second
+	breakerFailureThreshold, err := parsePositiveIntEnv("CRAWL_BREAKER_FAILURE_THRESHOLD", 3)
+	if err != nil {
+		slog.Error("invalid CRAWL_BREAKER_FAILURE_THRESHOLD", "err", err)
+		os.Exit(1)
+	}
+	breakerOpenInterval, err := parsePositiveDurationEnv("CRAWL_BREAKER_OPEN_INTERVAL", time.Minute)
+	if err != nil {
+		slog.Error("invalid CRAWL_BREAKER_OPEN_INTERVAL", "err", err)
+		os.Exit(1)
+	}
+	retryMaxAttempts, err := parsePositiveIntEnv("CRAWL_RETRY_MAX_ATTEMPTS", 3)
+	if err != nil {
+		slog.Error("invalid CRAWL_RETRY_MAX_ATTEMPTS", "err", err)
+		os.Exit(1)
+	}
+	retryBaseBackoff, err := parsePositiveDurationEnv("CRAWL_RETRY_BASE_BACKOFF", time.Second)
+	if err != nil {
+		slog.Error("invalid CRAWL_RETRY_BASE_BACKOFF", "err", err)
+		os.Exit(1)
+	}
+	retryMaxBackoff, err := parsePositiveDurationEnv("CRAWL_RETRY_MAX_BACKOFF", 30*time.Second)
+	if err != nil {
+		slog.Error("invalid CRAWL_RETRY_MAX_BACKOFF", "err", err)
+		os.Exit(1)
+	}
+	if retryMaxBackoff < retryBaseBackoff {
+		slog.Error("invalid retry backoff config: CRAWL_RETRY_MAX_BACKOFF must be >= CRAWL_RETRY_BASE_BACKOFF")
+		os.Exit(1)
+	}
 
 	listURL := os.Getenv("CRAWL_LIST_URL")
 	if listURL == "" {
@@ -75,7 +106,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dbURL)
+	pool, err := postgres.NewConfiguredPool(ctx, dbURL)
 	if err != nil {
 		slog.Error("pgxpool", "err", err)
 		os.Exit(1)
@@ -101,8 +132,13 @@ func main() {
 	queue := redisqueue.NewQueue(rdb, queueName)
 
 	fetcher := http.NewFetcher(http.Config{
-		Timeout:   30 * time.Second,
-		RateLimit: rateLimit,
+		Timeout:                 30 * time.Second,
+		RateLimit:               rateLimit,
+		BreakerFailureThreshold: breakerFailureThreshold,
+		BreakerOpenInterval:     breakerOpenInterval,
+		RetryMaxAttempts:        retryMaxAttempts,
+		RetryBaseBackoff:        retryBaseBackoff,
+		RetryMaxBackoff:         retryMaxBackoff,
 	})
 	extractor := kwork.NewExtractor()
 	repo := postgres.NewJobRepository(pool)
@@ -111,17 +147,46 @@ func main() {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
+	healthAddr := os.Getenv("CRAWLER_HEALTH_ADDR")
+	if healthAddr == "" {
+		healthAddr = ":8081"
+	}
+	healthMux := stdhttp.NewServeMux()
+	healthMux.HandleFunc("/healthz", crawlerHealthz())
+	healthMux.HandleFunc("/readyz", crawlerReadyz(pool, crawlerRedisClientPinger{client: rdb}))
+	healthSrv := &stdhttp.Server{
+		Addr:         healthAddr,
+		Handler:      healthMux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+	}
+	go func() {
+		slog.Info("crawler health server listening", "addr", healthAddr)
+		if err := healthSrv.ListenAndServe(); err != nil && err != stdhttp.ErrServerClosed {
+			slog.Error("crawler health server failed", "err", err)
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		_ = healthSrv.Shutdown(shutdownCtx)
+	}()
+
 	runCrawl := func() {
-		saved, err := crawl.Execute(ctx, listURL)
+		traceID := observability.NewTraceID()
+		crawlCtx := observability.WithTraceID(ctx, traceID)
+		slog.Info("crawl run started", "url", listURL, "trace_id", traceID)
+		saved, err := crawl.Execute(crawlCtx, listURL)
 		if err != nil {
-			if ctx.Err() != nil {
+			if crawlCtx.Err() != nil {
 				slog.Info("crawl interrupted by shutdown")
 				return
 			}
-			slog.Error("crawl failed", "err", err)
+			slog.Error("crawl failed", "err", err, "trace_id", traceID)
 			return
 		}
-		slog.Info("CrawlOnce done", "saved", saved)
+		slog.Info("CrawlOnce done", "saved", saved, "trace_id", traceID)
 	}
 
 	c := cron.New()
@@ -145,4 +210,89 @@ func main() {
 	drainCtx := c.Stop()
 	<-drainCtx.Done()
 	slog.Info("shutdown complete")
+}
+
+type crawlerDBPinger interface {
+	Ping(ctx context.Context) error
+}
+
+type crawlerRedisPinger interface {
+	Ping(ctx context.Context) error
+}
+
+type crawlerRedisClientPinger struct {
+	client *redisclient.Client
+}
+
+func (p crawlerRedisClientPinger) Ping(ctx context.Context) error {
+	if p.client == nil {
+		return fmt.Errorf("redis client is not configured")
+	}
+	return p.client.Ping(ctx).Err()
+}
+
+func crawlerHealthz() stdhttp.HandlerFunc {
+	return func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(stdhttp.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}
+}
+
+func crawlerReadyz(db crawlerDBPinger, redis crawlerRedisPinger) stdhttp.HandlerFunc {
+	return func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		if db == nil {
+			stdhttp.Error(w, "db not ready", stdhttp.StatusServiceUnavailable)
+			return
+		}
+		if err := db.Ping(ctx); err != nil {
+			stdhttp.Error(w, "db not ready", stdhttp.StatusServiceUnavailable)
+			return
+		}
+		if redis == nil {
+			stdhttp.Error(w, "redis not ready", stdhttp.StatusServiceUnavailable)
+			return
+		}
+		if err := redis.Ping(ctx); err != nil {
+			stdhttp.Error(w, "redis not ready", stdhttp.StatusServiceUnavailable)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(stdhttp.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}
+}
+
+func parsePositiveIntEnv(key string, fallback int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be positive integer: %w", key, err)
+	}
+	if v <= 0 {
+		return 0, fmt.Errorf("%s must be > 0", key)
+	}
+	return v, nil
+}
+
+func parsePositiveDurationEnv(key string, fallback time.Duration) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	v, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be valid duration: %w", key, err)
+	}
+	if v <= 0 {
+		return 0, fmt.Errorf("%s must be > 0", key)
+	}
+	return v, nil
 }

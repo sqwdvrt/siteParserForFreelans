@@ -29,7 +29,7 @@ services:
     build:
       context: ./backend
       dockerfile: Dockerfile
-    command: ["sh", "-c", "echo 'backend migrations applied'"]
+    command: ["true"]
     env_file: .env
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
@@ -87,6 +87,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
       REDIS_URL: redis://redis:6379/0
       RUN_MIGRATIONS: "0"
+      CRAWLER_HEALTH_ADDR: ":8081"
     depends_on:
       backend-migrate:
         condition: service_completed_successfully
@@ -94,6 +95,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     read_only: true
     cap_drop:
       - ALL
@@ -115,6 +122,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
       REDIS_URL: redis://redis:6379/0
       RUN_MIGRATIONS: "0"
+      NOTIFIER_HEALTH_ADDR: ":8082"
     depends_on:
       backend-migrate:
         condition: service_completed_successfully
@@ -122,6 +130,12 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8082/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     read_only: true
     cap_drop:
       - ALL
@@ -161,6 +175,12 @@ services:
       timeout: 3s
       retries: 24
       start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: ${AI_MEM_LIMIT:-2g}
+        reservations:
+          memory: 512m
     read_only: true
     cap_drop:
       - ALL
@@ -209,6 +229,51 @@ services:
       timeout: 3s
       retries: 24
       start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: ${AI_MEM_LIMIT:-2g}
+        reservations:
+          memory: 512m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+      - /home/app:mode=0700,size=64m
+
+  ai-ac-consumer:
+    image: ${AI_IMAGE:-siteparserforfreelans-ai-runtime:local}
+    profiles:
+      - workers
+    command: ["python", "cmd/ac_consumer/main.py"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      AI_READY_FILE: /tmp/ai-ac-consumer-ready
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/ai-ac-consumer-ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: ${AI_MEM_LIMIT:-2g}
+        reservations:
+          memory: 512m
     read_only: true
     cap_drop:
       - ALL

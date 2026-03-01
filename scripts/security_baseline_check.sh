@@ -109,6 +109,25 @@ if ! grep -qiE '^pillow==12\.1\.1$' ai-service/requirements.txt; then
   exit 1
 fi
 
+REQ_SPEC_REGEX='^[A-Za-z0-9_.-]+(\[[A-Za-z0-9_,.-]+\])?==[^[:space:]#;]+([[:space:]]*;[[:space:]]*.+)?$'
+BAD_REQ_LINES=()
+REQ_LINE_NO=0
+while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
+  REQ_LINE_NO=$((REQ_LINE_NO + 1))
+  req_line="${raw_line%%#*}"
+  req_line="$(printf '%s' "$req_line" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+  [[ -z "$req_line" ]] && continue
+  if [[ ! "$req_line" =~ $REQ_SPEC_REGEX ]]; then
+    BAD_REQ_LINES+=("${REQ_LINE_NO}:${raw_line}")
+  fi
+done < ai-service/requirements.txt
+if (( ${#BAD_REQ_LINES[@]} > 0 )); then
+  echo "ERROR: ai-service/requirements.txt must contain only pinned specs ('package==version')."
+  echo "Invalid lines:"
+  printf '  %s\n' "${BAD_REQ_LINES[@]}"
+  exit 1
+fi
+
 echo "[security] Running govulncheck with ${GO_TOOLCHAIN}"
 mkdir -p "${GO_GOMODCACHE}" "${GO_GOCACHE}"
 (

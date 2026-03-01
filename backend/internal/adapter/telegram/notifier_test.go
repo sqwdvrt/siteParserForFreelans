@@ -2,6 +2,7 @@ package telegram
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,6 +21,23 @@ type mockTransport struct {
 }
 
 func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return &http.Response{
+		StatusCode: m.status,
+		Body:       io.NopCloser(strings.NewReader("")),
+		Header:     make(http.Header),
+	}, nil
+}
+
+type captureTransport struct {
+	status   int
+	lastBody string
+}
+
+func (m *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req != nil && req.Body != nil {
+		raw, _ := io.ReadAll(req.Body)
+		m.lastBody = string(raw)
+	}
 	return &http.Response{
 		StatusCode: m.status,
 		Body:       io.NopCloser(strings.NewReader("")),
@@ -87,6 +105,91 @@ func TestNotifier_Send_NilJob(t *testing.T) {
 	}
 	if err.Error() != "job is nil" {
 		t.Errorf("want 'job is nil', got %v", err)
+	}
+}
+
+func TestNotifier_Send_BatchPayload_Success(t *testing.T) {
+	transport := &captureTransport{status: 200}
+	n := NewNotifierWithClient("token", &http.Client{
+		Transport: transport,
+		Timeout:   5 * time.Second,
+	})
+	err := n.Send(context.Background(), 123456, port.NotifyPayload{
+		Batch: []port.BatchNotifyItem{
+			{
+				Job: &domain.Job{
+					ID:    2,
+					Title: "Second",
+					URL:   "https://kwork.ru/projects/2",
+				},
+				WhyItFits: "Second reason",
+				Rank:      2,
+			},
+			{
+				Job: &domain.Job{
+					ID:    1,
+					Title: "First",
+					URL:   "https://kwork.ru/projects/1",
+				},
+				WhyItFits: "First reason",
+				Rank:      1,
+			},
+		},
+		CriticScore: 8.2,
+	})
+	if err != nil {
+		t.Fatalf("Send batch: %v", err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal([]byte(transport.lastBody), &body); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	text, _ := body["text"].(string)
+	if !strings.Contains(text, "Подборка для вас") {
+		t.Fatalf("batch text header missing: %q", text)
+	}
+	if !strings.Contains(text, "8.2/10") {
+		t.Fatalf("batch score missing: %q", text)
+	}
+	if strings.Index(text, "<b>1. First</b>") == -1 || strings.Index(text, "<b>2. Second</b>") == -1 {
+		t.Fatalf("ranked titles missing: %q", text)
+	}
+	if !strings.Contains(text, `Открыть #1`) || !strings.Contains(text, `Открыть #2`) {
+		t.Fatalf("batch links labels missing: %q", text)
+	}
+}
+
+func TestFormatBatchMessage_SortsByRank(t *testing.T) {
+	msg := formatBatchMessage(port.NotifyPayload{
+		Batch: []port.BatchNotifyItem{
+			{
+				Job: &domain.Job{
+					Title: "Later",
+					URL:   "https://kwork.ru/projects/2",
+				},
+				Rank: 2,
+			},
+			{
+				Job: &domain.Job{
+					Title: "Earlier",
+					URL:   "https://kwork.ru/projects/1",
+				},
+				Rank: 1,
+			},
+		},
+		CriticScore: 7.7,
+	})
+	if !strings.Contains(msg, "🎯 <b>Подборка для вас</b> (оценка: 7.7/10)") {
+		t.Fatalf("batch header not found: %q", msg)
+	}
+	firstIdx := strings.Index(msg, "<b>1. Earlier</b>")
+	secondIdx := strings.Index(msg, "<b>2. Later</b>")
+	if firstIdx == -1 || secondIdx == -1 {
+		t.Fatalf("sorted items not found: %q", msg)
+	}
+	if firstIdx > secondIdx {
+		t.Fatalf("items order invalid: %q", msg)
 	}
 }
 

@@ -2,19 +2,21 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"strconv"
 	"syscall"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	redisclient "github.com/redis/go-redis/v9"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/postgres"
 	redisadapter "github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/redis"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/telegram"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/security"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/usecase"
 )
@@ -97,7 +99,7 @@ func main() {
 	breakerOpenJitter := getFloatEnvInRange("NOTIFIER_BREAKER_OPEN_JITTER", defaultBreakerOpenJitter, 0, 1)
 
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dbURL)
+	pool, err := postgres.NewConfiguredPool(ctx, dbURL)
 	if err != nil {
 		slog.Error("pgxpool", "err", err)
 		os.Exit(1)
@@ -148,6 +150,32 @@ func main() {
 		cancel()
 	}()
 
+	healthAddr := os.Getenv("NOTIFIER_HEALTH_ADDR")
+	if healthAddr == "" {
+		healthAddr = ":8082"
+	}
+	healthMux := http.NewServeMux()
+	healthMux.HandleFunc("/healthz", notifierHealthz())
+	healthMux.HandleFunc("/readyz", notifierReadyz(pool, notifierRedisClientPinger{client: rdb}))
+	healthSrv := &http.Server{
+		Addr:         healthAddr,
+		Handler:      healthMux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 5 * time.Second,
+	}
+	go func() {
+		slog.Info("notifier health server listening", "addr", healthAddr)
+		if err := healthSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			slog.Error("notifier health server failed", "err", err)
+		}
+	}()
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		_ = healthSrv.Shutdown(shutdownCtx)
+	}()
+
 	slog.Info("notifier started", "queue", queueName)
 	var popErrBackoff time.Duration
 	var pendingRecoverAfterNack bool
@@ -193,25 +221,40 @@ func main() {
 				continue
 			}
 			p := msg.Payload
-			if err := sendNotif.Execute(ctx, p.UserID, p.JobID, p.MatchScore, p.WhyItFits); err != nil {
-				slog.Error("send notification failed", "user_id", p.UserID, "job_id", p.JobID, "err", err)
-				if retryDelay, retryable := telegram.RetryAfter(err); retryable {
+			var sendErr error
+			if len(p.Jobs) > 0 {
+				sendErr = sendBatchNotification(ctx, sendNotif, p)
+			} else {
+				sendErr = sendNotif.Execute(ctx, p.UserID, p.JobID, p.MatchScore, p.WhyItFits)
+			}
+			if sendErr != nil {
+				slog.Error(
+					"send notification failed",
+					"user_id", p.UserID,
+					"job_id", p.JobID,
+					"batch_jobs", len(p.Jobs),
+					"trace_id", p.TraceID,
+					"err", sendErr,
+				)
+				if retryDelay, retryable := telegram.RetryAfter(sendErr); retryable {
 					slog.Warn(
 						"send notification transient failure; delaying before requeue",
 						"user_id", p.UserID,
 						"job_id", p.JobID,
+						"trace_id", p.TraceID,
 						"delay", retryDelay,
 					)
 					if !waitForBackoff(ctx, retryDelay) {
 						slog.Info("notifier stopped")
 						return
 					}
-					if telegram.ShouldRequeueWithoutRetry(err) {
+					if telegram.ShouldRequeueWithoutRetry(sendErr) {
 						if requeueErr := consumer.Requeue(ctx, msg); requeueErr != nil {
 							slog.Error(
 								"requeue without retry increment failed; scheduling processing queue recovery",
 								"user_id", p.UserID,
 								"job_id", p.JobID,
+								"trace_id", p.TraceID,
 								"queue", queueName,
 								"err", requeueErr,
 							)
@@ -225,6 +268,7 @@ func main() {
 						"nack failed; scheduling processing queue recovery",
 						"user_id", p.UserID,
 						"job_id", p.JobID,
+						"trace_id", p.TraceID,
 						"queue", queueName,
 						"err", nackErr,
 					)
@@ -233,10 +277,21 @@ func main() {
 				continue
 			}
 			if ackErr := consumer.Ack(ctx, msg); ackErr != nil {
-				slog.Error("ack failed", "user_id", p.UserID, "job_id", p.JobID, "err", ackErr)
+				slog.Error("ack failed", "user_id", p.UserID, "job_id", p.JobID, "trace_id", p.TraceID, "err", ackErr)
 			}
 		}
 	}
+}
+
+func sendBatchNotification(
+	ctx context.Context,
+	sendNotif *usecase.SendNotification,
+	p port.MatchNotifyPayload,
+) error {
+	if sendNotif == nil {
+		return fmt.Errorf("send notification usecase is nil")
+	}
+	return sendNotif.ExecuteBatch(ctx, p.UserID, p.Jobs, p.CriticScore)
 }
 
 func nextPopErrorBackoff(current time.Duration) time.Duration {
@@ -312,4 +367,59 @@ func getFloatEnvInRange(key string, fallback float64, min, max float64) float64 
 		return fallback
 	}
 	return v
+}
+
+type notifierDBPinger interface {
+	Ping(ctx context.Context) error
+}
+
+type notifierRedisPinger interface {
+	Ping(ctx context.Context) error
+}
+
+type notifierRedisClientPinger struct {
+	client *redisclient.Client
+}
+
+func (p notifierRedisClientPinger) Ping(ctx context.Context) error {
+	if p.client == nil {
+		return fmt.Errorf("redis client is not configured")
+	}
+	return p.client.Ping(ctx).Err()
+}
+
+func notifierHealthz() http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}
+}
+
+func notifierReadyz(db notifierDBPinger, redis notifierRedisPinger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+
+		if db == nil {
+			http.Error(w, "db not ready", http.StatusServiceUnavailable)
+			return
+		}
+		if err := db.Ping(ctx); err != nil {
+			http.Error(w, "db not ready", http.StatusServiceUnavailable)
+			return
+		}
+		if redis == nil {
+			http.Error(w, "redis not ready", http.StatusServiceUnavailable)
+			return
+		}
+		if err := redis.Ping(ctx); err != nil {
+			http.Error(w, "redis not ready", http.StatusServiceUnavailable)
+			return
+		}
+
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}
 }

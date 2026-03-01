@@ -6,11 +6,20 @@ import (
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 )
 
+// BatchNotifyItem — один элемент batch-уведомления.
+type BatchNotifyItem struct {
+	Job       *domain.Job
+	WhyItFits string
+	Rank      int
+}
+
 // NotifyPayload — данные для уведомления о проекте.
 type NotifyPayload struct {
-	Job       *domain.Job
-	Score     float64
-	WhyItFits string // 1–2 фразы из ai_metadata, почему подходит (опционально)
+	Job         *domain.Job
+	Score       float64
+	WhyItFits   string // 1–2 фразы из ai_metadata, почему подходит (опционально)
+	Batch       []BatchNotifyItem
+	CriticScore float64
 }
 
 // Notifier отправляет уведомления пользователям (например, в Telegram).

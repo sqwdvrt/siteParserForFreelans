@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -141,12 +142,17 @@ func clampJitter(v float64) float64 {
 
 // Send отправляет уведомление о проекте в Telegram.
 func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayload) error {
-	if p.Job == nil {
+	if len(p.Batch) == 0 && p.Job == nil {
 		return fmt.Errorf("job is nil")
 	}
 	n.ensureConfigDefaults()
 
-	text := formatMessage(p)
+	text := ""
+	if len(p.Batch) > 0 {
+		text = formatBatchMessage(p)
+	} else {
+		text = formatMessage(p)
+	}
 
 	url := apiBase + n.token + "/sendMessage"
 	body := map[string]interface{}{
@@ -546,12 +552,88 @@ func formatMessage(p port.NotifyPayload) string {
 	return b.String()
 }
 
+// formatBatchMessage формирует одно batch-уведомление с несколькими проектами.
+func formatBatchMessage(p port.NotifyPayload) string {
+	items := sortedBatchItems(p.Batch)
+	var b strings.Builder
+
+	score := p.CriticScore
+	if score < 0 {
+		score = 0
+	}
+	if score > 10 {
+		score = 10
+	}
+
+	b.WriteString("🎯 <b>Подборка для вас</b> (оценка: ")
+	b.WriteString(fmt.Sprintf("%.1f/10", score))
+	b.WriteString(")")
+
+	links := make([]string, 0, len(items))
+	for idx, item := range items {
+		job := item.Job
+		title := strings.TrimSpace(job.Title)
+		if title == "" {
+			title = "Проект"
+		}
+		b.WriteString("\n\n<b>")
+		b.WriteString(fmt.Sprintf("%d. ", idx+1))
+		b.WriteString(escapeHTML(title))
+		b.WriteString("</b>")
+
+		why := strings.TrimSpace(item.WhyItFits)
+		if why != "" {
+			b.WriteString("\n💡 ")
+			b.WriteString(escapeHTML(truncateRunes(why, 280)))
+		}
+		links = append(links, formatProjectLinkWithLabel(job.URL, fmt.Sprintf("Открыть #%d", idx+1)))
+	}
+
+	if len(links) > 0 {
+		b.WriteString("\n\n")
+		b.WriteString(strings.Join(links, " | "))
+	}
+	return b.String()
+}
+
+func sortedBatchItems(items []port.BatchNotifyItem) []port.BatchNotifyItem {
+	out := make([]port.BatchNotifyItem, 0, len(items))
+	for _, item := range items {
+		if item.Job == nil {
+			continue
+		}
+		out = append(out, item)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		ri := out[i].Rank
+		rj := out[j].Rank
+		if ri <= 0 && rj <= 0 {
+			return i < j
+		}
+		if ri <= 0 {
+			return false
+		}
+		if rj <= 0 {
+			return true
+		}
+		return ri < rj
+	})
+	return out
+}
+
 // formatProjectLink возвращает кликабельную HTML-ссылку на проект.
 func formatProjectLink(url string) string {
 	if !isValidJobURL(url) {
 		return escapeHTML(url)
 	}
-	return fmt.Sprintf(`<a href="%s">Открыть проект</a>`, escapeForAttr(url))
+	return formatProjectLinkWithLabel(url, "Открыть проект")
+}
+
+func formatProjectLinkWithLabel(rawURL, label string) string {
+	if !isValidJobURL(rawURL) {
+		return escapeHTML(label)
+	}
+	return fmt.Sprintf(`<a href="%s">%s</a>`, escapeForAttr(rawURL), escapeHTML(label))
 }
 
 // blockedURLSchemes — опасные схемы, запрещённые в ссылках (XSS, инъекция).

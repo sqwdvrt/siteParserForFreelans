@@ -85,13 +85,15 @@ def test_find_users_for_job_excludes_notified(
             conn.commit()
             (jid,) = cur.fetchone()
             cur.execute(
-                "INSERT INTO users (telegram_id, embedding) VALUES (777666, %s) ON CONFLICT (telegram_id) DO UPDATE SET embedding = EXCLUDED.embedding RETURNING id",
+                "INSERT INTO users (telegram_id, embedding) VALUES (777666, %s)"
+                " ON CONFLICT (telegram_id) DO UPDATE SET embedding = EXCLUDED.embedding RETURNING id",
                 ([0.2] * 384,),
             )
             conn.commit()
             (uid,) = cur.fetchone()
             cur.execute(
-                "INSERT INTO notifications (user_id, job_id, match_score) VALUES (%s, %s, 0.8) ON CONFLICT (user_id, job_id) DO NOTHING",
+                "INSERT INTO notifications (user_id, job_id, match_score) VALUES (%s, %s, 0.8)"
+                " ON CONFLICT (user_id, job_id) DO NOTHING",
                 (uid, jid),
             )
             conn.commit()

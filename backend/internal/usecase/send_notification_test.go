@@ -454,3 +454,159 @@ func TestSendNotification_Execute_RateLimited_DeletesRecord(t *testing.T) {
 		t.Fatal("must delete pending record when rate limited")
 	}
 }
+
+func TestSendNotification_ExecuteBatch_RateLimited_DropsNewItems(t *testing.T) {
+	sent := false
+	deletedJobIDs := make([]int64, 0, 2)
+	uc := NewSendNotification(
+		&mockNotifRepo{
+			ensurePendingFunc: func(_ context.Context, _ int64, _ int64, _ float64) (bool, bool, error) {
+				return true, true, nil // new batch items
+			},
+			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return true, nil },
+			deleteFunc: func(_ context.Context, _ int64, jobID int64) error {
+				deletedJobIDs = append(deletedJobIDs, jobID)
+				return nil
+			},
+		},
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 888}, nil
+		}},
+		&mockJobRepo{},
+		&mockNotifier{sendFunc: func(context.Context, int64, port.NotifyPayload) error {
+			sent = true
+			return nil
+		}},
+		5*time.Minute,
+		5,
+	)
+
+	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{
+		{JobID: 10, Rank: 1},
+		{JobID: 20, Rank: 2},
+	}, 7.2)
+	if err != nil {
+		t.Fatalf("ExecuteBatch: %v", err)
+	}
+	if sent {
+		t.Fatal("must not send batch when all items are rate limited")
+	}
+	if len(deletedJobIDs) != 2 {
+		t.Fatalf("deleted jobs=%d, want 2", len(deletedJobIDs))
+	}
+}
+
+func TestSendNotification_ExecuteBatch_RetryBypassesRateLimit(t *testing.T) {
+	sent := false
+	sentRecentlyCalled := false
+	markSentCalls := 0
+	uc := NewSendNotification(
+		&mockNotifRepo{
+			ensurePendingFunc: func(_ context.Context, _ int64, _ int64, _ float64) (bool, bool, error) {
+				return false, true, nil // retry items
+			},
+			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) {
+				sentRecentlyCalled = true
+				return false, nil
+			},
+			markSentFunc: func(context.Context, int64, int64) error {
+				markSentCalls++
+				return nil
+			},
+		},
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 888}, nil
+		}},
+		&mockJobRepo{},
+		&mockNotifier{sendFunc: func(_ context.Context, _ int64, p port.NotifyPayload) error {
+			sent = true
+			if len(p.Batch) != 2 {
+				t.Fatalf("batch items=%d, want 2", len(p.Batch))
+			}
+			return nil
+		}},
+		5*time.Minute,
+		5,
+	)
+
+	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{
+		{JobID: 10, Rank: 1},
+		{JobID: 20, Rank: 2},
+	}, 7.2)
+	if err != nil {
+		t.Fatalf("ExecuteBatch: %v", err)
+	}
+	if !sent {
+		t.Fatal("must send retry batch")
+	}
+	if sentRecentlyCalled {
+		t.Fatal("must not check rate limit for retry-only batch")
+	}
+	if markSentCalls != 2 {
+		t.Fatalf("mark sent calls=%d, want 2", markSentCalls)
+	}
+}
+
+func TestSendNotification_ExecuteBatch_DailyLimit_TrimsNewItems(t *testing.T) {
+	sent := false
+	deletedJobIDs := make([]int64, 0, 2)
+	markedJobIDs := make([]int64, 0, 2)
+	ensureCalls := 0
+
+	uc := NewSendNotification(
+		&mockNotifRepo{
+			ensurePendingFunc: func(_ context.Context, _ int64, _ int64, _ float64) (bool, bool, error) {
+				ensureCalls++
+				switch ensureCalls {
+				case 1:
+					return true, true, nil // new
+				case 2:
+					return true, true, nil // new (will be trimmed)
+				default:
+					return false, true, nil // retry
+				}
+			},
+			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
+			countTodayFunc:   func(context.Context, int64) (int, error) { return 4, nil }, // maxPerDay=5 => keep 1 new
+			deleteFunc: func(_ context.Context, _ int64, jobID int64) error {
+				deletedJobIDs = append(deletedJobIDs, jobID)
+				return nil
+			},
+			markSentFunc: func(_ context.Context, _ int64, jobID int64) error {
+				markedJobIDs = append(markedJobIDs, jobID)
+				return nil
+			},
+		},
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 888}, nil
+		}},
+		&mockJobRepo{},
+		&mockNotifier{sendFunc: func(_ context.Context, _ int64, p port.NotifyPayload) error {
+			sent = true
+			if len(p.Batch) != 2 {
+				t.Fatalf("batch items=%d, want 2", len(p.Batch))
+			}
+			return nil
+		}},
+		5*time.Minute,
+		5,
+	)
+
+	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{
+		{JobID: 10, Rank: 1},
+		{JobID: 20, Rank: 2},
+		{JobID: 30, Rank: 3},
+	}, 8.1)
+	if err != nil {
+		t.Fatalf("ExecuteBatch: %v", err)
+	}
+	if !sent {
+		t.Fatal("must send trimmed batch")
+	}
+	if len(deletedJobIDs) != 1 || deletedJobIDs[0] != 20 {
+		t.Fatalf("deleted jobs=%v, want [20]", deletedJobIDs)
+	}
+	if len(markedJobIDs) != 2 {
+		t.Fatalf("marked jobs=%v, want 2 items", markedJobIDs)
+	}
+}

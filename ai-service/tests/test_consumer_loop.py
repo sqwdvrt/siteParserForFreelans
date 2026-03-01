@@ -5,8 +5,6 @@ from __future__ import annotations
 import threading
 from unittest.mock import MagicMock
 
-import pytest
-
 from ai_service.port.queue import JobQueueConsumer
 from ai_service.usecase.consumer_loop import run_consumer
 from ai_service.usecase.process_job import ProcessJobUseCase

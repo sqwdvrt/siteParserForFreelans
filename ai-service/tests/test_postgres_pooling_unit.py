@@ -8,12 +8,33 @@ from ai_service.adapter.postgres import PostgresMatchRepository
 from ai_service.adapter.postgres._pooled_repository import PooledPostgresRepository
 
 
+class _FakeCursor:
+    def __init__(self) -> None:
+        self.execute_calls: list[tuple] = []
+
+    def execute(self, sql: str, params=None) -> None:
+        self.execute_calls.append((sql, params))
+
+    def close(self) -> None:
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+
 class _FakeConn:
     def __init__(self) -> None:
         self.closed = 0
         self.commit_calls = 0
         self.rollback_calls = 0
         self.close_calls = 0
+        self.cursor_obj = _FakeCursor()
+
+    def cursor(self):
+        return self.cursor_obj
 
     def commit(self) -> None:
         self.commit_calls += 1
@@ -123,3 +144,63 @@ def test_rollback_on_error_and_return_to_pool(
     pool = created[0]
     assert pool.conn.rollback_calls == 1
     assert pool.putconn_calls == [False]
+
+
+def _make_fake_pool_fixture(monkeypatch: pytest.MonkeyPatch) -> _FakePool:
+    created: list[_FakePool] = []
+
+    def fake_pool(minconn: int, maxconn: int, dsn: str) -> _FakePool:
+        pool = _FakePool(minconn, maxconn, dsn)
+        created.append(pool)
+        return pool
+
+    monkeypatch.setattr(
+        "ai_service.adapter.postgres._pooled_repository._VectorThreadedConnectionPool",
+        fake_pool,
+    )
+    return created
+
+
+def test_statement_timeout_set_local_on_each_conn(monkeypatch: pytest.MonkeyPatch) -> None:
+    created = _make_fake_pool_fixture(monkeypatch)
+    repo = _DummyRepo("postgresql://fake/fake", statement_timeout_ms=5_000)
+
+    with repo._conn():
+        pass
+    with repo._conn():
+        pass
+
+    pool = created[0]
+    assert pool.conn.cursor_obj.execute_calls == [
+        ("SET LOCAL statement_timeout = %s", ("5000ms",)),
+        ("SET LOCAL statement_timeout = %s", ("5000ms",)),
+    ]
+
+
+def test_statement_timeout_zero_skips_set_local(monkeypatch: pytest.MonkeyPatch) -> None:
+    created = _make_fake_pool_fixture(monkeypatch)
+    repo = _DummyRepo("postgresql://fake/fake", statement_timeout_ms=0)
+
+    with repo._conn():
+        pass
+
+    pool = created[0]
+    assert pool.conn.cursor_obj.execute_calls == []
+
+
+def test_statement_timeout_negative_raises() -> None:
+    with pytest.raises(ValueError, match="statement_timeout_ms"):
+        _DummyRepo("postgresql://fake/fake", statement_timeout_ms=-1)
+
+
+def test_statement_timeout_default_is_10s(monkeypatch: pytest.MonkeyPatch) -> None:
+    created = _make_fake_pool_fixture(monkeypatch)
+    repo = _DummyRepo("postgresql://fake/fake")
+
+    with repo._conn():
+        pass
+
+    pool = created[0]
+    assert pool.conn.cursor_obj.execute_calls == [
+        ("SET LOCAL statement_timeout = %s", ("10000ms",)),
+    ]

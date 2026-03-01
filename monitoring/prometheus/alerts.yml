@@ -100,7 +100,7 @@ groups:
   - name: siteparser-queues
     rules:
       # Queue metrics rely on redis-exporter --check-keys for:
-      # ai-process, user-embed, match-notify and corresponding :processing/:dlq keys.
+      # ai-process, user-embed, ac-batch, match-notify and corresponding :processing/:dlq keys.
       - alert: SiteParserAiProcessBacklogHigh
         expr: |
           sum by (job, instance) (redis_key_size{job="redis-exporter", key="ai-process"}) > 1000
@@ -122,6 +122,17 @@ groups:
         annotations:
           summary: "user-embed backlog is high"
           description: "Queue user-embed has more than 1000 messages for 10 minutes."
+
+      - alert: SiteParserACBatchBacklogHigh
+        expr: |
+          sum by (job, instance) (redis_key_size{job="redis-exporter", key="ac-batch"}) > 1000
+        for: 10m
+        labels:
+          severity: warning
+          service: ac-batch
+        annotations:
+          summary: "ac-batch backlog is high"
+          description: "Queue ac-batch has more than 1000 messages for 10 minutes."
 
       - alert: SiteParserMatchNotifyBacklogHigh
         expr: |
@@ -189,3 +200,20 @@ groups:
         annotations:
           summary: "notification stall suspected"
           description: "match-notify backlog exists but processing queue stays empty for 15 minutes."
+
+      - alert: SiteParserACBatchStall
+        expr: |
+          (
+            sum by (job, instance) (redis_key_size{job="redis-exporter", key="ac-batch"}) > 100
+          )
+          and on(job, instance)
+          (
+            sum by (job, instance) (redis_key_size{job="redis-exporter", key="ac-batch:processing"}) == 0
+          )
+        for: 15m
+        labels:
+          severity: warning
+          service: ai-ac-consumer
+        annotations:
+          summary: "ac-batch consumer stall suspected"
+          description: "ac-batch backlog exists but processing queue stays empty for 15 minutes."

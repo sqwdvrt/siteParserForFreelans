@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from pgvector import Vector
 from psycopg2.extras import RealDictCursor
 
 from ai_service.adapter.postgres._pooled_repository import PooledPostgresRepository
@@ -15,8 +16,15 @@ from ai_service.port.repository import JobRepository
 class PostgresJobRepository(PooledPostgresRepository, JobRepository):
     """JobRepository через PostgreSQL."""
 
-    def __init__(self, dsn: str, *, minconn: int = 1, maxconn: int = 10) -> None:
-        super().__init__(dsn, minconn=minconn, maxconn=maxconn)
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        minconn: int = 1,
+        maxconn: int = 10,
+        statement_timeout_ms: int = 10_000,
+    ) -> None:
+        super().__init__(dsn, minconn=minconn, maxconn=maxconn, statement_timeout_ms=statement_timeout_ms)
 
     def get(self, job_id: int) -> Job | None:
         """Получить job по id."""
@@ -65,3 +73,44 @@ class PostgresJobRepository(PooledPostgresRepository, JobRepository):
                     (job_id,),
                 )
                 return cur.fetchone() is not None
+
+    def get_with_scores(self, job_ids: list[int], user_embedding: list[float]) -> list[tuple[Job, float]]:
+        """Load jobs by ids with similarity score against user embedding."""
+        if not job_ids:
+            return []
+        if user_embedding is None or len(user_embedding) == 0 or len(user_embedding) != 384:
+            return []
+
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        j.id,
+                        j.title,
+                        j.description,
+                        j.raw_html,
+                        1 - (je.embedding <=> %s) AS similarity
+                    FROM jobs j
+                    JOIN job_embeddings je ON je.job_id = j.id
+                    WHERE j.id = ANY(%s)
+                    ORDER BY similarity DESC
+                    """,
+                    (Vector(user_embedding), job_ids),
+                )
+                rows: list[dict[str, Any]] = cur.fetchall()
+
+        result: list[tuple[Job, float]] = []
+        for row in rows:
+            result.append(
+                (
+                    Job(
+                        id=row["id"],
+                        title=row["title"] or "",
+                        description=row["description"],
+                        raw_html=row["raw_html"] or "",
+                    ),
+                    float(row["similarity"]),
+                )
+            )
+        return result

@@ -21,13 +21,13 @@ except ImportError:
 from ai_service.adapter.postgres import PostgresUserRepository
 from ai_service.adapter.redis import RedisUserEmbedQueueConsumer
 from ai_service.adapter.sentence_transformers import SentenceTransformerEmbedding
+from ai_service.usecase.process_user_embed import ProcessUserEmbedUseCase
+from ai_service.usecase.user_embed_consumer_loop import run_user_embed_consumer
 from ai_service.util.transport_security import (
     is_production_env,
     validate_postgres_tls_for_production,
     validate_redis_tls_for_production,
 )
-from ai_service.usecase.process_user_embed import ProcessUserEmbedUseCase
-from ai_service.usecase.user_embed_consumer_loop import run_user_embed_consumer
 
 logging.basicConfig(
     level=logging.INFO,

@@ -3,14 +3,13 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
-from pathlib import Path
-import urllib.parse
 import urllib.error
+import urllib.parse
 import urllib.request
+from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-
 
 BOT_MAIN_PATH = Path(__file__).resolve().parents[1] / "main.py"
 

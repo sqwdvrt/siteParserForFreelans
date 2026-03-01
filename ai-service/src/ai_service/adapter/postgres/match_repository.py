@@ -12,8 +12,15 @@ from ai_service.port.match_repository import MatchCandidate, MatchRepository
 class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
     """MatchRepository через PostgreSQL + pgvector."""
 
-    def __init__(self, dsn: str, *, minconn: int = 1, maxconn: int = 10) -> None:
-        super().__init__(dsn, minconn=minconn, maxconn=maxconn)
+    def __init__(
+        self,
+        dsn: str,
+        *,
+        minconn: int = 1,
+        maxconn: int = 10,
+        statement_timeout_ms: int = 10_000,
+    ) -> None:
+        super().__init__(dsn, minconn=minconn, maxconn=maxconn, statement_timeout_ms=statement_timeout_ms)
 
     def find_users_for_job(
         self,

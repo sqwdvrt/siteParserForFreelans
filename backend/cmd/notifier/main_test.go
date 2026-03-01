@@ -5,6 +5,10 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/usecase"
 )
 
 func TestNextPopErrorBackoff_GrowthAndCap(t *testing.T) {
@@ -125,5 +129,171 @@ func TestNotifierEnvParsing_EmptyValueUsesFallback(t *testing.T) {
 	_ = os.Unsetenv(key)
 	if got := getPositiveIntEnv(key, 4); got != 4 {
 		t.Fatalf("empty env must use fallback, got %d", got)
+	}
+}
+
+type stubUserRepo struct {
+	getByID func(ctx context.Context, userID int64) (*domain.User, error)
+}
+
+func (s *stubUserRepo) Save(ctx context.Context, telegramID int64) (int64, error) { return 0, nil }
+func (s *stubUserRepo) GetByID(ctx context.Context, userID int64) (*domain.User, error) {
+	if s.getByID != nil {
+		return s.getByID(ctx, userID)
+	}
+	return nil, nil
+}
+func (s *stubUserRepo) GetByTelegramID(ctx context.Context, telegramID int64) (*domain.User, error) {
+	return nil, nil
+}
+func (s *stubUserRepo) UpdateProfile(ctx context.Context, userID int64, text string) error {
+	return nil
+}
+
+type stubJobRepo struct {
+	getByID func(ctx context.Context, jobID int64) (*domain.Job, error)
+}
+
+func (s *stubJobRepo) Save(ctx context.Context, job *domain.Job) (int64, error) { return 0, nil }
+func (s *stubJobRepo) GetByID(ctx context.Context, id int64) (*domain.Job, error) {
+	if s.getByID != nil {
+		return s.getByID(ctx, id)
+	}
+	return nil, nil
+}
+func (s *stubJobRepo) ExistsByURL(ctx context.Context, url string) (bool, error) { return false, nil }
+
+type captureNotifier struct {
+	send func(ctx context.Context, telegramID int64, p port.NotifyPayload) error
+}
+
+func (s *captureNotifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayload) error {
+	if s.send != nil {
+		return s.send(ctx, telegramID, p)
+	}
+	return nil
+}
+
+type stubNotifRepo struct {
+	ensurePending func(ctx context.Context, userID, jobID int64, matchScore float64) (bool, bool, error)
+	markSent      func(ctx context.Context, userID, jobID int64) error
+	deleteFunc    func(ctx context.Context, userID, jobID int64) error
+	sentRecently  func(ctx context.Context, userID int64, within time.Duration) (bool, error)
+	countToday    func(ctx context.Context, userID int64) (int, error)
+}
+
+func (s *stubNotifRepo) EnsurePending(ctx context.Context, userID, jobID int64, matchScore float64) (bool, bool, error) {
+	if s.ensurePending != nil {
+		return s.ensurePending(ctx, userID, jobID, matchScore)
+	}
+	return true, true, nil
+}
+
+func (s *stubNotifRepo) MarkSent(ctx context.Context, userID, jobID int64) error {
+	if s.markSent != nil {
+		return s.markSent(ctx, userID, jobID)
+	}
+	return nil
+}
+
+func (s *stubNotifRepo) Delete(ctx context.Context, userID, jobID int64) error {
+	if s.deleteFunc != nil {
+		return s.deleteFunc(ctx, userID, jobID)
+	}
+	return nil
+}
+
+func (s *stubNotifRepo) SentRecently(ctx context.Context, userID int64, within time.Duration) (bool, error) {
+	if s.sentRecently != nil {
+		return s.sentRecently(ctx, userID, within)
+	}
+	return false, nil
+}
+
+func (s *stubNotifRepo) CountToday(ctx context.Context, userID int64) (int, error) {
+	if s.countToday != nil {
+		return s.countToday(ctx, userID)
+	}
+	return 0, nil
+}
+
+func TestSendBatchNotification_UserNotFound(t *testing.T) {
+	called := false
+	sendNotif := usecase.NewSendNotification(
+		&stubNotifRepo{},
+		&stubUserRepo{getByID: func(context.Context, int64) (*domain.User, error) { return nil, nil }},
+		&stubJobRepo{},
+		&captureNotifier{send: func(context.Context, int64, port.NotifyPayload) error {
+			called = true
+			return nil
+		}},
+		5*time.Minute,
+		5,
+	)
+	err := sendBatchNotification(
+		context.Background(),
+		sendNotif,
+		port.MatchNotifyPayload{
+			UserID: 1,
+			Jobs:   []port.BatchJobItem{{JobID: 100, Rank: 1}},
+		},
+	)
+	if err != nil {
+		t.Fatalf("sendBatchNotification: %v", err)
+	}
+	if called {
+		t.Fatal("notifier.Send must not be called when user not found")
+	}
+}
+
+func TestSendBatchNotification_BuildsBatchPayload(t *testing.T) {
+	var gotPayload port.NotifyPayload
+	sendNotif := usecase.NewSendNotification(
+		&stubNotifRepo{
+			ensurePending: func(_ context.Context, _ int64, _ int64, _ float64) (bool, bool, error) {
+				return true, true, nil
+			},
+		},
+		&stubUserRepo{getByID: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 777}, nil
+		}},
+		&stubJobRepo{getByID: func(_ context.Context, jobID int64) (*domain.Job, error) {
+			return &domain.Job{ID: jobID, Title: "DB title", URL: "https://kwork.ru/projects/1"}, nil
+		}},
+		&captureNotifier{send: func(_ context.Context, telegramID int64, p port.NotifyPayload) error {
+			if telegramID != 777 {
+				t.Fatalf("telegramID=%d, want 777", telegramID)
+			}
+			gotPayload = p
+			return nil
+		}},
+		5*time.Minute,
+		5,
+	)
+	err := sendBatchNotification(
+		context.Background(),
+		sendNotif,
+		port.MatchNotifyPayload{
+			UserID:      1,
+			CriticScore: 8.2,
+			Jobs: []port.BatchJobItem{
+				{JobID: 1, Title: "Payload title", WhyItFits: "Why", Rank: 1},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("sendBatchNotification: %v", err)
+	}
+	if len(gotPayload.Batch) != 1 {
+		t.Fatalf("batch items=%d, want 1", len(gotPayload.Batch))
+	}
+	if gotPayload.CriticScore != 8.2 {
+		t.Fatalf("critic score=%.1f, want 8.2", gotPayload.CriticScore)
+	}
+	if gotPayload.Batch[0].Job == nil || gotPayload.Batch[0].Job.Title != "Payload title" {
+		t.Fatalf("job title override failed, got %+v", gotPayload.Batch[0].Job)
+	}
+	if gotPayload.Batch[0].WhyItFits != "Why" {
+		t.Fatalf("why_it_fits not propagated: %q", gotPayload.Batch[0].WhyItFits)
 	}
 }

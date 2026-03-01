@@ -30,6 +30,42 @@ func (m *mockTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}, nil
 }
 
+type sequenceResponse struct {
+	status int
+	body   []byte
+	err    error
+}
+
+type sequenceTransport struct {
+	responses []sequenceResponse
+	calls     int
+}
+
+func (t *sequenceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if len(t.responses) == 0 {
+		return nil, errors.New("no transport responses configured")
+	}
+	idx := t.calls
+	if idx >= len(t.responses) {
+		idx = len(t.responses) - 1
+	}
+	t.calls++
+	resp := t.responses[idx]
+	if resp.err != nil {
+		return nil, resp.err
+	}
+	var body io.ReadCloser = http.NoBody
+	if len(resp.body) > 0 {
+		body = &mockReadCloser{data: resp.body}
+	}
+	return &http.Response{
+		StatusCode: resp.status,
+		Body:       body,
+		Header:     make(http.Header),
+		Request:    req,
+	}, nil
+}
+
 type mockReadCloser struct {
 	data []byte
 	pos  int
@@ -128,6 +164,78 @@ func TestFetcher_Fetch_5xx(t *testing.T) {
 	_, err := f.Fetch(context.Background(), "https://kwork.ru/projects")
 	if err == nil {
 		t.Fatal("want error on 500")
+	}
+}
+
+func TestFetcher_Fetch_RetryBackoffOn429And5xx(t *testing.T) {
+	transport := &sequenceTransport{
+		responses: []sequenceResponse{
+			{status: http.StatusTooManyRequests},
+			{status: http.StatusBadGateway},
+			{status: http.StatusOK, body: []byte("ok")},
+		},
+	}
+	var sleeps []time.Duration
+	f := newTestFetcher(Config{
+		RateLimit:           time.Millisecond,
+		Transport:           transport,
+		RetryMaxAttempts:    3,
+		RetryBaseBackoff:    10 * time.Millisecond,
+		RetryMaxBackoff:     100 * time.Millisecond,
+		Sleep:               func(ctx context.Context, d time.Duration) error { sleeps = append(sleeps, d); return nil },
+		BreakerOpenInterval: time.Second,
+	})
+
+	data, err := f.Fetch(context.Background(), "https://kwork.ru/projects")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if string(data) != "ok" {
+		t.Fatalf("body: want %q, got %q", "ok", data)
+	}
+	if transport.calls != 3 {
+		t.Fatalf("want 3 upstream attempts, got %d", transport.calls)
+	}
+	if len(sleeps) != 2 {
+		t.Fatalf("want 2 backoff sleeps, got %d", len(sleeps))
+	}
+	if sleeps[0] != 10*time.Millisecond || sleeps[1] != 20*time.Millisecond {
+		t.Fatalf("unexpected backoff sequence: %v", sleeps)
+	}
+}
+
+func TestFetcher_Fetch_RetryBackoffStopsAfterMaxAttempts(t *testing.T) {
+	transport := &sequenceTransport{
+		responses: []sequenceResponse{
+			{status: http.StatusServiceUnavailable},
+		},
+	}
+	var sleeps []time.Duration
+	f := newTestFetcher(Config{
+		RateLimit:           time.Millisecond,
+		Transport:           transport,
+		RetryMaxAttempts:    3,
+		RetryBaseBackoff:    5 * time.Millisecond,
+		RetryMaxBackoff:     50 * time.Millisecond,
+		Sleep:               func(ctx context.Context, d time.Duration) error { sleeps = append(sleeps, d); return nil },
+		BreakerOpenInterval: time.Second,
+	})
+
+	_, err := f.Fetch(context.Background(), "https://kwork.ru/projects")
+	if err == nil {
+		t.Fatal("want error after retries exhausted")
+	}
+	if !strings.Contains(err.Error(), "http 503") {
+		t.Fatalf("want http 503 error, got %v", err)
+	}
+	if transport.calls != 3 {
+		t.Fatalf("want 3 upstream attempts, got %d", transport.calls)
+	}
+	if len(sleeps) != 2 {
+		t.Fatalf("want 2 backoff sleeps, got %d", len(sleeps))
+	}
+	if sleeps[0] != 5*time.Millisecond || sleeps[1] != 10*time.Millisecond {
+		t.Fatalf("unexpected backoff sequence: %v", sleeps)
 	}
 }
 
@@ -290,5 +398,109 @@ func TestFetcher_DialPinnedContext_RejectsUnpinnedHost(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no pinned addresses") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestFetcher_CircuitBreaker_OpensAfterConsecutiveFailures(t *testing.T) {
+	transport := &sequenceTransport{
+		responses: []sequenceResponse{
+			{err: context.DeadlineExceeded},
+			{err: context.DeadlineExceeded},
+			{status: http.StatusOK, body: []byte("ok")},
+		},
+	}
+	f := newTestFetcher(Config{
+		RateLimit:               time.Millisecond,
+		Transport:               transport,
+		BreakerFailureThreshold: 2,
+		BreakerOpenInterval:     200 * time.Millisecond,
+	})
+
+	_, err := f.Fetch(context.Background(), "https://kwork.ru/projects")
+	if err == nil {
+		t.Fatal("want first fetch error")
+	}
+	_, err = f.Fetch(context.Background(), "https://kwork.ru/projects")
+	if err == nil {
+		t.Fatal("want second fetch error")
+	}
+	_, err = f.Fetch(context.Background(), "https://kwork.ru/projects")
+	if err == nil {
+		t.Fatal("want circuit-open error on third request")
+	}
+	if !strings.Contains(err.Error(), "circuit open for domain") {
+		t.Fatalf("want circuit open error, got %v", err)
+	}
+	if transport.calls != 2 {
+		t.Fatalf("want 2 upstream calls before open circuit, got %d", transport.calls)
+	}
+}
+
+func TestFetcher_CircuitBreaker_RecoverAfterOpenInterval(t *testing.T) {
+	transport := &sequenceTransport{
+		responses: []sequenceResponse{
+			{status: http.StatusServiceUnavailable},
+			{status: http.StatusOK, body: []byte("ok")},
+		},
+	}
+	f := newTestFetcher(Config{
+		RateLimit:               time.Millisecond,
+		Transport:               transport,
+		BreakerFailureThreshold: 1,
+		BreakerOpenInterval:     80 * time.Millisecond,
+	})
+
+	_, err := f.Fetch(context.Background(), "https://kwork.ru/projects")
+	if err == nil {
+		t.Fatal("want first fetch error")
+	}
+	_, err = f.Fetch(context.Background(), "https://kwork.ru/projects")
+	if err == nil {
+		t.Fatal("want circuit-open error after first failure")
+	}
+	if !strings.Contains(err.Error(), "circuit open for domain") {
+		t.Fatalf("want circuit open error, got %v", err)
+	}
+	if transport.calls != 1 {
+		t.Fatalf("want 1 upstream call while circuit is open, got %d", transport.calls)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	data, err := f.Fetch(context.Background(), "https://kwork.ru/projects")
+	if err != nil {
+		t.Fatalf("want success after open interval, got %v", err)
+	}
+	if string(data) != "ok" {
+		t.Fatalf("want body ok, got %q", string(data))
+	}
+	if transport.calls != 2 {
+		t.Fatalf("want second upstream call after open interval, got %d", transport.calls)
+	}
+}
+
+func TestFetcher_CircuitBreaker_DoesNotOpenOn404(t *testing.T) {
+	transport := &sequenceTransport{
+		responses: []sequenceResponse{
+			{status: http.StatusNotFound},
+			{status: http.StatusNotFound},
+		},
+	}
+	f := newTestFetcher(Config{
+		RateLimit:               time.Millisecond,
+		Transport:               transport,
+		BreakerFailureThreshold: 1,
+		BreakerOpenInterval:     time.Second,
+	})
+
+	_, err := f.Fetch(context.Background(), "https://kwork.ru/projects")
+	if err == nil || !strings.Contains(err.Error(), "http 404") {
+		t.Fatalf("want http 404 on first request, got %v", err)
+	}
+	_, err = f.Fetch(context.Background(), "https://kwork.ru/projects")
+	if err == nil || !strings.Contains(err.Error(), "http 404") {
+		t.Fatalf("want http 404 on second request, got %v", err)
+	}
+	if transport.calls != 2 {
+		t.Fatalf("want no circuit-open fast fail for 404, calls=%d", transport.calls)
 	}
 }

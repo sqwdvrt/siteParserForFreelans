@@ -1,6 +1,5 @@
 """Тесты sanitize_for_classifier."""
 
-import pytest
 
 from ai_service.util.sanitize import MAX_CLASSIFIER_INPUT, sanitize_for_classifier
 

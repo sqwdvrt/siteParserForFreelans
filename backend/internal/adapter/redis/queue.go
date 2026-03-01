@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	redis "github.com/redis/go-redis/v9"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/observability"
 )
 
 const defaultQueue = "ai-process"
@@ -30,7 +31,14 @@ func (q *Queue) Enqueue(ctx context.Context, jobID int64) error {
 	if jobID <= 0 {
 		return fmt.Errorf("job_id must be positive, got %d", jobID)
 	}
-	payload, err := json.Marshal(map[string]int64{"job_id": jobID})
+	payloadData := struct {
+		JobID   int64  `json:"job_id"`
+		TraceID string `json:"trace_id,omitempty"`
+	}{
+		JobID:   jobID,
+		TraceID: observability.TraceIDFromContext(ctx),
+	}
+	payload, err := json.Marshal(payloadData)
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}

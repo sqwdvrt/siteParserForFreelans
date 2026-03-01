@@ -22,3 +22,13 @@ pythonpath = ["src"]
 [tool.bandit]
 exclude_dirs = ["tests", ".venv"]
 skips = ["B101"]  # assert_used - ok in tests
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I"]
+
+[tool.ruff.lint.per-file-ignores]
+"cmd/*/main.py" = ["E402"]
+"src/ai_service/adapter/ollama/classifier.py" = ["E501"]

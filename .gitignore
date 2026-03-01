@@ -4,6 +4,8 @@ backups/
 *.log
 backend/bin/
 backend/api
+backend/crawler
+backend/notifier
 backend/.gocache/
 backend/.gomodcache/
 backend/.gocache-*/

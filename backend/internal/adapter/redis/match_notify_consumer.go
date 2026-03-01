@@ -76,7 +76,7 @@ func (c *MatchNotifyConsumer) Pop(ctx context.Context) (*port.MatchNotifyMessage
 		_ = c.ackRaw(ctx, raw) // poison payload: remove from processing
 		return nil, err
 	}
-	if p.UserID <= 0 || p.JobID <= 0 {
+	if !isValidMatchNotifyPayload(p) {
 		_ = c.ackRaw(ctx, raw) // invalid payload: discard
 		return nil, nil        // skip invalid payload
 	}
@@ -174,4 +174,22 @@ func asInt(v interface{}) int {
 	default:
 		return 0
 	}
+}
+
+func isValidMatchNotifyPayload(p port.MatchNotifyPayload) bool {
+	if p.UserID <= 0 {
+		return false
+	}
+	if p.JobID > 0 {
+		return true
+	}
+	if len(p.Jobs) == 0 {
+		return false
+	}
+	for _, item := range p.Jobs {
+		if item.JobID <= 0 {
+			return false
+		}
+	}
+	return true
 }

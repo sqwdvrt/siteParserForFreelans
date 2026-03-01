@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	goredis "github.com/redis/go-redis/v9"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/observability"
 )
 
 func TestQueue_Enqueue(t *testing.T) {
@@ -28,13 +29,44 @@ func TestQueue_Enqueue(t *testing.T) {
 		t.Fatalf("LPop: %v", err)
 	}
 	var payload struct {
-		JobID int64 `json:"job_id"`
+		JobID   int64  `json:"job_id"`
+		TraceID string `json:"trace_id,omitempty"`
 	}
 	if err := json.Unmarshal([]byte(val), &payload); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
 	if payload.JobID != 42 {
 		t.Errorf("want job_id=42, got %d", payload.JobID)
+	}
+	if payload.TraceID != "" {
+		t.Errorf("want empty trace_id by default, got %q", payload.TraceID)
+	}
+}
+
+func TestQueue_Enqueue_PropagatesTraceIDFromContext(t *testing.T) {
+	mr := mustRunMiniRedis(t)
+	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	defer client.Close()
+
+	queue := NewQueue(client, "ai-process")
+	ctx := observability.WithTraceID(context.Background(), "trace-123")
+	if err := queue.Enqueue(ctx, 42); err != nil {
+		t.Fatalf("Enqueue: %v", err)
+	}
+
+	val, err := client.LPop(context.Background(), "ai-process").Result()
+	if err != nil {
+		t.Fatalf("LPop: %v", err)
+	}
+	var payload struct {
+		JobID   int64  `json:"job_id"`
+		TraceID string `json:"trace_id,omitempty"`
+	}
+	if err := json.Unmarshal([]byte(val), &payload); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if payload.TraceID != "trace-123" {
+		t.Fatalf("trace_id=%q want=trace-123", payload.TraceID)
 	}
 }
 

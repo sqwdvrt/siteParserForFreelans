@@ -5,8 +5,6 @@ from __future__ import annotations
 import threading
 from unittest.mock import MagicMock
 
-import pytest
-
 from ai_service.port.user_embed_queue import UserEmbedQueueConsumer
 from ai_service.usecase.process_user_embed import ProcessUserEmbedUseCase
 from ai_service.usecase.user_embed_consumer_loop import run_user_embed_consumer

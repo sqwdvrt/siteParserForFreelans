@@ -7,13 +7,15 @@ from typing import TYPE_CHECKING
 
 from ai_service.port.classifier import ClassificationResult
 from ai_service.port.embedding import EmbeddingService
-from ai_service.port.match_repository import MatchRepository
 from ai_service.port.match_notify_queue import MatchNotifyQueue
+from ai_service.port.match_repository import MatchRepository
 from ai_service.port.repository import JobRepository
 from ai_service.util.text_cleaner import clean_text
+from ai_service.util.trace_context import get_trace_id
 
 if TYPE_CHECKING:
     from ai_service.port.classifier import Classifier
+    from ai_service.usecase.accumulate_matches import AccumulateMatchesUseCase
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +76,7 @@ class ProcessJobUseCase:
         embedding_service: EmbeddingService,
         classifier: Classifier | None = None,
         match_repo: MatchRepository | None = None,
+        accumulate_matches: AccumulateMatchesUseCase | None = None,
         match_notify_queue: MatchNotifyQueue | None = None,
         *,
         similarity_threshold: float = 0.7,
@@ -83,19 +86,27 @@ class ProcessJobUseCase:
         self._embedding = embedding_service
         self._classifier = classifier
         self._match_repo = match_repo
+        self._accumulate_matches = accumulate_matches
         self._match_notify_queue = match_notify_queue
         self._threshold = similarity_threshold
         self._limit = max_matches_per_job
 
     def execute(self, job_id: int) -> bool:
         """Обработать job_id. Возвращает True если embedding сохранён, False если пропущен."""
+        trace_id = get_trace_id()
         job = self._repo.get(job_id)
         if job is None:
-            logger.warning("job not found: %s", job_id)
+            if trace_id:
+                logger.warning("job not found: %s trace_id=%s", job_id, trace_id)
+            else:
+                logger.warning("job not found: %s", job_id)
             return False
 
         if self._repo.has_embedding(job_id):
-            logger.debug("embedding already exists, skip: %s", job_id)
+            if trace_id:
+                logger.debug("embedding already exists, skip: %s trace_id=%s", job_id, trace_id)
+            else:
+                logger.debug("embedding already exists, skip: %s", job_id)
             return False
 
         raw = f"{job.title} {job.description or ''} {job.raw_html}"
@@ -113,22 +124,34 @@ class ProcessJobUseCase:
                 metadata["classification"] = classification
 
         self._repo.save_embedding(job_id, embedding, metadata)
-        logger.info("saved embedding for job_id=%s", job_id)
+        if trace_id:
+            logger.info("saved embedding for job_id=%s trace_id=%s", job_id, trace_id)
+        else:
+            logger.info("saved embedding for job_id=%s", job_id)
 
         if self._match_repo is not None:
             candidates = self._match_repo.find_users_for_job(
                 embedding, job_id, self._threshold, self._limit
             )
-            logger.info("job_id=%s: %d match candidates", job_id, len(candidates))
-            if self._match_notify_queue is not None and candidates:
+            if trace_id:
+                logger.info("job_id=%s trace_id=%s: %d match candidates", job_id, trace_id, len(candidates))
+            else:
+                logger.info("job_id=%s: %d match candidates", job_id, len(candidates))
+            if candidates:
                 why_it_fits = _build_why_it_fits(classification)
                 for c in candidates:
                     c.why_it_fits = why_it_fits
-                enqueue_many = getattr(self._match_notify_queue, "enqueue_many", None)
-                if callable(enqueue_many):
-                    enqueue_many(candidates)
-                else:
-                    for c in candidates:
-                        self._match_notify_queue.enqueue(c)
+                    if trace_id:
+                        c.trace_id = trace_id
+                if self._accumulate_matches is not None:
+                    self._accumulate_matches.execute(candidates)
+                elif self._match_notify_queue is not None:
+                    # Legacy path: direct notify queue. Phase 2+ should use accumulator.
+                    enqueue_many = getattr(self._match_notify_queue, "enqueue_many", None)
+                    if callable(enqueue_many):
+                        enqueue_many(candidates)
+                    else:
+                        for c in candidates:
+                            self._match_notify_queue.enqueue(c)
 
         return True

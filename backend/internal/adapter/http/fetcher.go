@@ -13,9 +13,14 @@ import (
 )
 
 const (
-	defaultTimeout   = 30 * time.Second
-	defaultRateLimit = 15 * time.Second
-	maxBodySize      = 1 << 20 // 1 MB
+	defaultTimeout                 = 30 * time.Second
+	defaultRateLimit               = 15 * time.Second
+	defaultBreakerFailureThreshold = 3
+	defaultBreakerOpenInterval     = 1 * time.Minute
+	defaultRetryMaxAttempts        = 1
+	defaultRetryBaseBackoff        = 1 * time.Second
+	defaultRetryMaxBackoff         = 30 * time.Second
+	maxBodySize                    = 1 << 20 // 1 MB
 )
 
 var blockedHosts = map[string]bool{
@@ -32,26 +37,45 @@ var (
 
 type ResolveIPFunc func(ctx context.Context, host string) ([]net.IPAddr, error)
 type DialContextFunc func(ctx context.Context, network, addr string) (net.Conn, error)
+type SleepFunc func(ctx context.Context, d time.Duration) error
 
 type pinnedHostsContextKey struct{}
 
 type pinnedHosts map[string][]net.IP
 
 type Fetcher struct {
-	client    *http.Client
-	rateLimit time.Duration
-	lastFetch map[string]time.Time
-	resolveIP ResolveIPFunc
-	dial      DialContextFunc
-	mu        sync.Mutex
+	client                  *http.Client
+	rateLimit               time.Duration
+	lastFetch               map[string]time.Time
+	breakerByDomain         map[string]breakerState
+	breakerFailureThreshold int
+	breakerOpenInterval     time.Duration
+	retryMaxAttempts        int
+	retryBaseBackoff        time.Duration
+	retryMaxBackoff         time.Duration
+	resolveIP               ResolveIPFunc
+	dial                    DialContextFunc
+	sleep                   SleepFunc
+	mu                      sync.Mutex
+}
+
+type breakerState struct {
+	consecutiveFailures int
+	openUntil           time.Time
 }
 
 type Config struct {
-	Timeout   time.Duration
-	RateLimit time.Duration
-	Transport http.RoundTripper // для тестов: мок RoundTripper
-	ResolveIP ResolveIPFunc     // для тестов: мок DNS-резолвера
-	Dial      DialContextFunc   // для тестов: мок dialer
+	Timeout                 time.Duration
+	RateLimit               time.Duration
+	BreakerFailureThreshold int
+	BreakerOpenInterval     time.Duration
+	RetryMaxAttempts        int
+	RetryBaseBackoff        time.Duration
+	RetryMaxBackoff         time.Duration
+	Transport               http.RoundTripper // для тестов: мок RoundTripper
+	ResolveIP               ResolveIPFunc     // для тестов: мок DNS-резолвера
+	Dial                    DialContextFunc   // для тестов: мок dialer
+	Sleep                   SleepFunc         // для тестов: мок ожидания backoff
 }
 
 func NewFetcher(cfg Config) *Fetcher {
@@ -61,18 +85,47 @@ func NewFetcher(cfg Config) *Fetcher {
 	if cfg.RateLimit == 0 {
 		cfg.RateLimit = defaultRateLimit
 	}
+	if cfg.BreakerFailureThreshold <= 0 {
+		cfg.BreakerFailureThreshold = defaultBreakerFailureThreshold
+	}
+	if cfg.BreakerOpenInterval <= 0 {
+		cfg.BreakerOpenInterval = defaultBreakerOpenInterval
+	}
+	if cfg.RetryMaxAttempts <= 0 {
+		cfg.RetryMaxAttempts = defaultRetryMaxAttempts
+	}
+	if cfg.RetryBaseBackoff <= 0 {
+		cfg.RetryBaseBackoff = defaultRetryBaseBackoff
+	}
+	if cfg.RetryMaxBackoff <= 0 {
+		cfg.RetryMaxBackoff = defaultRetryMaxBackoff
+	}
+	if cfg.RetryMaxBackoff < cfg.RetryBaseBackoff {
+		cfg.RetryMaxBackoff = cfg.RetryBaseBackoff
+	}
 	resolveIP := cfg.ResolveIP
 	if resolveIP == nil {
 		resolveIP = net.DefaultResolver.LookupIPAddr
+	}
+	sleep := cfg.Sleep
+	if sleep == nil {
+		sleep = sleepWithContext
 	}
 	transport := cfg.Transport
 	f := &Fetcher{
 		client: &http.Client{
 			Timeout: cfg.Timeout,
 		},
-		rateLimit: cfg.RateLimit,
-		lastFetch: make(map[string]time.Time),
-		resolveIP: resolveIP,
+		rateLimit:               cfg.RateLimit,
+		lastFetch:               make(map[string]time.Time),
+		breakerByDomain:         make(map[string]breakerState),
+		breakerFailureThreshold: cfg.BreakerFailureThreshold,
+		breakerOpenInterval:     cfg.BreakerOpenInterval,
+		retryMaxAttempts:        cfg.RetryMaxAttempts,
+		retryBaseBackoff:        cfg.RetryBaseBackoff,
+		retryMaxBackoff:         cfg.RetryMaxBackoff,
+		resolveIP:               resolveIP,
+		sleep:                   sleep,
 	}
 	dial := cfg.Dial
 	if dial == nil {
@@ -112,41 +165,178 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) {
 	}
 	ctx = nextCtx
 
-	domain := f.extractDomain(rawURL)
+	domain := normalizeHost(f.extractDomain(rawURL))
+	if err := f.waitForRateLimitAndOpenCircuitCheck(ctx, domain); err != nil {
+		return nil, err
+	}
+
+	for attempt := 1; attempt <= f.retryMaxAttempts; attempt++ {
+		if attempt > 1 {
+			if err := f.sleep(ctx, f.retryBackoff(attempt-1)); err != nil {
+				return nil, err
+			}
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
+		req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; SiteParser/1.0)")
+
+		resp, err := f.client.Do(req)
+		if err != nil {
+			if ctx.Err() == nil {
+				f.recordFailure(domain)
+			}
+			return nil, fmt.Errorf("fetch: %w", err)
+		}
+		if resp.StatusCode >= 400 {
+			statusCode := resp.StatusCode
+			_ = resp.Body.Close()
+			if shouldRetryOnStatus(statusCode) && attempt < f.retryMaxAttempts {
+				continue
+			}
+			if shouldTripCircuitOnStatus(statusCode) {
+				f.recordFailure(domain)
+			} else {
+				f.recordSuccess(domain)
+			}
+			return nil, fmt.Errorf("http %d", statusCode)
+		}
+
+		body := io.LimitReader(resp.Body, maxBodySize)
+		data, err := io.ReadAll(body)
+		_ = resp.Body.Close()
+		if err != nil {
+			f.recordFailure(domain)
+			return nil, fmt.Errorf("read body: %w", err)
+		}
+		f.recordSuccess(domain)
+		return data, nil
+	}
+	return nil, fmt.Errorf("fetch retries exhausted")
+}
+
+func shouldTripCircuitOnStatus(code int) bool {
+	return code == http.StatusRequestTimeout || code == http.StatusTooManyRequests || code >= http.StatusInternalServerError
+}
+
+func shouldRetryOnStatus(code int) bool {
+	return code == http.StatusTooManyRequests || code >= http.StatusInternalServerError
+}
+
+func (f *Fetcher) retryBackoff(attempt int) time.Duration {
+	if attempt <= 0 {
+		attempt = 1
+	}
+	delay := f.retryBaseBackoff
+	for i := 1; i < attempt; i++ {
+		if delay >= f.retryMaxBackoff/2 {
+			return f.retryMaxBackoff
+		}
+		delay *= 2
+	}
+	if delay > f.retryMaxBackoff {
+		delay = f.retryMaxBackoff
+	}
+	return delay
+}
+
+func sleepWithContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func (f *Fetcher) waitForRateLimitAndOpenCircuitCheck(ctx context.Context, domain string) error {
+	now := time.Now()
 	f.mu.Lock()
+	if err := f.checkCircuitOpenLocked(domain, now); err != nil {
+		f.mu.Unlock()
+		return err
+	}
+	wait := time.Duration(0)
 	if last, ok := f.lastFetch[domain]; ok {
-		elapsed := time.Since(last)
+		elapsed := now.Sub(last)
 		if elapsed < f.rateLimit {
-			f.mu.Unlock()
-			time.Sleep(f.rateLimit - elapsed)
-			f.mu.Lock()
+			wait = f.rateLimit - elapsed
 		}
 	}
-	f.lastFetch[domain] = time.Now()
+	if wait <= 0 {
+		f.lastFetch[domain] = now
+		f.mu.Unlock()
+		return nil
+	}
 	f.mu.Unlock()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (compatible; SiteParser/1.0)")
-
-	resp, err := f.client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("fetch: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("http %d", resp.StatusCode)
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
 	}
 
-	body := io.LimitReader(resp.Body, maxBodySize)
-	data, err := io.ReadAll(body)
-	if err != nil {
-		return nil, fmt.Errorf("read body: %w", err)
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.checkCircuitOpenLocked(domain, time.Now()); err != nil {
+		return err
 	}
-	return data, nil
+	f.lastFetch[domain] = time.Now()
+	return nil
+}
+
+func (f *Fetcher) checkCircuitOpenLocked(domain string, now time.Time) error {
+	state, ok := f.breakerByDomain[domain]
+	if !ok {
+		return nil
+	}
+	if state.openUntil.IsZero() {
+		return nil
+	}
+	if !now.Before(state.openUntil) {
+		state.openUntil = time.Time{}
+		state.consecutiveFailures = 0
+		f.breakerByDomain[domain] = state
+		return nil
+	}
+	retryIn := time.Until(state.openUntil).Round(100 * time.Millisecond)
+	if retryIn < 0 {
+		retryIn = 0
+	}
+	return fmt.Errorf("circuit open for domain %s (retry in %s)", domain, retryIn)
+}
+
+func (f *Fetcher) recordFailure(domain string) {
+	if domain == "" {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	state := f.breakerByDomain[domain]
+	state.consecutiveFailures++
+	if state.consecutiveFailures >= f.breakerFailureThreshold {
+		state.openUntil = time.Now().Add(f.breakerOpenInterval)
+		state.consecutiveFailures = 0
+	}
+	f.breakerByDomain[domain] = state
+}
+
+func (f *Fetcher) recordSuccess(domain string) {
+	if domain == "" {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	delete(f.breakerByDomain, domain)
 }
 
 func (f *Fetcher) validateURL(ctx context.Context, rawURL string) (context.Context, error) {

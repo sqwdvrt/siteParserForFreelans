@@ -5,8 +5,6 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from ai_service.adapter.redis.user_embed_queue import RedisUserEmbedQueueConsumer
 
 
@@ -17,6 +15,17 @@ def test_pop_blocking_returns_user_id(mock_from_url: MagicMock) -> None:
     mock_client.brpoplpush.return_value = json.dumps({"user_id": 42})
     c = RedisUserEmbedQueueConsumer("redis://localhost:6379/0")
     assert c.pop_blocking(timeout_sec=1) == 42
+
+
+@patch("ai_service.adapter.redis.user_embed_queue.redis.from_url")
+def test_pop_blocking_exposes_trace_id(mock_from_url: MagicMock) -> None:
+    mock_client = MagicMock()
+    mock_from_url.return_value = mock_client
+    raw = json.dumps({"user_id": 42, "trace_id": "trace-xyz"})
+    mock_client.brpoplpush.return_value = raw
+    c = RedisUserEmbedQueueConsumer("redis://localhost:6379/0")
+    assert c.pop_blocking(timeout_sec=1) == 42
+    assert c.trace_id(42) == "trace-xyz"
 
 
 @patch("ai_service.adapter.redis.user_embed_queue.redis.from_url")
@@ -86,6 +95,22 @@ def test_nack_requeues_payload(mock_from_url: MagicMock) -> None:
     pipe.lrem.assert_called_once_with("user-embed:processing", 1, raw)
     pipe.rpush.assert_called_once_with("user-embed", '{"user_id":42,"_retry_count":1}')
     pipe.execute.assert_called_once()
+
+
+@patch("ai_service.adapter.redis.user_embed_queue.redis.from_url")
+def test_nack_preserves_trace_id(mock_from_url: MagicMock) -> None:
+    mock_client = MagicMock()
+    mock_from_url.return_value = mock_client
+    raw = json.dumps({"user_id": 42, "trace_id": "trace-ue-9"})
+    mock_client.brpoplpush.return_value = raw
+    pipe = MagicMock()
+    mock_client.pipeline.return_value = pipe
+    c = RedisUserEmbedQueueConsumer("redis://localhost:6379/0")
+    assert c.pop_blocking(timeout_sec=1) == 42
+
+    c.nack(42)
+
+    pipe.rpush.assert_called_once_with("user-embed", '{"user_id":42,"trace_id":"trace-ue-9","_retry_count":1}')
 
 
 @patch("ai_service.adapter.redis.user_embed_queue.redis.from_url")

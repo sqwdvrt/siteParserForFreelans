@@ -14,6 +14,7 @@ class MatchCandidate:
     job_id: int
     match_score: float
     why_it_fits: str = ""
+    trace_id: str = ""
 
 
 class MatchRepository(ABC):

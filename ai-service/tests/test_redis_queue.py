@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock, call, patch
 
 from ai_service.adapter.redis import RedisQueueConsumer
 
@@ -17,6 +15,18 @@ def test_pop_blocking_returns_job_id(mock_from_url: MagicMock) -> None:
     mock_client.brpoplpush.return_value = json.dumps({"job_id": 42})
     c = RedisQueueConsumer("redis://localhost:6379/0")
     assert c.pop_blocking(timeout_sec=1) == 42
+
+
+@patch("ai_service.adapter.redis.queue.redis.from_url")
+def test_pop_blocking_exposes_trace_id(mock_from_url: MagicMock) -> None:
+    mock_client = MagicMock()
+    mock_from_url.return_value = mock_client
+    raw = json.dumps({"job_id": 42, "trace_id": "trace-abc"})
+    mock_client.brpoplpush.return_value = raw
+    c = RedisQueueConsumer("redis://localhost:6379/0")
+
+    assert c.pop_blocking(timeout_sec=1) == 42
+    assert c.trace_id(42) == "trace-abc"
 
 
 @patch("ai_service.adapter.redis.queue.redis.from_url")
@@ -86,6 +96,22 @@ def test_nack_requeues_payload(mock_from_url: MagicMock) -> None:
     pipe.lrem.assert_called_once_with("ai-process:processing", 1, raw)
     pipe.rpush.assert_called_once_with("ai-process", '{"job_id":42,"_retry_count":1}')
     pipe.execute.assert_called_once()
+
+
+@patch("ai_service.adapter.redis.queue.redis.from_url")
+def test_nack_preserves_trace_id(mock_from_url: MagicMock) -> None:
+    mock_client = MagicMock()
+    mock_from_url.return_value = mock_client
+    raw = json.dumps({"job_id": 42, "trace_id": "trace-123"})
+    mock_client.brpoplpush.return_value = raw
+    pipe = MagicMock()
+    mock_client.pipeline.return_value = pipe
+    c = RedisQueueConsumer("redis://localhost:6379/0")
+    assert c.pop_blocking(timeout_sec=1) == 42
+
+    c.nack(42)
+
+    pipe.rpush.assert_called_once_with("ai-process", '{"job_id":42,"trace_id":"trace-123","_retry_count":1}')
 
 
 @patch("ai_service.adapter.redis.queue.redis.from_url")
@@ -181,3 +207,43 @@ def test_prepare_nack_payload_handles_invalid_retry_counter(mock_from_url: Magic
     out_raw, to_dlq = c._prepare_nack_payload(json.dumps({"job_id": 1, "_retry_count": "bad"}))
     assert out_raw == '{"job_id":1,"_retry_count":1}'
     assert to_dlq is False
+
+
+@patch("ai_service.adapter.redis.queue.redis.from_url")
+def test_nack_all_inflight_requeues_all_local_messages(mock_from_url: MagicMock) -> None:
+    mock_client = MagicMock()
+    mock_from_url.return_value = mock_client
+    pipe = MagicMock()
+    mock_client.pipeline.return_value = pipe
+    c = RedisQueueConsumer("redis://localhost:6379/0")
+    raw1 = json.dumps({"job_id": 1})
+    raw2 = json.dumps({"job_id": 2})
+    mock_client.brpoplpush.side_effect = [raw1, raw2, None]
+
+    assert c.pop_blocking(timeout_sec=1) == 1
+    assert c.pop_blocking(timeout_sec=1) == 2
+
+    assert c.nack_all_inflight() == 2
+
+    assert mock_client.pipeline.call_count == 2
+    assert pipe.lrem.call_args_list == [
+        call("ai-process:processing", 1, raw1),
+        call("ai-process:processing", 1, raw2),
+    ]
+    assert pipe.rpush.call_args_list == [
+        call("ai-process", '{"job_id":1,"_retry_count":1}'),
+        call("ai-process", '{"job_id":2,"_retry_count":1}'),
+    ]
+    assert pipe.execute.call_count == 2
+
+    c.ack(1)
+    c.nack(2)
+    assert mock_client.pipeline.call_count == 2
+
+
+@patch("ai_service.adapter.redis.queue.redis.from_url")
+def test_nack_all_inflight_returns_zero_when_nothing_inflight(mock_from_url: MagicMock) -> None:
+    mock_from_url.return_value = MagicMock()
+    c = RedisQueueConsumer("redis://localhost:6379/0")
+
+    assert c.nack_all_inflight() == 0

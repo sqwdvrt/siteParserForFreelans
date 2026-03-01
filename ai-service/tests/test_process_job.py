@@ -4,10 +4,13 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from ai_service.adapter.rule_based import RuleBasedClassifier
 from ai_service.domain.job import Job
 from ai_service.port.match_repository import MatchCandidate
 from ai_service.usecase.process_job import ProcessJobUseCase, _build_why_it_fits
+from ai_service.util.trace_context import reset_trace_id, set_trace_id
 
 
 def test_build_why_it_fits_empty_on_empty_classification() -> None:
@@ -143,6 +146,88 @@ def test_execute_enqueues_candidates_to_match_notify() -> None:
     assert sent[1].match_score == 0.72
 
 
+def test_execute_accumulates_candidates_to_pending_repo() -> None:
+    """При accumulate_matches кандидаты сохраняются в pending_ac_jobs."""
+    job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
+    repo = MagicMock()
+    repo.get.return_value = job
+    repo.has_embedding.return_value = False
+    emb = MagicMock()
+    emb.encode.return_value = [0.1] * 384
+    emb.model_name = "test"
+    match_repo = MagicMock()
+    candidates = [
+        MatchCandidate(user_id=10, job_id=1, match_score=0.85),
+        MatchCandidate(user_id=20, job_id=1, match_score=0.72),
+    ]
+    match_repo.find_users_for_job.return_value = candidates
+    accumulate_matches = MagicMock()
+    uc = ProcessJobUseCase(
+        repo,
+        emb,
+        match_repo=match_repo,
+        accumulate_matches=accumulate_matches,
+    )
+
+    assert uc.execute(1) is True
+    accumulate_matches.execute.assert_called_once()
+    sent = accumulate_matches.execute.call_args[0][0]
+    assert len(sent) == 2
+    assert sent[0].user_id == 10
+    assert sent[1].user_id == 20
+
+
+def test_execute_prefers_accumulate_over_notify_queue() -> None:
+    job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
+    repo = MagicMock()
+    repo.get.return_value = job
+    repo.has_embedding.return_value = False
+    emb = MagicMock()
+    emb.encode.return_value = [0.1] * 384
+    emb.model_name = "test"
+    match_repo = MagicMock()
+    candidates = [MatchCandidate(user_id=10, job_id=1, match_score=0.85)]
+    match_repo.find_users_for_job.return_value = candidates
+    accumulate_matches = MagicMock()
+    match_notify_queue = MagicMock()
+    uc = ProcessJobUseCase(
+        repo,
+        emb,
+        match_repo=match_repo,
+        accumulate_matches=accumulate_matches,
+        match_notify_queue=match_notify_queue,
+    )
+
+    assert uc.execute(1) is True
+    accumulate_matches.execute.assert_called_once()
+    match_notify_queue.enqueue_many.assert_not_called()
+
+
+def test_execute_propagates_accumulate_error() -> None:
+    job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
+    repo = MagicMock()
+    repo.get.return_value = job
+    repo.has_embedding.return_value = False
+    emb = MagicMock()
+    emb.encode.return_value = [0.1] * 384
+    emb.model_name = "test"
+    match_repo = MagicMock()
+    candidates = [MatchCandidate(user_id=10, job_id=1, match_score=0.85)]
+    match_repo.find_users_for_job.return_value = candidates
+    accumulate_matches = MagicMock()
+    accumulate_matches.execute.side_effect = RuntimeError("pending write failed")
+
+    uc = ProcessJobUseCase(
+        repo,
+        emb,
+        match_repo=match_repo,
+        accumulate_matches=accumulate_matches,
+    )
+
+    with pytest.raises(RuntimeError, match="pending write failed"):
+        uc.execute(1)
+
+
 def test_execute_sets_why_it_fits_from_classification() -> None:
     """why_it_fits из классификатора прокидывается в кандидатов."""
     job = Job(id=1, title="Python web", description="Django backend", raw_html="<p>web</p>")
@@ -215,3 +300,27 @@ def test_execute_fallbacks_to_enqueue_when_batch_method_absent() -> None:
     assert len(queue.items) == 2
     assert queue.items[0].user_id == 10
     assert queue.items[1].user_id == 20
+
+
+def test_execute_propagates_trace_id_to_candidates() -> None:
+    job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
+    repo = MagicMock()
+    repo.get.return_value = job
+    repo.has_embedding.return_value = False
+    emb = MagicMock()
+    emb.encode.return_value = [0.1] * 384
+    emb.model_name = "test"
+    match_repo = MagicMock()
+    candidates = [MatchCandidate(user_id=10, job_id=1, match_score=0.85)]
+    match_repo.find_users_for_job.return_value = candidates
+    match_notify_queue = MagicMock()
+    uc = ProcessJobUseCase(repo, emb, match_repo=match_repo, match_notify_queue=match_notify_queue)
+
+    token = set_trace_id("trace-ai-1")
+    try:
+        assert uc.execute(1) is True
+    finally:
+        reset_trace_id(token)
+
+    sent = match_notify_queue.enqueue_many.call_args[0][0]
+    assert sent[0].trace_id == "trace-ai-1"

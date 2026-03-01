@@ -1,6 +1,5 @@
 """Тесты text_cleaner."""
 
-import pytest
 
 from ai_service.util.text_cleaner import MAX_LENGTH, clean_text
 

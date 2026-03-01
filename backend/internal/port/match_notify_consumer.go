@@ -2,12 +2,23 @@ package port
 
 import "context"
 
+// BatchJobItem — элемент batch-подборки для пользователя.
+type BatchJobItem struct {
+	JobID     int64  `json:"job_id"`
+	Title     string `json:"title"`
+	WhyItFits string `json:"why_it_fits"`
+	Rank      int    `json:"rank"`
+}
+
 // MatchNotifyPayload — сообщение из очереди match-notify.
 type MatchNotifyPayload struct {
-	UserID     int64   `json:"user_id"`
-	JobID      int64   `json:"job_id"`
-	MatchScore float64 `json:"match_score"`
-	WhyItFits  string  `json:"why_it_fits,omitempty"`
+	UserID      int64          `json:"user_id"`
+	JobID       int64          `json:"job_id"`
+	MatchScore  float64        `json:"match_score"`
+	WhyItFits   string         `json:"why_it_fits,omitempty"`
+	Jobs        []BatchJobItem `json:"jobs,omitempty"`
+	CriticScore float64        `json:"critic_score,omitempty"`
+	TraceID     string         `json:"trace_id,omitempty"`
 }
 
 // MatchNotifyMessage — доставленное сообщение из match-notify.

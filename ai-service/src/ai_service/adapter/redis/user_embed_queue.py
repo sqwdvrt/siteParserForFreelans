@@ -26,7 +26,7 @@ class RedisUserEmbedQueueConsumer(UserEmbedQueueConsumer):
         self._processing_queue = f"{queue_name}:processing"
         self._dlq_queue = f"{queue_name}:dlq"
         self._max_nack_retries = DEFAULT_MAX_NACK_RETRIES
-        self._inflight_by_user_id: dict[int, deque[str]] = defaultdict(deque)
+        self._inflight_by_user_id: dict[int, deque[tuple[str, str]]] = defaultdict(deque)
 
     def pop_blocking(self, timeout_sec: int = 5) -> int | None:
         payload = self._client.brpoplpush(self._queue, self._processing_queue, timeout=timeout_sec)
@@ -53,19 +53,29 @@ class RedisUserEmbedQueueConsumer(UserEmbedQueueConsumer):
             logger.warning("user_id must be positive, got %d", uid)
             self._ack_raw(payload)  # invalid payload: discard
             return None
-        self._inflight_by_user_id[uid].append(payload)
+        trace_id = self._normalize_trace_id(data.get("trace_id"))
+        self._inflight_by_user_id[uid].append((payload, trace_id))
         return uid
 
     def ack(self, user_id: int) -> None:
-        raw = self._take_inflight_raw(user_id)
-        if raw is None:
+        inflight = self._take_inflight(user_id)
+        if inflight is None:
             return
+        raw, _trace_id = inflight
         self._ack_raw(raw)
 
+    def trace_id(self, user_id: int) -> str:
+        inflight = self._inflight_by_user_id.get(user_id)
+        if not inflight:
+            return ""
+        _raw, trace_id = inflight[0]
+        return trace_id
+
     def nack(self, user_id: int) -> None:
-        raw = self._take_inflight_raw(user_id)
-        if raw is None:
+        inflight = self._take_inflight(user_id)
+        if inflight is None:
             return
+        raw, _trace_id = inflight
         out_raw, to_dlq = self._prepare_nack_payload(raw)
         target_queue = self._dlq_queue if to_dlq else self._queue
         if to_dlq:
@@ -102,7 +112,7 @@ class RedisUserEmbedQueueConsumer(UserEmbedQueueConsumer):
             retries > self._max_nack_retries,
         )
 
-    def _take_inflight_raw(self, user_id: int) -> str | None:
+    def _take_inflight(self, user_id: int) -> tuple[str, str] | None:
         inflight = self._inflight_by_user_id.get(user_id)
         if not inflight:
             return None
@@ -110,3 +120,12 @@ class RedisUserEmbedQueueConsumer(UserEmbedQueueConsumer):
         if not inflight:
             self._inflight_by_user_id.pop(user_id, None)
         return raw
+
+    @staticmethod
+    def _normalize_trace_id(raw: object) -> str:
+        if not isinstance(raw, str):
+            return ""
+        trace_id = raw.strip()
+        if not trace_id:
+            return ""
+        return trace_id[:128]

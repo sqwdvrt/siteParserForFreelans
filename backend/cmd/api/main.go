@@ -14,7 +14,6 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/joho/godotenv"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
@@ -77,7 +76,7 @@ func main() {
 		}
 	}
 
-	pool, err := pgxpool.New(context.Background(), dbURL)
+	pool, err := postgres.NewConfiguredPool(context.Background(), dbURL)
 	if err != nil {
 		fatal("pgxpool init failed", "err", err)
 	}
@@ -163,6 +162,7 @@ func main() {
 	)
 	httpMetrics := telemetry.NewHTTPMetrics(registry)
 	r.Use(httpMetrics.Middleware)
+	r.Use(api.RequestIDMiddleware())
 	r.Use(api.RequestLoggingMiddleware(slog.Default()))
 	var redisHealth redisPinger
 	if rdb != nil {

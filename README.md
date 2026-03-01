@@ -49,7 +49,8 @@ cp .env.example .env
 # 2. Запустить core (always-on: PostgreSQL, Redis, backend-migrate, API, Telegram-бот)
 docker compose up -d
 
-# (опционально) включить вторичные воркеры
+# (опционально) включить вторичные воркеры:
+# backend-crawler, backend-notifier, ai-service, ai-ac-consumer, ollama
 docker compose --profile workers up -d
 
 # (опционально) точечно включить только user-embed consumer
@@ -75,7 +76,7 @@ docker compose --profile ai-user-embed up -d ai-user-embed
 ## Deployment Profiles
 
 - `docker-compose.yml` — локальный dev-профиль (включает локальные PostgreSQL/Redis и допускает `sslmode=disable`, `redis://`, `http://`).
-  Вторичные воркеры (`backend-crawler`, `backend-notifier`, `ai-service`) вынесены в profile `workers` и запускаются on-demand.
+  Вторичные воркеры (`backend-crawler`, `backend-notifier`, `ai-service`, `ai-ac-consumer`) вынесены в profile `workers` и запускаются on-demand.
   Для точечного запуска `ai-user-embed` доступен отдельный profile `ai-user-embed`.
 - `docker-compose.prod.yml` — production-профиль (только внешние TLS endpoints, `APP_ENV=production`).
 - `docker-compose.monitoring.yml` — профиль мониторинга (Prometheus + Alertmanager, profile `monitoring`).
@@ -101,7 +102,7 @@ docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile 
 
 Опционально можно переопределить источники exporter-метрик:
 - `REDIS_EXPORTER_REDIS_ADDR` (по умолчанию `redis://redis:6379`)
-- `REDIS_EXPORTER_CHECK_KEYS` (по умолчанию ключи очередей `ai-process/user-embed/match-notify` + `:processing/:dlq`)
+- `REDIS_EXPORTER_CHECK_KEYS` (по умолчанию ключи очередей `ai-process/user-embed/ac-batch/match-notify` + `:processing/:dlq`)
 
 Alertmanager читает секреты из:
 - `monitoring/alertmanager/secrets/telegram_bot_token`
@@ -122,6 +123,8 @@ docker compose --env-file .env.production -f docker-compose.prod.yml up -d --bui
 # (опционально) включить user-embed consumer
 docker compose --env-file .env.production -f docker-compose.prod.yml --profile ai-user-embed up -d ai-user-embed
 ```
+
+`ai-ac-consumer` входит в production compose по умолчанию (без отдельного profile).
 
 В production compose **не** поднимает локальные PostgreSQL/Redis контейнеры: используются внешние managed endpoints.
 
@@ -182,11 +185,22 @@ cd backend && go run ./cmd/crawler
 | `POSTGRES_PORT`/`REDIS_PORT`/`API_PORT` | Порты публикации на хосте (`POSTGRES_PORT` по умолчанию `55432` для локального dev/integration) |
 | `CRAWL_LIST_URL` | URL страницы проектов (по умолчанию Kwork) |
 | `CRAWL_RATE_SEC` | Интервал между запросами (по умолчанию 15) |
+| `CRAWL_RETRY_MAX_ATTEMPTS` | Количество попыток fetch для `429/5xx` (по умолчанию `3`) |
+| `CRAWL_RETRY_BASE_BACKOFF` | Базовый exponential backoff между retry (по умолчанию `1s`) |
+| `CRAWL_RETRY_MAX_BACKOFF` | Верхняя граница backoff между retry (по умолчанию `30s`) |
 | `EMBEDDING_MODEL` | Модель эмбеддингов `sentence-transformers` (должна совпадать с preloaded моделью в Docker image) |
 | `EMBEDDING_REQUIRE_LOCAL` | `1` (рекомендуется): запрещает runtime-загрузку модели из сети; сервис падает, если модель не найдена локально/в `EMBEDDING_MODELS_DIR` |
 | `OLLAMA_URL` | URL Ollama для AI classifier (локально по умолчанию `http://ollama:11434`) |
 | `OLLAMA_MODEL` | Модель Ollama для classifier (по умолчанию `llama3.2:3b-instruct-q4_K_M`) |
 | `OLLAMA_TIMEOUT_SEC` | Таймаут запроса к Ollama в секундах (по умолчанию `30`) |
+| `AC_BATCH_QUEUE` | Redis-очередь batch-задач Actor-Critic (по умолчанию `ac-batch`) |
+| `AC_BATCH_INTERVAL_SEC` | Интервал планировщика batch в `ai-ac-consumer` (по умолчанию `300`) |
+| `AC_BATCH_MIN_JOBS`/`AC_BATCH_MAX_JOBS` | Границы размера batch из pending-совпадений (по умолчанию `1` и `20`) |
+| `AC_SCORE_THRESHOLD` | Порог Critic (0..10) для отправки batch-нотификации (по умолчанию `5.0`) |
+| `AC_MAX_ATTEMPTS` | Максимум итераций Actor-Critic loop на один batch (по умолчанию `3`) |
+| `AC_MAX_JOBS_PER_SELECTION` | Сколько объявлений Actor возвращает за итерацию (по умолчанию `5`) |
+| `ACTOR_OLLAMA_MODEL`/`CRITIC_OLLAMA_MODEL` | Модели Ollama для Actor/Critic (по умолчанию `llama3.2:3b-instruct-q4_K_M`) |
+| `ACTOR_OLLAMA_TIMEOUT_SEC`/`CRITIC_OLLAMA_TIMEOUT_SEC` | Таймауты запросов Actor/Critic к Ollama (по умолчанию `45` и `30`) |
 
 Полный список: `.env.example`. Документация: `docs/env_setup.md`.
 
