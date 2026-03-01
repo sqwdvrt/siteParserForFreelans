@@ -177,6 +177,7 @@ jobs:
             git fetch --all --prune
             git checkout --detach "${{ needs.resolve-target.outputs.deploy_sha }}"
             git clean -ffdx -e .env.production
+            bash ./scripts/validate-env-production.sh .env.production
             docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
             docker compose --env-file .env.production -f docker-compose.prod.yml ps
 
@@ -200,7 +201,7 @@ jobs:
     needs:
       - resolve-target
       - deploy-staging
-    if: ${{ needs.resolve-target.outputs.run_production == 'true' }}
+    if: ${{ needs.resolve-target.outputs.run_staging == 'true' }}
     concurrency:
       group: deploy-staging-smoke-e2e-gate
       cancel-in-progress: false
@@ -236,17 +237,30 @@ jobs:
             fi
             bash ./scripts/staging_smoke_e2e_gate.sh
 
-  deploy-production:
+  production-approval:
     runs-on: ubuntu-latest
     needs:
       - resolve-target
       - deploy-staging
       - staging-smoke-e2e-gate
     if: ${{ needs.resolve-target.outputs.run_production == 'true' }}
+    environment: production
+    steps:
+      - name: Await production approval
+        run: echo "Production deployment approved."
+
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs:
+      - resolve-target
+      - deploy-staging
+      - staging-smoke-e2e-gate
+      - production-approval
+    if: ${{ needs.resolve-target.outputs.run_production == 'true' }}
+    environment: production
     concurrency:
       group: deploy-production
       cancel-in-progress: false
-    environment: production
     steps:
       - name: Deploy to production host
         uses: appleboy/ssh-action@v1.2.0
@@ -262,6 +276,7 @@ jobs:
             git fetch --all --prune
             git checkout --detach "${{ needs.resolve-target.outputs.deploy_sha }}"
             git clean -ffdx -e .env.production
+            bash ./scripts/validate-env-production.sh .env.production
             docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
             docker compose --env-file .env.production -f docker-compose.prod.yml ps
 

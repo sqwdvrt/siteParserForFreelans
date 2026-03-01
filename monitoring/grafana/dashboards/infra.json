@@ -137,10 +137,68 @@
       }
     },
     {
+      "id": 10,
+      "title": "backend-crawler",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 12, "x": 0, "y": 3 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "up{job=\"backend-crawler\"}",
+          "legendFormat": "backend-crawler",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red", "index": 0 }, "1": { "text": "UP", "color": "green", "index": 1 } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [] }
+        }
+      }
+    },
+    {
+      "id": 11,
+      "title": "backend-notifier",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 12, "x": 12, "y": 3 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "up{job=\"backend-notifier\"}",
+          "legendFormat": "backend-notifier",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red", "index": 0 }, "1": { "text": "UP", "color": "green", "index": 1 } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [] }
+        }
+      }
+    },
+    {
       "id": 5,
       "title": "PostgreSQL Active Connections",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 3 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 6 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -174,7 +232,7 @@
       "id": 6,
       "title": "PostgreSQL Transaction Rate",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 3 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 6 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -206,7 +264,7 @@
       "id": 7,
       "title": "Redis Memory Used",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 11 },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 14 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -238,7 +296,7 @@
       "id": 8,
       "title": "Redis Connected Clients",
       "type": "timeseries",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 11 },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 14 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -270,7 +328,7 @@
       "id": 9,
       "title": "Scrape Targets Up",
       "type": "timeseries",
-      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 19 },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 22 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {

@@ -195,7 +195,7 @@ services:
   ollama:
     profiles:
       - workers
-    image: ollama/ollama:latest
+    image: ${OLLAMA_IMAGE:-ollama/ollama@sha256:006ad593108a705eafc8ea8496a30765222bdab17b1a1b0bbe3d50ff2e70fbf4}
     ports:
       - "${OLLAMA_BIND_IP:-127.0.0.1}:${OLLAMA_PORT:-11434}:11434"
     volumes:

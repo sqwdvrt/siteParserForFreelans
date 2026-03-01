@@ -12,6 +12,7 @@ GO_GOCACHE="${GO_GOCACHE:-${ROOT_DIR}/backend/.gocache-${GO_TOOLCHAIN}}"
 PY_MODE="local"
 PIP_AUDIT_REQ_PATH="ai-service/requirements.txt"
 AI_VENV_PYTHON="${ROOT_DIR}/ai-service/.venv/bin/python"
+SECURITY_BASELINE_SKIP_PIP_AUDIT="${SECURITY_BASELINE_SKIP_PIP_AUDIT:-0}"
 
 echo "[security] Validating pinned baseline versions"
 
@@ -138,21 +139,25 @@ mkdir -p "${GO_GOMODCACHE}" "${GO_GOCACHE}"
     go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 )
 
-echo "[security] Running pip-audit"
-if [[ "$PY_MODE" == "docker" ]]; then
-  docker run --rm --entrypoint sh siteparserforfreelans-ai-service -lc \
-    'python -m pip install --upgrade pip pip-audit >/dev/null && python -m pip_audit -r /app/requirements.txt'
+if [[ "$SECURITY_BASELINE_SKIP_PIP_AUDIT" == "1" ]]; then
+  echo "[security] Skipping pip-audit (SECURITY_BASELINE_SKIP_PIP_AUDIT=1)"
 else
-  if is_python_virtualenv "${PY_CMD[@]}"; then
-    echo "[security] Detected virtualenv Python; installing pip-audit into venv (without --user)"
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-      "${PY_CMD[@]}" -m pip install --upgrade pip pip-audit >/dev/null
-    "${PY_CMD[@]}" -m pip_audit -r "$PIP_AUDIT_REQ_PATH"
+  echo "[security] Running pip-audit"
+  if [[ "$PY_MODE" == "docker" ]]; then
+    docker run --rm --entrypoint sh siteparserforfreelans-ai-service -lc \
+      'python -m pip install --upgrade pip pip-audit >/dev/null && python -m pip_audit -r /app/requirements.txt'
   else
-    PIP_DISABLE_PIP_VERSION_CHECK=1 PYTHONUSERBASE="$PY_USER_BASE" HOME="$ROOT_DIR" \
-      "${PY_CMD[@]}" -m pip install --upgrade --user pip pip-audit >/dev/null
-    PYTHONUSERBASE="$PY_USER_BASE" HOME="$ROOT_DIR" \
+    if is_python_virtualenv "${PY_CMD[@]}"; then
+      echo "[security] Detected virtualenv Python; installing pip-audit into venv (without --user)"
+      PIP_DISABLE_PIP_VERSION_CHECK=1 \
+        "${PY_CMD[@]}" -m pip install --upgrade pip pip-audit >/dev/null
       "${PY_CMD[@]}" -m pip_audit -r "$PIP_AUDIT_REQ_PATH"
+    else
+      PIP_DISABLE_PIP_VERSION_CHECK=1 PYTHONUSERBASE="$PY_USER_BASE" HOME="$ROOT_DIR" \
+        "${PY_CMD[@]}" -m pip install --upgrade --user pip pip-audit >/dev/null
+      PYTHONUSERBASE="$PY_USER_BASE" HOME="$ROOT_DIR" \
+        "${PY_CMD[@]}" -m pip_audit -r "$PIP_AUDIT_REQ_PATH"
+    fi
   fi
 fi
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	stdhttp "net/http"
@@ -88,6 +89,11 @@ func main() {
 	retryMaxBackoff, err := parsePositiveDurationEnv("CRAWL_RETRY_MAX_BACKOFF", 30*time.Second)
 	if err != nil {
 		slog.Error("invalid CRAWL_RETRY_MAX_BACKOFF", "err", err)
+		os.Exit(1)
+	}
+	crawlRunTimeout, err := parsePositiveDurationEnv("CRAWL_RUN_TIMEOUT", 10*time.Minute)
+	if err != nil {
+		slog.Error("invalid CRAWL_RUN_TIMEOUT", "err", err)
 		os.Exit(1)
 	}
 	if retryMaxBackoff < retryBaseBackoff {
@@ -189,12 +195,19 @@ func main() {
 		defer observeCrawlerQueueDepth(rdb, crawlerMetrics, queueName)
 		traceID := observability.NewTraceID()
 		crawlCtx := observability.WithTraceID(ctx, traceID)
-		slog.Info("crawl run started", "url", listURL, "trace_id", traceID)
+		crawlCtx, cancelCrawl := context.WithTimeout(crawlCtx, crawlRunTimeout)
+		defer cancelCrawl()
+		slog.Info("crawl run started", "url", listURL, "trace_id", traceID, "timeout", crawlRunTimeout)
 		saved, err := crawl.Execute(crawlCtx, listURL)
 		if err != nil {
-			if crawlCtx.Err() != nil {
+			if errors.Is(crawlCtx.Err(), context.Canceled) {
 				crawlerMetrics.ObserveRunInterrupted(time.Since(startedAt))
 				slog.Info("crawl interrupted by shutdown")
+				return
+			}
+			if errors.Is(crawlCtx.Err(), context.DeadlineExceeded) {
+				crawlerMetrics.ObserveRunFailure(time.Since(startedAt))
+				slog.Error("crawl timed out", "timeout", crawlRunTimeout, "trace_id", traceID)
 				return
 			}
 			crawlerMetrics.ObserveRunFailure(time.Since(startedAt))

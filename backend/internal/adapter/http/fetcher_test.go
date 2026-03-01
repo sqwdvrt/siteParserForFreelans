@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -571,5 +572,47 @@ func TestFetcher_WaitForRateLimitAndOpenCircuitCheck_SerializesConcurrentWaiters
 	gap := second.at.Sub(first.at)
 	if gap < rateLimit/2 {
 		t.Fatalf("waiters released too close: gap=%s, want >=%s", gap, rateLimit/2)
+	}
+}
+
+func TestFetcher_WaitForRateLimitAndOpenCircuitCheck_ConcurrentStartNoSharedWindow(t *testing.T) {
+	rateLimit := 70 * time.Millisecond
+	f := newTestFetcher(Config{RateLimit: rateLimit})
+	domain := "kwork.ru"
+	f.mu.Lock()
+	f.lastFetch[domain] = time.Now()
+	f.mu.Unlock()
+
+	type result struct {
+		at  time.Time
+		err error
+	}
+	const workers = 3
+	start := make(chan struct{})
+	results := make(chan result, workers)
+
+	for i := 0; i < workers; i++ {
+		go func() {
+			<-start
+			err := f.waitForRateLimitAndOpenCircuitCheck(context.Background(), domain)
+			results <- result{at: time.Now(), err: err}
+		}()
+	}
+	close(start)
+
+	releasedAt := make([]time.Time, 0, workers)
+	for i := 0; i < workers; i++ {
+		r := <-results
+		if r.err != nil {
+			t.Fatalf("waiter %d err: %v", i, r.err)
+		}
+		releasedAt = append(releasedAt, r.at)
+	}
+	sort.Slice(releasedAt, func(i, j int) bool { return releasedAt[i].Before(releasedAt[j]) })
+	for i := 1; i < len(releasedAt); i++ {
+		gap := releasedAt[i].Sub(releasedAt[i-1])
+		if gap < rateLimit/2 {
+			t.Fatalf("concurrent waiters released too close: gap=%s, want >=%s", gap, rateLimit/2)
+		}
 	}
 }

@@ -257,6 +257,10 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 }
 
 func (f *Fetcher) waitForRateLimitAndOpenCircuitCheck(ctx context.Context, domain string) error {
+	var (
+		slotReserved bool
+		reservedAt   time.Time
+	)
 	for {
 		now := time.Now()
 		wait := time.Duration(0)
@@ -266,18 +270,25 @@ func (f *Fetcher) waitForRateLimitAndOpenCircuitCheck(ctx context.Context, domai
 			f.mu.Unlock()
 			return err
 		}
-		if last, ok := f.lastFetch[domain]; ok {
-			elapsed := now.Sub(last)
-			if elapsed < f.rateLimit {
-				wait = f.rateLimit - elapsed
+		if !slotReserved {
+			// Reserve a domain slot while holding the lock so concurrent
+			// goroutines cannot pass the same rate-limit window.
+			reservedAt = now
+			if last, ok := f.lastFetch[domain]; ok {
+				nextAllowed := last.Add(f.rateLimit)
+				if nextAllowed.After(reservedAt) {
+					reservedAt = nextAllowed
+				}
 			}
+			f.lastFetch[domain] = reservedAt
+			slotReserved = true
 		}
+		wait = reservedAt.Sub(now)
+		f.mu.Unlock()
+
 		if wait <= 0 {
-			f.lastFetch[domain] = now
-			f.mu.Unlock()
 			return nil
 		}
-		f.mu.Unlock()
 
 		timer := time.NewTimer(wait)
 		select {

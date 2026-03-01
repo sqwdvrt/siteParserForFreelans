@@ -21,7 +21,9 @@ docker run --rm \
   check rules /etc/prometheus/alerts.yml
 
 echo "[monitoring] amtool check config"
+ALERTMANAGER_TELEGRAM_BOT_TOKEN="${ALERTMANAGER_TELEGRAM_BOT_TOKEN:-dummy-token-for-config-check}" \
 ALERTMANAGER_TELEGRAM_CHAT_ID="${ALERTMANAGER_TELEGRAM_CHAT_ID:-123456789}" \
+ALERTMANAGER_SLACK_WEBHOOK_URL="${ALERTMANAGER_SLACK_WEBHOOK_URL:-}" \
   sh "${ROOT_DIR}/monitoring/alertmanager/render_config.sh" \
   "${ROOT_DIR}/monitoring/alertmanager/alertmanager.yml.tmpl" \
   "${TMP_DIR}/alertmanager.yml"

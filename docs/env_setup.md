@@ -4,6 +4,8 @@
 |------------|-----------|
 | **APP_ENV** | Режим запуска: `development` (локально) или `production` (включает строгие transport-policy проверки) |
 | **TELEGRAM_BOT_TOKEN** | [@BotFather](https://t.me/BotFather) → /newbot → скопировать токен |
+| **ALERTMANAGER_TELEGRAM_BOT_TOKEN / ALERTMANAGER_TELEGRAM_CHAT_ID** | Опциональные отдельные секреты Alertmanager (если не заданы, используются `TELEGRAM_BOT_TOKEN` и `TELEGRAM_ID`) |
+| **ALERTMANAGER_SLACK_WEBHOOK_URL** | Slack webhook для алертов Alertmanager (опционально) |
 | **LOG_LEVEL** | Уровень логов telegram-bot (`DEBUG`, `INFO`, `WARNING`, `ERROR`), по умолчанию `INFO` |
 | **DATABASE_URL** | PostgreSQL URL. Локально: `...?sslmode=disable`. В production: только `sslmode=require|verify-ca|verify-full` |
 | **POSTGRES_PASSWORD** | Сильный пароль PostgreSQL (обязателен; в `.env.example` только шаблон) |

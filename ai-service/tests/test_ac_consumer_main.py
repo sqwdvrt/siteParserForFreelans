@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import threading
 from pathlib import Path
 
 
@@ -127,3 +128,90 @@ def test_ready_file_lifecycle(tmp_path: Path) -> None:
 
     module._cleanup_ready_file(str(ready_file))
     assert not ready_file.exists()
+
+
+def test_shutdown_grace_sec_invalid_env_fallback(monkeypatch) -> None:
+    module = _load_ac_consumer_main_module()
+    monkeypatch.setenv(module.SHUTDOWN_GRACE_SEC_ENV, "bad-value")
+
+    assert module._shutdown_grace_sec() == module.DEFAULT_SHUTDOWN_GRACE_SEC
+
+
+def test_main_forces_requeue_on_shutdown_timeout(monkeypatch, tmp_path: Path) -> None:
+    module = _load_ac_consumer_main_module()
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv(module.SHUTDOWN_GRACE_SEC_ENV, "0.05")
+    monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
+    monkeypatch.setenv("AC_BATCH_INTERVAL_SEC", "3600")
+
+    class FakeQueue:
+        def __init__(self) -> None:
+            self.nack_all_inflight_calls = 0
+            self._popped = False
+
+        def reclaim_stuck(self) -> None:
+            return None
+
+        def pop_blocking(self, timeout_sec: int = 1):
+            _ = timeout_sec
+            if self._popped:
+                return None
+            self._popped = True
+            return module.ACBatchMessage(user_id=10, job_ids=[1, 2], trace_id="trace-ac-1")
+
+        def ack(self, user_id: int) -> None:
+            _ = user_id
+
+        def nack(self, user_id: int) -> None:
+            _ = user_id
+
+        def nack_all_inflight(self) -> int:
+            self.nack_all_inflight_calls += 1
+            return 1
+
+    queue_obj = FakeQueue()
+    monkeypatch.setattr(module, "start_metrics_server_from_env", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "probe_ollama", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(module, "PostgresUserRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresJobRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresPendingJobsRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RedisMatchNotifyQueue", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RedisACBatchQueueConsumer", lambda *_args, **_kwargs: queue_obj)
+    monkeypatch.setattr(module, "OllamaActorAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RuleBasedActorAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "FallbackActorAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "OllamaCriticAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RuleBasedCriticAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "FallbackCriticAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "ActorCriticLoop", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "_schedule_pending_batches", lambda **_kwargs: 0)
+
+    handlers: dict[int, object] = {}
+
+    def fake_signal(sig, handler):
+        handlers[sig] = handler
+
+    monkeypatch.setattr(module.signal, "signal", fake_signal)
+
+    forced_exit_codes: list[int] = []
+    force_exit_event = threading.Event()
+
+    def fake_os_exit(code: int) -> None:
+        forced_exit_codes.append(code)
+        force_exit_event.set()
+
+    monkeypatch.setattr(module.os, "_exit", fake_os_exit)
+
+    class FakeProcessBatch:
+        def execute(self, _batch) -> None:
+            handlers[module.signal.SIGTERM](module.signal.SIGTERM, None)
+            assert force_exit_event.wait(timeout=1.0)
+
+    monkeypatch.setattr(module, "ProcessACBatchUseCase", lambda *_args, **_kwargs: FakeProcessBatch())
+
+    module.main()
+
+    assert forced_exit_codes == [1]
+    assert queue_obj.nack_all_inflight_calls == 1

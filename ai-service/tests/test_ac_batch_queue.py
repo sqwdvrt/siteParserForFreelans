@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from ai_service.adapter.redis.ac_batch_queue import ACBatchMessage, RedisACBatchQueueConsumer
 
@@ -155,3 +155,44 @@ def test_nack_sends_to_dlq_after_retry_limit(mock_from_url: MagicMock) -> None:
     queue.nack(10)
 
     pipe.rpush.assert_called_once_with("ac-batch:dlq", '{"user_id":10,"job_ids":[1,2],"_retry_count":6}')
+
+
+@patch("ai_service.adapter.redis.ac_batch_queue.redis.from_url")
+def test_nack_all_inflight_requeues_all_local_messages(mock_from_url: MagicMock) -> None:
+    mock_client = MagicMock()
+    mock_from_url.return_value = mock_client
+    raw_1 = json.dumps({"user_id": 10, "job_ids": [1, 2]})
+    raw_2 = json.dumps({"user_id": 20, "job_ids": [3], "trace_id": "trace-b"})
+    mock_client.brpoplpush.side_effect = [raw_1, raw_2]
+    pipe = MagicMock()
+    mock_client.pipeline.return_value = pipe
+    queue = RedisACBatchQueueConsumer("redis://localhost:6379/0")
+    assert queue.pop_blocking() == ACBatchMessage(user_id=10, job_ids=[1, 2])
+    assert queue.pop_blocking() == ACBatchMessage(user_id=20, job_ids=[3], trace_id="trace-b")
+
+    assert queue.nack_all_inflight() == 2
+    assert pipe.lrem.call_count == 2
+    assert pipe.rpush.call_count == 2
+    assert pipe.execute.call_count == 2
+    pipe.lrem.assert_has_calls(
+        [
+            call("ac-batch:processing", 1, raw_1),
+            call("ac-batch:processing", 1, raw_2),
+        ]
+    )
+    pipe.rpush.assert_has_calls(
+        [
+            call("ac-batch", '{"user_id":10,"job_ids":[1,2],"_retry_count":1}'),
+            call("ac-batch", '{"user_id":20,"job_ids":[3],"trace_id":"trace-b","_retry_count":1}'),
+        ]
+    )
+
+
+@patch("ai_service.adapter.redis.ac_batch_queue.redis.from_url")
+def test_nack_all_inflight_returns_zero_when_nothing_inflight(mock_from_url: MagicMock) -> None:
+    mock_client = MagicMock()
+    mock_from_url.return_value = mock_client
+    queue = RedisACBatchQueueConsumer("redis://localhost:6379/0")
+
+    assert queue.nack_all_inflight() == 0
+    mock_client.pipeline.assert_not_called()

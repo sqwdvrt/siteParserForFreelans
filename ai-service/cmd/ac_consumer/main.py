@@ -45,6 +45,8 @@ logger = logging.getLogger(__name__)
 
 READY_FILE_ENV = "AI_READY_FILE"
 DEFAULT_READY_FILE = "/tmp/ai-ac-consumer-ready"
+SHUTDOWN_GRACE_SEC_ENV = "AI_SHUTDOWN_GRACE_SEC"
+DEFAULT_SHUTDOWN_GRACE_SEC = 20.0
 
 
 def _cleanup_ready_file(ready_file: str) -> None:
@@ -89,6 +91,40 @@ def _schedule_pending_batches(
     if scheduled > 0:
         logger.info("scheduled %d ac batches", scheduled)
     return scheduled
+
+
+def _shutdown_grace_sec() -> float:
+    raw = os.getenv(SHUTDOWN_GRACE_SEC_ENV, str(DEFAULT_SHUTDOWN_GRACE_SEC))
+    try:
+        value = float(raw)
+    except ValueError:
+        logger.warning(
+            "invalid %s=%r, fallback to %.1fs",
+            SHUTDOWN_GRACE_SEC_ENV,
+            raw,
+            DEFAULT_SHUTDOWN_GRACE_SEC,
+        )
+        return DEFAULT_SHUTDOWN_GRACE_SEC
+    if value <= 0:
+        logger.warning(
+            "non-positive %s=%r, fallback to %.1fs",
+            SHUTDOWN_GRACE_SEC_ENV,
+            raw,
+            DEFAULT_SHUTDOWN_GRACE_SEC,
+        )
+        return DEFAULT_SHUTDOWN_GRACE_SEC
+    return value
+
+
+def _nack_inflight_messages(queue: object) -> int:
+    nack_all_inflight = getattr(queue, "nack_all_inflight", None)
+    if not callable(nack_all_inflight):
+        return 0
+    try:
+        return int(nack_all_inflight())
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("nack_all_inflight failed: %s", exc)
+        return 0
 
 
 def main() -> None:
@@ -167,8 +203,28 @@ def main() -> None:
     _mark_ready(ready_file)
 
     stop_event = threading.Event()
+    consumer_stopped = threading.Event()
+    grace_sec = _shutdown_grace_sec()
+    force_exit_lock = threading.Lock()
+    force_exit_started = False
+
+    def force_exit(exit_code: int) -> None:
+        requeued = _nack_inflight_messages(ac_batch_queue)
+        if requeued > 0:
+            logger.warning("requeued %d in-flight ac batches before forced shutdown", requeued)
+        os._exit(exit_code)
+
+    def force_exit_on_timeout() -> None:
+        if consumer_stopped.wait(timeout=grace_sec):
+            return
+        logger.error(
+            "graceful shutdown timed out after %.1fs; forcing process exit",
+            grace_sec,
+        )
+        force_exit(1)
 
     def on_signal(signum: int, frame: object) -> None:
+        nonlocal force_exit_started
         _ = frame
         try:
             signal_name = signal.Signals(signum).name
@@ -176,50 +232,65 @@ def main() -> None:
             signal_name = str(signum)
         logger.info("shutdown signal received: %s", signal_name)
         stop_event.set()
+        with force_exit_lock:
+            if not force_exit_started:
+                force_exit_started = True
+                t = threading.Thread(
+                    target=force_exit_on_timeout,
+                    daemon=True,
+                    name="ac-consumer-force-exit",
+                )
+                t.start()
+                return
+        logger.warning("second shutdown signal received, forcing immediate exit")
+        force_exit(1)
 
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
     logger.info("ac consumer started, queue=%s", ac_batch_queue_name)
     next_schedule_at = 0.0
-    while not stop_event.is_set():
-        now = time.monotonic()
-        if now >= next_schedule_at:
-            try:
-                _schedule_pending_batches(
-                    pending_repo=pending_repo,
-                    queue=ac_batch_queue,
-                    min_jobs=batch_min_jobs,
-                    max_jobs=batch_max_jobs,
-                    lease_timeout_sec=lease_timeout_sec,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.exception("failed to schedule ac batches: %s", exc)
-            next_schedule_at = now + max(1, batch_interval)
+    try:
+        while not stop_event.is_set():
+            now = time.monotonic()
+            if now >= next_schedule_at:
+                try:
+                    _schedule_pending_batches(
+                        pending_repo=pending_repo,
+                        queue=ac_batch_queue,
+                        min_jobs=batch_min_jobs,
+                        max_jobs=batch_max_jobs,
+                        lease_timeout_sec=lease_timeout_sec,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.exception("failed to schedule ac batches: %s", exc)
+                next_schedule_at = now + max(1, batch_interval)
 
-        try:
-            message = ac_batch_queue.pop_blocking(timeout_sec=1)
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("ac batch queue pop failed: %s", exc)
-            continue
-        if message is None:
-            continue
-        token = set_trace_id(message.trace_id)
-        try:
-            process_batch.execute(ACBatch(user_id=message.user_id, job_ids=message.job_ids))
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("ac batch processing failed user_id=%d: %s", message.user_id, exc)
             try:
-                ac_batch_queue.nack(message.user_id)
-            except Exception as nack_exc:  # noqa: BLE001
-                logger.exception("ac batch nack failed user_id=%d: %s", message.user_id, nack_exc)
-        else:
+                message = ac_batch_queue.pop_blocking(timeout_sec=1)
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("ac batch queue pop failed: %s", exc)
+                continue
+            if message is None:
+                continue
+            token = set_trace_id(message.trace_id)
             try:
-                ac_batch_queue.ack(message.user_id)
-            except Exception as ack_exc:  # noqa: BLE001
-                logger.exception("ac batch ack failed user_id=%d: %s", message.user_id, ack_exc)
-        finally:
-            reset_trace_id(token)
+                process_batch.execute(ACBatch(user_id=message.user_id, job_ids=message.job_ids))
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("ac batch processing failed user_id=%d: %s", message.user_id, exc)
+                try:
+                    ac_batch_queue.nack(message.user_id)
+                except Exception as nack_exc:  # noqa: BLE001
+                    logger.exception("ac batch nack failed user_id=%d: %s", message.user_id, nack_exc)
+            else:
+                try:
+                    ac_batch_queue.ack(message.user_id)
+                except Exception as ack_exc:  # noqa: BLE001
+                    logger.exception("ac batch ack failed user_id=%d: %s", message.user_id, ack_exc)
+            finally:
+                reset_trace_id(token)
+    finally:
+        consumer_stopped.set()
     logger.info("ac consumer stopped")
 
 

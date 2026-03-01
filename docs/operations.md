@@ -12,15 +12,18 @@
 - Prometheus config: `monitoring/prometheus/prometheus.yml`
 - Alert rules: `monitoring/prometheus/alerts.yml`
 - Alertmanager config template: `monitoring/alertmanager/alertmanager.yml.tmpl`
-- Alertmanager secrets dir: `monitoring/alertmanager/secrets`
 - Redis exporter: service `redis-exporter` (queue/Redis metrics via key lengths and exporter stats)
 - Postgres exporter: service `postgres-exporter` (DB/pool/runtime metrics)
 - CI-проверка конфигов: `.github/workflows/monitoring-gate.yml`
 
 Для доставки алертов в каналы:
-- Telegram bot token: `monitoring/alertmanager/secrets/telegram_bot_token`
-- Telegram chat_id: `monitoring/alertmanager/secrets/telegram_chat_id`
-- Slack webhook URL: `monitoring/alertmanager/secrets/slack_webhook_url`
+- `ALERTMANAGER_TELEGRAM_BOT_TOKEN` (fallback: `TELEGRAM_BOT_TOKEN`)
+- `ALERTMANAGER_TELEGRAM_CHAT_ID` (fallback: `TELEGRAM_ID`)
+- `ALERTMANAGER_SLACK_WEBHOOK_URL` (опционально)
+
+Не храните токены в plaintext-файлах `monitoring/alertmanager/secrets/*`.
+Если legacy-файлы уже созданы, удалите их:
+`rm -f monitoring/alertmanager/secrets/telegram_bot_token monitoring/alertmanager/secrets/telegram_chat_id monitoring/alertmanager/secrets/slack_webhook_url`
 
 ### 1.1 SLO (рекомендуемые целевые значения)
 - API availability (5xx + timeout): `>= 99.9%` за 30 дней.
@@ -188,3 +191,41 @@ DATABASE_URL='postgres://...' ./scripts/restore_postgres.sh /path/to/backup.dump
    - `SELECT COUNT(*)` по `users/jobs/notifications`;
    - `docker compose up` + `./scripts/e2e_test.sh`.
 4. Зафиксировать `actual RTO/RPO`.
+
+### 4.5 Manual rollback for DB migrations (forward-only)
+В репозитории нет `down`-миграций: `backend/migrations/*.sql` применяются только вперёд.
+Rollback делается вручную по runbook ниже.
+
+Триггеры:
+- после релиза появилась ошибка SQL/схемы;
+- сервисы падают на запросах к новым колонкам/индексам;
+- `backend-migrate` не может завершить миграции.
+
+Порядок rollback:
+1. Остановить запись в БД (writers), чтобы зафиксировать состояние:
+```bash
+docker compose stop backend-api backend-crawler backend-notifier ai-service ai-user-embed telegram-bot
+```
+2. Снять аварийный backup текущего (даже «плохого») состояния:
+```bash
+DATABASE_URL='postgres://...' BACKUP_DIR='./backups/emergency' ./scripts/backup_postgres.sh
+```
+3. Выбрать последний гарантированно рабочий dump (pre-release backup) и проверить checksum.
+4. Выполнить restore:
+```bash
+DATABASE_URL='postgres://...' ./scripts/restore_postgres.sh /path/to/pre_release.dump
+```
+5. Откатить приложение на предыдущий release image/tag (где проблемной миграции ещё нет).
+6. Поднять `backend-migrate` и убедиться, что миграции завершаются без ошибок.
+7. Поднять сервисы и выполнить smoke:
+```bash
+curl -fsS http://localhost:8080/healthz
+curl -fsS http://localhost:8080/readyz
+./scripts/e2e_test.sh
+```
+8. Зафиксировать в инциденте: какой dump использован, RPO/RTO, какие миграции признаны проблемными.
+
+Если полный restore недопустим:
+- сделать forward-fix (новая миграция, исправляющая схему), это приоритетный путь;
+- ручной SQL rollback допустим только для явно обратимых изменений (например, лишний индекс),
+  и только после аварийного backup из шага 2.

@@ -295,6 +295,11 @@ jobs:
           cache: "pip"
           cache-dependency-path: ai-service/requirements.txt
 
+      - name: Install PostgreSQL client tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16 || sudo apt-get install -y postgresql-client
+
       - name: Install AI dependencies
         run: python -m pip install -r ai-service/requirements.txt
 
@@ -329,6 +334,9 @@ jobs:
               raise SystemExit(f"failed to apply migrations: {last_err}")
           PY
 
+      - name: Backup/restore smoke test
+        run: ./scripts/backup_restore_smoke.sh
+
       - name: Run backend integration tests
         run: |
           cd backend
@@ -339,3 +347,118 @@ jobs:
         run: |
           cd ai-service
           INTEGRATION_TESTS=1 python -m pytest -q -m integration
+
+  e2e-compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Prepare CI env file
+        # Use .env.example values as-is: passwords are ≥16 chars and match
+        # what the security validator requires (dev mode, APP_ENV=development).
+        run: cp .env.example .env
+
+      - name: Start backend API stack
+        # Brings up postgres → redis → backend-migrate → backend-api.
+        # No --profile workers: ai-service / ollama / crawler / notifier are excluded.
+        run: docker compose up -d backend-api
+
+      - name: Wait for API to become healthy
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
+              echo "API healthy after $((i * 3))s"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "ERROR: API did not become healthy within 180s"
+          docker compose logs --no-color
+          exit 1
+
+      - name: Smoke — GET /healthz and /readyz
+        run: |
+          set -euo pipefail
+          curl -sf http://127.0.0.1:8080/healthz
+          curl -sf http://127.0.0.1:8080/readyz
+          echo "OK: healthz and readyz"
+
+      - name: E2E — POST /users and PUT /users/{id}/profile
+        env:
+          # Match the values written into .env via .env.example above.
+          API_AUTH_TOKEN: change_me_long_random_token
+          API_USER_HMAC_SECRET: change_me_different_long_random_secret
+        run: |
+          set -euo pipefail
+
+          TG_ID="987654321"
+          API_URL="http://127.0.0.1:8080"
+
+          sign_user_request() {
+            local method="$1" path="$2" tgid="$3" ts="$4" nonce="$5" body="$6"
+            local body_hash
+            body_hash="$(printf '%s' "$body" | openssl dgst -sha256 -binary | xxd -p -c 256)"
+            printf '%s\n%s\n%s\n%s\n%s\n%s' \
+              "$method" "$path" "$tgid" "$ts" "$nonce" "$body_hash" \
+              | openssl dgst -sha256 -hmac "$API_USER_HMAC_SECRET" -binary | xxd -p -c 256
+          }
+
+          # --- POST /users ---
+          post_body="{\"telegram_id\":${TG_ID}}"
+          post_ts="$(date +%s)"
+          post_nonce="$(openssl rand -hex 16)"
+          post_sig="$(sign_user_request POST /users "$TG_ID" "$post_ts" "$post_nonce" "$post_body")"
+          post_resp="$(curl -sS -w '\n%{http_code}' -X POST "${API_URL}/users" \
+            -H "Authorization: Bearer ${API_AUTH_TOKEN}" \
+            -H "X-Telegram-ID: ${TG_ID}" \
+            -H "X-Request-Timestamp: ${post_ts}" \
+            -H "X-Request-Nonce: ${post_nonce}" \
+            -H "X-Request-Signature: ${post_sig}" \
+            -H "Content-Type: application/json" \
+            -d "$post_body")"
+          post_code="$(printf '%s' "$post_resp" | tail -n1)"
+          post_body_resp="$(printf '%s' "$post_resp" | sed '$d')"
+          [ "$post_code" = "200" ] || {
+            echo "ERROR: POST /users returned HTTP ${post_code}"
+            echo "$post_body_resp"
+            exit 1
+          }
+          user_id="$(printf '%s' "$post_body_resp" | grep -o '"user_id":[0-9]*' | cut -d: -f2)"
+          [ -n "$user_id" ] || {
+            echo "ERROR: failed to parse user_id from: $post_body_resp"
+            exit 1
+          }
+          echo "OK: POST /users → user_id=${user_id}"
+
+          # --- PUT /users/{id}/profile ---
+          put_body='{"profile_text":"CI e2e test — golang developer 5 years"}'
+          put_path="/users/${user_id}/profile"
+          put_ts="$(date +%s)"
+          put_nonce="$(openssl rand -hex 16)"
+          put_sig="$(sign_user_request PUT "$put_path" "$TG_ID" "$put_ts" "$put_nonce" "$put_body")"
+          put_code="$(curl -sS -o /dev/null -w '%{http_code}' -X PUT "${API_URL}${put_path}" \
+            -H "Authorization: Bearer ${API_AUTH_TOKEN}" \
+            -H "X-Telegram-ID: ${TG_ID}" \
+            -H "X-Request-Timestamp: ${put_ts}" \
+            -H "X-Request-Nonce: ${put_nonce}" \
+            -H "X-Request-Signature: ${put_sig}" \
+            -H "Content-Type: application/json" \
+            -d "$put_body")"
+          [ "$put_code" = "204" ] || {
+            echo "ERROR: PUT ${put_path} returned HTTP ${put_code}"
+            exit 1
+          }
+          echo "OK: PUT /profile → 204"
+
+          echo "E2E PASSED"
+
+      - name: Dump service logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

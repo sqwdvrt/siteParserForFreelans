@@ -84,11 +84,12 @@ docker compose --profile ai-user-embed up -d ai-user-embed
 ### Monitoring (Docker Compose)
 
 ```bash
-# Подготовить secrets для Alertmanager каналов (Telegram + Slack)
-printf '%s' "$TELEGRAM_BOT_TOKEN" > monitoring/alertmanager/secrets/telegram_bot_token
-printf '%s' "$TELEGRAM_ID" > monitoring/alertmanager/secrets/telegram_chat_id
-printf '%s' "$ALERTMANAGER_SLACK_WEBHOOK_URL" > monitoring/alertmanager/secrets/slack_webhook_url
-chmod 600 monitoring/alertmanager/secrets/telegram_bot_token monitoring/alertmanager/secrets/telegram_chat_id monitoring/alertmanager/secrets/slack_webhook_url
+# Alertmanager получает секреты из env:
+# - ALERTMANAGER_TELEGRAM_BOT_TOKEN (или TELEGRAM_BOT_TOKEN)
+# - ALERTMANAGER_TELEGRAM_CHAT_ID (или TELEGRAM_ID)
+# - ALERTMANAGER_SLACK_WEBHOOK_URL (опционально)
+# Не сохраняйте эти значения в plaintext-файлы monitoring/alertmanager/secrets/*
+# Очистка legacy-файлов (если были): rm -f monitoring/alertmanager/secrets/telegram_bot_token monitoring/alertmanager/secrets/telegram_chat_id monitoring/alertmanager/secrets/slack_webhook_url
 
 # Поднять приложение + monitoring stack
 docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile monitoring up -d
@@ -103,11 +104,6 @@ docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile 
 Опционально можно переопределить источники exporter-метрик:
 - `REDIS_EXPORTER_REDIS_ADDR` (по умолчанию `redis://redis:6379`)
 - `REDIS_EXPORTER_CHECK_KEYS` (по умолчанию ключи очередей `ai-process/user-embed/ac-batch/match-notify` + `:processing/:dlq`)
-
-Alertmanager читает секреты из:
-- `monitoring/alertmanager/secrets/telegram_bot_token`
-- `monitoring/alertmanager/secrets/telegram_chat_id`
-- `monitoring/alertmanager/secrets/slack_webhook_url`
 
 ### Production (Docker Compose)
 

@@ -9,6 +9,7 @@ services:
       - --web.enable-lifecycle
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/recording_rules.yml:/etc/prometheus/recording_rules.yml:ro
       - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
       - prometheus_data:/prometheus
     ports:
@@ -22,6 +23,12 @@ services:
     image: prom/alertmanager:v0.27.0
     profiles:
       - monitoring
+    environment:
+      TELEGRAM_BOT_TOKEN: "${TELEGRAM_BOT_TOKEN:-}"
+      TELEGRAM_ID: "${TELEGRAM_ID:-}"
+      ALERTMANAGER_TELEGRAM_BOT_TOKEN: "${ALERTMANAGER_TELEGRAM_BOT_TOKEN:-}"
+      ALERTMANAGER_TELEGRAM_CHAT_ID: "${ALERTMANAGER_TELEGRAM_CHAT_ID:-}"
+      ALERTMANAGER_SLACK_WEBHOOK_URL: "${ALERTMANAGER_SLACK_WEBHOOK_URL:-}"
     entrypoint:
       - /bin/sh
       - /usr/local/bin/alertmanager-entrypoint.sh
@@ -29,8 +36,9 @@ services:
       - ./monitoring/alertmanager/alertmanager.yml.tmpl:/etc/alertmanager/alertmanager.yml.tmpl:ro
       - ./monitoring/alertmanager/render_config.sh:/usr/local/bin/render-alertmanager-config.sh:ro
       - ./monitoring/alertmanager/docker-entrypoint.sh:/usr/local/bin/alertmanager-entrypoint.sh:ro
-      - ./monitoring/alertmanager/secrets:/etc/alertmanager/secrets:ro
       - alertmanager_data:/alertmanager
+    tmpfs:
+      - /tmp:size=1m,mode=1777
     ports:
       - "${ALERTMANAGER_BIND_IP:-127.0.0.1}:${ALERTMANAGER_PORT:-9093}:9093"
     restart: unless-stopped

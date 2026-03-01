@@ -42,6 +42,28 @@ groups:
           summary: "High backend-api p95 latency"
           description: "p95 latency is above 500ms for 10 minutes."
 
+  - name: siteparser-workers
+    rules:
+      - alert: SiteParserCrawlerDown
+        expr: up{job="backend-crawler"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: backend-crawler
+        annotations:
+          summary: "backend-crawler is down"
+          description: "Prometheus cannot scrape backend-crawler /metrics for more than 2 minutes."
+
+      - alert: SiteParserNotifierDown
+        expr: up{job="backend-notifier"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: backend-notifier
+        annotations:
+          summary: "backend-notifier is down"
+          description: "Prometheus cannot scrape backend-notifier /metrics for more than 2 minutes."
+
   - name: siteparser-infra
     rules:
       - alert: SiteParserRedisExporterDown
@@ -306,3 +328,131 @@ groups:
         annotations:
           summary: "Ollama fully degraded — all requests use rule-based fallback ({{ $labels.pipeline }})"
           description: "Pipeline {{ $labels.pipeline }} is using rule-based fallback for >95% of calls. Ollama is likely down."
+
+  # ---------------------------------------------------------------------------
+  # SLO burn-rate alerts (30-day window)
+  #
+  # Availability SLO : 99%   → error budget  = 1%  (0.01)
+  # Latency SLO      : p95 < 500ms → latency budget = 5% (0.05)
+  #
+  # Three levels, each using a short + long window pair:
+  #   page      (critical) : burn ≥ 14.4× — consumes 2% of budget in 1 h
+  #   ticket    (warning)  : burn ≥  6×   — consumes 5% of budget in 6 h
+  #   slow-burn (warning)  : burn ≥  1×   — consumes 10% of budget in 3 d
+  #
+  # Expressions reference recording rules from recording_rules.yml.
+  # ---------------------------------------------------------------------------
+  - name: siteparser-slo-burn-rate
+    rules:
+      # -----------------------------------------------------------------------
+      # Availability SLO burn-rate
+      # -----------------------------------------------------------------------
+
+      # page: 14.4× burn — 2% of monthly budget exhausted in ~1 hour
+      - alert: SiteParserApiBurnRateCritical
+        expr: |
+          siteparser:api_error_ratio:rate1m > (14.4 * 0.01)
+          and
+          siteparser:api_error_ratio:rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: critical
+          service: backend-api
+          slo: availability
+        annotations:
+          summary: "API error SLO — critical burn rate (14.4×)"
+          description: >
+            Error rate is burning through the monthly 1% budget at 14.4× speed
+            (short window: {{ $value | humanizePercentage }}).
+            At this rate ~2% of the 30-day budget will be exhausted in 1 hour.
+
+      # ticket: 6× burn — 5% of monthly budget exhausted in ~6 hours
+      - alert: SiteParserApiBurnRateHigh
+        expr: |
+          siteparser:api_error_ratio:rate5m > (6 * 0.01)
+          and
+          siteparser:api_error_ratio:rate30m > (6 * 0.01)
+        for: 10m
+        labels:
+          severity: warning
+          service: backend-api
+          slo: availability
+        annotations:
+          summary: "API error SLO — high burn rate (6×)"
+          description: >
+            Error rate is burning through the monthly 1% budget at 6× speed
+            (5-min window: {{ $value | humanizePercentage }}).
+            At this rate ~5% of the 30-day budget will be exhausted in 6 hours.
+
+      # slow-burn: 1× burn — 10% of monthly budget exhausted in ~3 days
+      - alert: SiteParserApiBurnRateSlow
+        expr: |
+          siteparser:api_error_ratio:rate30m > (1 * 0.01)
+          and
+          siteparser:api_error_ratio:rate6h > (1 * 0.01)
+        for: 1h
+        labels:
+          severity: warning
+          service: backend-api
+          slo: availability
+        annotations:
+          summary: "API error SLO — slow burn (1×)"
+          description: >
+            Error rate equals the monthly SLO budget rate
+            (30-min window: {{ $value | humanizePercentage }}).
+            At this rate ~10% of the 30-day budget will be exhausted in 3 days.
+
+      # -----------------------------------------------------------------------
+      # Latency SLO burn-rate  (budget = 5%: ≤5% of requests may exceed 500ms)
+      # -----------------------------------------------------------------------
+
+      # page: 14.4× burn → bad ratio > 72%
+      - alert: SiteParserApiLatencyBurnRateCritical
+        expr: |
+          siteparser:api_latency_bad_ratio:rate1m > (14.4 * 0.05)
+          and
+          siteparser:api_latency_bad_ratio:rate5m > (14.4 * 0.05)
+        for: 2m
+        labels:
+          severity: critical
+          service: backend-api
+          slo: latency
+        annotations:
+          summary: "API latency SLO — critical burn rate (14.4×)"
+          description: >
+            {{ $value | humanizePercentage }} of requests exceeded 500ms (1-min window).
+            Burning latency budget at 14.4×; ~2% of the 30-day budget consumed in ~1 hour.
+
+      # ticket: 6× burn → bad ratio > 30%
+      - alert: SiteParserApiLatencyBurnRateHigh
+        expr: |
+          siteparser:api_latency_bad_ratio:rate5m > (6 * 0.05)
+          and
+          siteparser:api_latency_bad_ratio:rate30m > (6 * 0.05)
+        for: 10m
+        labels:
+          severity: warning
+          service: backend-api
+          slo: latency
+        annotations:
+          summary: "API latency SLO — high burn rate (6×)"
+          description: >
+            {{ $value | humanizePercentage }} of requests exceeded 500ms (5-min window).
+            Burning latency budget at 6×; ~5% of the 30-day budget consumed in ~6 hours.
+
+      # slow-burn: 1× burn → bad ratio > 5%
+      - alert: SiteParserApiLatencyBurnRateSlow
+        expr: |
+          siteparser:api_latency_bad_ratio:rate30m > (1 * 0.05)
+          and
+          siteparser:api_latency_bad_ratio:rate6h > (1 * 0.05)
+        for: 1h
+        labels:
+          severity: warning
+          service: backend-api
+          slo: latency
+        annotations:
+          summary: "API latency SLO — slow burn (1×)"
+          description: >
+            {{ $value | humanizePercentage }} of requests exceeded 500ms (30-min window).
+            Burning latency budget at monthly rate; ~10% consumed in ~3 days.

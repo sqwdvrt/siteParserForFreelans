@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 from collections import defaultdict, deque
 from dataclasses import dataclass
 from typing import Any
@@ -35,6 +36,7 @@ class RedisACBatchQueueConsumer:
         self._dlq_queue = f"{queue_name}:dlq"
         self._max_nack_retries = DEFAULT_MAX_NACK_RETRIES
         self._inflight_by_user_id: dict[int, deque[tuple[str, str]]] = defaultdict(deque)
+        self._inflight_lock = threading.Lock()
 
     def enqueue(self, message: ACBatchMessage) -> None:
         self._client.lpush(self._queue, self._serialize(message))
@@ -54,7 +56,8 @@ class RedisACBatchQueueConsumer:
         if parsed is None:
             self._ack_raw(payload)
             return None
-        self._inflight_by_user_id[parsed.user_id].append((payload, parsed.trace_id))
+        with self._inflight_lock:
+            self._inflight_by_user_id[parsed.user_id].append((payload, parsed.trace_id))
         return parsed
 
     def ack(self, user_id: int) -> None:
@@ -65,11 +68,12 @@ class RedisACBatchQueueConsumer:
         self._ack_raw(raw)
 
     def trace_id(self, user_id: int) -> str:
-        inflight = self._inflight_by_user_id.get(user_id)
-        if not inflight:
-            return ""
-        _raw, trace_id = inflight[0]
-        return trace_id
+        with self._inflight_lock:
+            inflight = self._inflight_by_user_id.get(user_id)
+            if not inflight:
+                return ""
+            _raw, trace_id = inflight[0]
+            return trace_id
 
     def nack(self, user_id: int) -> None:
         inflight = self._take_inflight(user_id)
@@ -88,6 +92,20 @@ class RedisACBatchQueueConsumer:
             moved = self._client.rpoplpush(self._processing_queue, self._queue)
             if moved is None:
                 break
+
+    def nack_all_inflight(self) -> int:
+        with self._inflight_lock:
+            raws: list[str] = [raw for values in self._inflight_by_user_id.values() for raw, _trace_id in values]
+            self._inflight_by_user_id.clear()
+
+        for raw in raws:
+            out_raw, to_dlq = self._prepare_nack_payload(raw)
+            target_queue = self._dlq_queue if to_dlq else self._queue
+            pipe = self._client.pipeline(transaction=True)
+            pipe.lrem(self._processing_queue, 1, raw)
+            pipe.rpush(target_queue, out_raw)
+            pipe.execute()
+        return len(raws)
 
     @staticmethod
     def _serialize(message: ACBatchMessage) -> str:
@@ -149,13 +167,14 @@ class RedisACBatchQueueConsumer:
         )
 
     def _take_inflight(self, user_id: int) -> tuple[str, str] | None:
-        inflight = self._inflight_by_user_id.get(user_id)
-        if not inflight:
-            return None
-        raw = inflight.popleft()
-        if not inflight:
-            self._inflight_by_user_id.pop(user_id, None)
-        return raw
+        with self._inflight_lock:
+            inflight = self._inflight_by_user_id.get(user_id)
+            if not inflight:
+                return None
+            raw = inflight.popleft()
+            if not inflight:
+                self._inflight_by_user_id.pop(user_id, None)
+            return raw
 
     @staticmethod
     def _normalize_trace_id(raw: object) -> str:

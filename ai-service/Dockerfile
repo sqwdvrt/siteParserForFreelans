@@ -11,14 +11,14 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /build
 
 RUN python -m venv "${VENV_PATH}" && \
-    "${VENV_PATH}/bin/pip" install --upgrade pip "setuptools>=80.9.0" "wheel>=0.46.2"
+    "${VENV_PATH}/bin/pip" install --upgrade "pip==26.0" "setuptools==80.9.0" "wheel==0.46.2"
 
 COPY requirements.txt .
-RUN awk 'BEGIN{dev=0} /^# Dev/{dev=1} dev==0 {print}' requirements.txt > requirements.runtime.txt
+COPY requirements.runtime.lock .
 
 # Pin torch from CPU index explicitly to avoid pulling CUDA wheels.
 RUN "${VENV_PATH}/bin/pip" install --index-url https://download.pytorch.org/whl/cpu "torch==${TORCH_VERSION}" && \
-    "${VENV_PATH}/bin/pip" install -r requirements.runtime.txt
+    "${VENV_PATH}/bin/pip" install -r requirements.runtime.lock
 
 # Preload default embedding model into image to avoid runtime cold-start downloads.
 # Use isolated HF cache in build step to avoid stale lock waits across interrupted builds.
