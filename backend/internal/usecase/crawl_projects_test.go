@@ -71,6 +71,10 @@ func (m *mockRepo) GetByID(ctx context.Context, id int64) (*domain.Job, error) {
 	return nil, nil
 }
 
+func (m *mockRepo) GetByIDs(ctx context.Context, ids []int64) (map[int64]*domain.Job, error) {
+	return map[int64]*domain.Job{}, nil
+}
+
 func (m *mockRepo) ExistsByURL(ctx context.Context, url string) (bool, error) {
 	return m.exists[url], nil
 }

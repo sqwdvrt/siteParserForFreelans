@@ -161,6 +161,17 @@ func (s *stubJobRepo) GetByID(ctx context.Context, id int64) (*domain.Job, error
 	}
 	return nil, nil
 }
+func (s *stubJobRepo) GetByIDs(ctx context.Context, ids []int64) (map[int64]*domain.Job, error) {
+	result := make(map[int64]*domain.Job, len(ids))
+	for _, id := range ids {
+		if j, err := s.GetByID(ctx, id); err != nil {
+			return nil, err
+		} else if j != nil {
+			result[id] = j
+		}
+	}
+	return result, nil
+}
 func (s *stubJobRepo) ExistsByURL(ctx context.Context, url string) (bool, error) { return false, nil }
 
 type captureNotifier struct {

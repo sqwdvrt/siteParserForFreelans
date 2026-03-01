@@ -62,6 +62,32 @@ func (r *JobRepository) GetByID(ctx context.Context, id int64) (*domain.Job, err
 	return &j, nil
 }
 
+// GetByIDs возвращает map[id]*Job для всех найденных id. Один SQL-запрос.
+func (r *JobRepository) GetByIDs(ctx context.Context, ids []int64) (map[int64]*domain.Job, error) {
+	if len(ids) == 0 {
+		return map[int64]*domain.Job{}, nil
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT id, source, url, COALESCE(external_id, ''), title, COALESCE(description, ''),
+			COALESCE(budget, ''), skills, posted_at, raw_html, created_at
+		FROM jobs WHERE id = ANY($1)
+	`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make(map[int64]*domain.Job, len(ids))
+	for rows.Next() {
+		var j domain.Job
+		if err := rows.Scan(&j.ID, &j.Source, &j.URL, &j.ExternalID, &j.Title, &j.Description,
+			&j.Budget, &j.Skills, &j.PostedAt, &j.RawHTML, &j.CreatedAt); err != nil {
+			return nil, err
+		}
+		result[j.ID] = &j
+	}
+	return result, rows.Err()
+}
+
 // ExistsByURL проверяет наличие job по URL.
 func (r *JobRepository) ExistsByURL(ctx context.Context, url string) (bool, error) {
 	var exists bool

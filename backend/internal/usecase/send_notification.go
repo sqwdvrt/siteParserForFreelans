@@ -150,27 +150,39 @@ func (u *SendNotification) ExecuteBatch(
 		return nil
 	}
 
-	seen := make(map[int64]struct{}, len(jobs))
-	prepared := make([]batchDeliveryItem, 0, len(jobs))
+	// Дедупликация и сбор уникальных ID для одного batch-запроса.
+	type itemMeta struct {
+		title     string
+		whyItFits string
+		rank      int
+	}
+	metaByID := make(map[int64]itemMeta, len(jobs))
+	uniqueIDs := make([]int64, 0, len(jobs))
 	for _, item := range jobs {
 		if item.JobID <= 0 {
 			continue
 		}
-		if _, exists := seen[item.JobID]; exists {
-			continue
+		if _, dup := metaByID[item.JobID]; !dup {
+			metaByID[item.JobID] = itemMeta{title: item.Title, whyItFits: item.WhyItFits, rank: item.Rank}
+			uniqueIDs = append(uniqueIDs, item.JobID)
 		}
-		seen[item.JobID] = struct{}{}
+	}
 
-		job, err := u.jobRepo.GetByID(ctx, item.JobID)
-		if err != nil {
-			return fmt.Errorf("get job by id: %w", err)
-		}
-		if job == nil {
+	// Один SQL-запрос вместо N GetByID.
+	jobsMap, err := u.jobRepo.GetByIDs(ctx, uniqueIDs)
+	if err != nil {
+		return fmt.Errorf("get jobs by ids: %w", err)
+	}
+
+	prepared := make([]batchDeliveryItem, 0, len(uniqueIDs))
+	for _, jobID := range uniqueIDs {
+		job, ok := jobsMap[jobID]
+		if !ok {
 			continue
 		}
 
 		// For batch payload we don't have per-item match_score; store neutral score.
-		wasInserted, shouldSend, err := u.notifRepo.EnsurePending(ctx, userID, item.JobID, 0)
+		wasInserted, shouldSend, err := u.notifRepo.EnsurePending(ctx, userID, jobID, 0)
 		if err != nil {
 			return err
 		}
@@ -178,17 +190,18 @@ func (u *SendNotification) ExecuteBatch(
 			continue
 		}
 
+		meta := metaByID[jobID]
 		jobCopy := *job
-		if item.Title != "" {
-			jobCopy.Title = item.Title
+		if meta.title != "" {
+			jobCopy.Title = meta.title
 		}
 		prepared = append(prepared, batchDeliveryItem{
-			jobID:       item.JobID,
+			jobID:       jobID,
 			wasInserted: wasInserted,
 			payload: port.BatchNotifyItem{
 				Job:       &jobCopy,
-				WhyItFits: item.WhyItFits,
-				Rank:      item.Rank,
+				WhyItFits: meta.whyItFits,
+				Rank:      meta.rank,
 			},
 		})
 	}

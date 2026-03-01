@@ -74,14 +74,26 @@ func (m *mockUserRepo) UpdateProfile(ctx context.Context, userID int64, text str
 }
 
 type mockJobRepo struct {
-	getByIDFunc func(ctx context.Context, id int64) (*domain.Job, error)
+	getByIDFunc  func(ctx context.Context, id int64) (*domain.Job, error)
+	getByIDsFunc func(ctx context.Context, ids []int64) (map[int64]*domain.Job, error)
 }
 
 func (m *mockJobRepo) GetByID(ctx context.Context, id int64) (*domain.Job, error) {
 	if m.getByIDFunc != nil {
 		return m.getByIDFunc(ctx, id)
 	}
-	return &domain.Job{ID: 1, Title: "Job", URL: "https://kwork.ru/p/1"}, nil
+	return &domain.Job{ID: id, Title: "Job", URL: "https://kwork.ru/p/1"}, nil
+}
+
+func (m *mockJobRepo) GetByIDs(ctx context.Context, ids []int64) (map[int64]*domain.Job, error) {
+	if m.getByIDsFunc != nil {
+		return m.getByIDsFunc(ctx, ids)
+	}
+	result := make(map[int64]*domain.Job, len(ids))
+	for _, id := range ids {
+		result[id] = &domain.Job{ID: id, Title: "Job", URL: "https://kwork.ru/p/1"}
+	}
+	return result, nil
 }
 
 func (m *mockJobRepo) Save(ctx context.Context, job *domain.Job) (int64, error)  { return 1, nil }
@@ -608,5 +620,44 @@ func TestSendNotification_ExecuteBatch_DailyLimit_TrimsNewItems(t *testing.T) {
 	}
 	if len(markedJobIDs) != 2 {
 		t.Fatalf("marked jobs=%v, want 2 items", markedJobIDs)
+	}
+}
+
+// TestSendNotification_ExecuteBatch_SingleJobsQuery проверяет, что для батча из N job
+// GetByIDs вызывается ровно один раз (а не N раз GetByID).
+func TestSendNotification_ExecuteBatch_SingleJobsQuery(t *testing.T) {
+	getByIDsCalls := 0
+	uc := NewSendNotification(
+		&mockNotifRepo{
+			ensurePendingFunc: func(context.Context, int64, int64, float64) (bool, bool, error) {
+				return true, true, nil
+			},
+			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
+			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
+		},
+		&mockUserRepo{},
+		&mockJobRepo{
+			getByIDsFunc: func(_ context.Context, ids []int64) (map[int64]*domain.Job, error) {
+				getByIDsCalls++
+				result := make(map[int64]*domain.Job, len(ids))
+				for _, id := range ids {
+					result[id] = &domain.Job{ID: id, Title: "J", URL: "https://kwork.ru/p/1"}
+				}
+				return result, nil
+			},
+		},
+		&mockNotifier{},
+		5*time.Minute,
+		5,
+	)
+
+	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{
+		{JobID: 10}, {JobID: 20}, {JobID: 30}, {JobID: 40}, {JobID: 50},
+	}, 7.0)
+	if err != nil {
+		t.Fatalf("ExecuteBatch: %v", err)
+	}
+	if getByIDsCalls != 1 {
+		t.Fatalf("GetByIDs called %d times, want exactly 1", getByIDsCalls)
 	}
 }
