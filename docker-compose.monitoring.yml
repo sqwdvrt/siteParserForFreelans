@@ -17,6 +17,13 @@ services:
     depends_on:
       backend-api:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: ${PROMETHEUS_MEM_LIMIT:-1g}
+          cpus: '1.0'
+        reservations:
+          memory: 256m
     restart: unless-stopped
 
   alertmanager:
@@ -41,6 +48,13 @@ services:
       - /tmp:size=1m,mode=1777
     ports:
       - "${ALERTMANAGER_BIND_IP:-127.0.0.1}:${ALERTMANAGER_PORT:-9093}:9093"
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.25'
+        reservations:
+          memory: 32m
     restart: unless-stopped
 
   redis-exporter:
@@ -53,6 +67,13 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 64m
+          cpus: '0.1'
+        reservations:
+          memory: 16m
     restart: unless-stopped
 
   postgres-exporter:
@@ -64,6 +85,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.1'
+        reservations:
+          memory: 32m
     restart: unless-stopped
 
   grafana:
@@ -83,6 +111,13 @@ services:
       - "${GRAFANA_BIND_IP:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
     depends_on:
       - prometheus
+    deploy:
+      resources:
+        limits:
+          memory: ${GRAFANA_MEM_LIMIT:-512m}
+          cpus: '1.0'
+        reservations:
+          memory: 128m
     restart: unless-stopped
 
 volumes:

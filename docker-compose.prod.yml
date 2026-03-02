@@ -18,6 +18,13 @@ services:
     tmpfs:
       - /tmp:mode=1777,size=64m
       - /home/app:mode=0700,size=16m
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.5'
+        reservations:
+          memory: 32m
     restart: "no"
 
   backend-api:
@@ -40,6 +47,13 @@ services:
     volumes:
       - "${API_TLS_CERT_HOST_PATH:?set_API_TLS_CERT_HOST_PATH}:/run/secrets/api_tls_cert.pem:ro"
       - "${API_TLS_KEY_HOST_PATH:?set_API_TLS_KEY_HOST_PATH}:/run/secrets/api_tls_key.pem:ro"
+    deploy:
+      resources:
+        limits:
+          memory: ${API_MEM_LIMIT:-512m}
+          cpus: '1.0'
+        reservations:
+          memory: 128m
     read_only: true
     cap_drop:
       - ALL
@@ -80,6 +94,13 @@ services:
     tmpfs:
       - /tmp:mode=1777,size=64m
       - /home/app:mode=0700,size=16m
+    deploy:
+      resources:
+        limits:
+          memory: ${CRAWLER_MEM_LIMIT:-512m}
+          cpus: '1.0'
+        reservations:
+          memory: 128m
     depends_on:
       backend-migrate:
         condition: service_completed_successfully
@@ -112,6 +133,13 @@ services:
     tmpfs:
       - /tmp:mode=1777,size=64m
       - /home/app:mode=0700,size=16m
+    deploy:
+      resources:
+        limits:
+          memory: ${NOTIFIER_MEM_LIMIT:-256m}
+          cpus: '0.5'
+        reservations:
+          memory: 64m
     depends_on:
       backend-migrate:
         condition: service_completed_successfully
@@ -237,6 +265,31 @@ services:
     environment:
       APP_ENV: production
       API_URL: ${API_URL:?set_HTTPS_API_URL_in_.env.production}
+      TELEGRAM_HEARTBEAT_FILE: /tmp/telegram-bot-heartbeat
+      TELEGRAM_HEARTBEAT_MAX_AGE_SEC: ${TELEGRAM_HEARTBEAT_MAX_AGE_SEC:-90}
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >
+          import os, sys, time;
+          p=os.getenv("TELEGRAM_HEARTBEAT_FILE","/tmp/telegram-bot-heartbeat");
+          m=float(os.getenv("TELEGRAM_HEARTBEAT_MAX_AGE_SEC","90"));
+          now=time.time();
+          ok=os.path.exists(p) and (now-os.path.getmtime(p) <= m);
+          sys.exit(0 if ok else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: ${BOT_MEM_LIMIT:-256m}
+          cpus: '0.5'
+        reservations:
+          memory: 64m
     read_only: true
     cap_drop:
       - ALL

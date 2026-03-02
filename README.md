@@ -176,6 +176,8 @@ cd backend && go run ./cmd/crawler
 | `API_TLS_CERT_FILE`/`API_TLS_KEY_FILE` | Путь к TLS-сертификату и ключу API (обязательны в `APP_ENV=production`) |
 | `TELEGRAM_BOT_TOKEN` | Токен бота для уведомлений |
 | `TELEGRAM_ID` | Ваш chat_id (уведомления придут сюда) |
+| `NOTIFY_PRO_MAX_PER_DAY` | Предпочтительный суточный лимит уведомлений на пользователя (`backend-notifier`, по умолчанию `5`) |
+| `NOTIFY_MAX_PER_DAY` | Legacy fallback для суточного лимита уведомлений (если `NOTIFY_PRO_MAX_PER_DAY` не задан) |
 | `API_URL` | URL backend API (в production для telegram-bot только `https://`) |
 | `POSTGRES_BIND_IP`/`REDIS_BIND_IP`/`API_BIND_IP` | Привязка портов Docker к интерфейсу хоста (по умолчанию `127.0.0.1`; для внешней публикации нужно явно задать, например `0.0.0.0`) |
 | `POSTGRES_PORT`/`REDIS_PORT`/`API_PORT` | Порты публикации на хосте (`POSTGRES_PORT` по умолчанию `55432` для локального dev/integration) |

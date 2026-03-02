@@ -14,6 +14,13 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: ${POSTGRES_MEM_LIMIT:-1g}
+          cpus: '2.0'
+        reservations:
+          memory: 256m
 
   redis:
     image: redis:7-alpine
@@ -24,6 +31,13 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: ${REDIS_MEM_LIMIT:-256m}
+          cpus: '0.5'
+        reservations:
+          memory: 64m
 
   backend-migrate:
     build:
@@ -46,6 +60,13 @@ services:
     tmpfs:
       - /tmp:mode=1777,size=64m
       - /home/app:mode=0700,size=16m
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.5'
+        reservations:
+          memory: 32m
 
   backend-api:
     build:
@@ -66,6 +87,19 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: ${API_MEM_LIMIT:-512m}
+          cpus: '1.0'
+        reservations:
+          memory: 128m
     read_only: true
     cap_drop:
       - ALL
@@ -109,6 +143,13 @@ services:
     tmpfs:
       - /tmp:mode=1777,size=64m
       - /home/app:mode=0700,size=16m
+    deploy:
+      resources:
+        limits:
+          memory: ${CRAWLER_MEM_LIMIT:-512m}
+          cpus: '1.0'
+        reservations:
+          memory: 128m
 
   backend-notifier:
     profiles:
@@ -144,6 +185,13 @@ services:
     tmpfs:
       - /tmp:mode=1777,size=64m
       - /home/app:mode=0700,size=16m
+    deploy:
+      resources:
+        limits:
+          memory: ${NOTIFIER_MEM_LIMIT:-256m}
+          cpus: '0.5'
+        reservations:
+          memory: 64m
 
   ai-service:
     profiles:
@@ -206,6 +254,13 @@ services:
       timeout: 5s
       retries: 20
       start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: ${OLLAMA_MEM_LIMIT:-8g}
+          cpus: '4.0'
+        reservations:
+          memory: 4g
     security_opt:
       - no-new-privileges:true
 
@@ -294,9 +349,34 @@ services:
     env_file: .env
     environment:
       API_URL: http://backend-api:8080
+      TELEGRAM_HEARTBEAT_FILE: /tmp/telegram-bot-heartbeat
+      TELEGRAM_HEARTBEAT_MAX_AGE_SEC: ${TELEGRAM_HEARTBEAT_MAX_AGE_SEC:-90}
     depends_on:
       backend-api:
-        condition: service_started
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >
+          import os, sys, time;
+          p=os.getenv("TELEGRAM_HEARTBEAT_FILE","/tmp/telegram-bot-heartbeat");
+          m=float(os.getenv("TELEGRAM_HEARTBEAT_MAX_AGE_SEC","90"));
+          now=time.time();
+          ok=os.path.exists(p) and (now-os.path.getmtime(p) <= m);
+          sys.exit(0 if ok else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: ${BOT_MEM_LIMIT:-256m}
+          cpus: '0.5'
+        reservations:
+          memory: 64m
     read_only: true
     cap_drop:
       - ALL

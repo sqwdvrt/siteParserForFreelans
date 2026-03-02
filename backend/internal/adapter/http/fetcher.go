@@ -56,7 +56,11 @@ type Fetcher struct {
 	resolveIP               ResolveIPFunc
 	dial                    DialContextFunc
 	sleep                   SleepFunc
-	mu                      sync.Mutex
+	// proxySet=true означает, что все запросы идут через прокси.
+	// DNS-резолюция и IP-пиннинг в этом случае пропускаются — прокси сам
+	// разрешает DNS, мы ему доверяем как настроенному внешнему сервису.
+	proxySet bool
+	mu       sync.Mutex
 }
 
 type breakerState struct {
@@ -72,10 +76,14 @@ type Config struct {
 	RetryMaxAttempts        int
 	RetryBaseBackoff        time.Duration
 	RetryMaxBackoff         time.Duration
-	Transport               http.RoundTripper // для тестов: мок RoundTripper
-	ResolveIP               ResolveIPFunc     // для тестов: мок DNS-резолвера
-	Dial                    DialContextFunc   // для тестов: мок dialer
-	Sleep                   SleepFunc         // для тестов: мок ожидания backoff
+	// ProxyURL опциональный HTTP/HTTPS прокси, например "http://user:pass@proxy:8080".
+	// Если задан, DNS-резолюция и IP-пиннинг для целевых хостов пропускаются —
+	// прокси сам разрешает DNS. Поддерживаются схемы http и https.
+	ProxyURL  string
+	Transport http.RoundTripper // для тестов: мок RoundTripper
+	ResolveIP ResolveIPFunc     // для тестов: мок DNS-резолвера
+	Dial      DialContextFunc   // для тестов: мок dialer
+	Sleep     SleepFunc         // для тестов: мок ожидания backoff
 }
 
 func NewFetcher(cfg Config) *Fetcher {
@@ -137,6 +145,23 @@ func NewFetcher(cfg Config) *Fetcher {
 		base, ok := http.DefaultTransport.(*http.Transport)
 		if !ok {
 			transport = http.DefaultTransport
+		} else if cfg.ProxyURL != "" {
+			// Proxy mode: transport routes through proxy, DNS is resolved by the proxy.
+			// We validate the proxy URL here; main.go should also reject on startup.
+			proxyURL, err := url.Parse(cfg.ProxyURL)
+			if err == nil && (proxyURL.Scheme == "http" || proxyURL.Scheme == "https") {
+				cloned := base.Clone()
+				cloned.Proxy = http.ProxyURL(proxyURL)
+				// Use the plain dialer — no IP-pinning needed when going through proxy.
+				cloned.DialContext = dial
+				transport = cloned
+				f.proxySet = true
+			} else {
+				// Invalid proxy URL: fall back to direct connection with IP-pinning.
+				cloned := base.Clone()
+				cloned.DialContext = f.dialPinnedContext
+				transport = cloned
+			}
 		} else {
 			cloned := base.Clone()
 			cloned.DialContext = f.dialPinnedContext
@@ -366,6 +391,11 @@ func (f *Fetcher) validateParsedURL(ctx context.Context, u *url.URL) (context.Co
 	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
 	if blockedHosts[host] {
 		return ctx, fmt.Errorf("host not allowed: %s", host)
+	}
+	if f.proxySet {
+		// Proxy mode: DNS is resolved by the proxy server.
+		// Skip local DNS lookup and IP-pinning; scheme + host checks above are sufficient.
+		return ctx, nil
 	}
 	ips, err := f.resolveAllowedIPs(ctx, host)
 	if err != nil {

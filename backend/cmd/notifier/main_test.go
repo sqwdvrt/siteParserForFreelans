@@ -132,6 +132,33 @@ func TestNotifierEnvParsing_EmptyValueUsesFallback(t *testing.T) {
 	}
 }
 
+func TestNotifierEnvParsing_MaxPerDayPrefersProKey(t *testing.T) {
+	t.Setenv("NOTIFY_PRO_MAX_PER_DAY", "11")
+	t.Setenv("NOTIFY_MAX_PER_DAY", "5")
+
+	if got := getNotifierMaxPerDay(); got != 11 {
+		t.Fatalf("NOTIFY_PRO_MAX_PER_DAY must take precedence, got %d want 11", got)
+	}
+}
+
+func TestNotifierEnvParsing_MaxPerDayFallsBackToLegacyKey(t *testing.T) {
+	t.Setenv("NOTIFY_PRO_MAX_PER_DAY", "")
+	t.Setenv("NOTIFY_MAX_PER_DAY", "7")
+
+	if got := getNotifierMaxPerDay(); got != 7 {
+		t.Fatalf("legacy NOTIFY_MAX_PER_DAY fallback failed, got %d want 7", got)
+	}
+}
+
+func TestNotifierEnvParsing_MaxPerDayFallsBackWhenProInvalid(t *testing.T) {
+	t.Setenv("NOTIFY_PRO_MAX_PER_DAY", "oops")
+	t.Setenv("NOTIFY_MAX_PER_DAY", "9")
+
+	if got := getNotifierMaxPerDay(); got != 9 {
+		t.Fatalf("invalid NOTIFY_PRO_MAX_PER_DAY must fallback to legacy key, got %d want 9", got)
+	}
+}
+
 type stubUserRepo struct {
 	getByID func(ctx context.Context, userID int64) (*domain.User, error)
 }

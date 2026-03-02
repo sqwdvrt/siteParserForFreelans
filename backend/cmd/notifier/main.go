@@ -99,10 +99,7 @@ func main() {
 		rateLimit = 5 * time.Minute
 	}
 
-	maxPerDay, _ := strconv.Atoi(os.Getenv("NOTIFY_MAX_PER_DAY"))
-	if maxPerDay <= 0 {
-		maxPerDay = 5
-	}
+	maxPerDay := getNotifierMaxPerDay()
 	notifierMaxRetries := getPositiveIntEnv("NOTIFIER_MAX_RETRIES", defaultNotifierMaxRetries)
 	notifierRetryBaseWait := getDurationEnv("NOTIFIER_RETRY_BASE_WAIT", defaultNotifierRetryBaseWait)
 	breakerFailureThreshold := getPositiveIntEnv("NOTIFIER_BREAKER_FAILURE_THRESHOLD", defaultBreakerFailureThreshold)
@@ -357,6 +354,29 @@ func waitForBackoff(ctx context.Context, d time.Duration) bool {
 	case <-timer.C:
 		return true
 	}
+}
+
+func getNotifierMaxPerDay() int {
+	// Preferred key for notifier per-day cap; falls back to legacy key for compatibility.
+	return getPositiveIntEnvWithFallback("NOTIFY_PRO_MAX_PER_DAY", "NOTIFY_MAX_PER_DAY", 5)
+}
+
+func getPositiveIntEnvWithFallback(primaryKey, secondaryKey string, fallback int) int {
+	primaryRaw := os.Getenv(primaryKey)
+	if primaryRaw != "" {
+		v, err := strconv.Atoi(primaryRaw)
+		if err == nil && v > 0 {
+			return v
+		}
+		slog.Warn(
+			"invalid env, fallback key/value applied",
+			"key", primaryKey,
+			"value", primaryRaw,
+			"fallback_key", secondaryKey,
+			"fallback", fallback,
+		)
+	}
+	return getPositiveIntEnv(secondaryKey, fallback)
 }
 
 func getPositiveIntEnv(key string, fallback int) int {

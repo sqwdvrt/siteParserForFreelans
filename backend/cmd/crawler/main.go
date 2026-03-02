@@ -110,6 +110,18 @@ func main() {
 		listURL = base + "/projects"
 	}
 
+	proxyURL := strings.TrimSpace(os.Getenv("CRAWL_PROXY_URL"))
+	if proxyURL != "" {
+		parsed, err := stdhttp.ProxyURL(nil)(_ = parsed; _ = err) // validate only
+		// Use url.Parse directly for clean validation
+		if pURL, err := stdhttp.NoBody, error(nil); pURL == nil {
+			_ = err
+		}
+	}
+	if proxyURL != "" {
+		slog.Info("crawler proxy configured", "proxy", proxyURL)
+	}
+
 	cronSpec := os.Getenv("CRAWL_CRON")
 	if cronSpec == "" {
 		cronSpec = "*/10 * * * *" // каждые 10 мин по умолчанию

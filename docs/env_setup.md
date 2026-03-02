@@ -22,6 +22,8 @@
 | **API_RATE_LIMIT_WINDOW_SEC** | Окно rate-limit backend API, по умолчанию `60` секунд |
 | **API_RATE_LIMIT_IP_RPM** | Лимит запросов API на IP в окне (`window`), по умолчанию `120` |
 | **API_RATE_LIMIT_TG_RPM** | Лимит запросов API на Telegram ID в окне (`window`), по умолчанию `60` |
+| **NOTIFY_PRO_MAX_PER_DAY** | Предпочтительный суточный лимит уведомлений на пользователя в `backend-notifier` (по умолчанию `5`) |
+| **NOTIFY_MAX_PER_DAY** | Legacy fallback для суточного лимита уведомлений (используется, если `NOTIFY_PRO_MAX_PER_DAY` не задан) |
 | **NOTIFIER_MAX_RETRIES** | Количество внутренних retry отправки в Telegram за один `Send` (по умолчанию `3`) |
 | **NOTIFIER_RETRY_BASE_WAIT** | Базовая задержка retry в формате duration (`1s`, `500ms`), по умолчанию `1s` |
 | **NOTIFIER_BREAKER_FAILURE_THRESHOLD** | Порог неуспешных `Send` до открытия circuit breaker (по умолчанию `3`) |

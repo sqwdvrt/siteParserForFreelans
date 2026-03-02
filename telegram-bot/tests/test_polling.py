@@ -137,6 +137,37 @@ def test_run_polling_backs_off_after_failed_get_updates(bot, monkeypatch):
     assert sleeps == [0.25]
 
 
+def test_run_polling_touches_heartbeat_file(bot, monkeypatch):
+    updates = [
+        (
+            [
+                {
+                    "update_id": 1,
+                    "message": {
+                        "chat": {"id": 100},
+                        "from": {"id": 200},
+                        "text": "/start",
+                    },
+                }
+            ],
+            2,
+        )
+    ]
+
+    heartbeat_calls: list[str] = []
+    monkeypatch.setenv("TELEGRAM_HEARTBEAT_FILE", "/tmp/tg-heartbeat-test")
+    monkeypatch.setattr(bot, "_touch_heartbeat", lambda path: heartbeat_calls.append(path))
+    monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
+    monkeypatch.setattr(bot, "post_users", MagicMock(return_value=1))
+    monkeypatch.setattr(bot, "send_message", MagicMock(return_value=True))
+
+    with pytest.raises(KeyboardInterrupt):
+        bot.run_polling("token", "https://api.example.com", "tok", "hmac")
+
+    assert heartbeat_calls
+    assert all(path == "/tmp/tg-heartbeat-test" for path in heartbeat_calls)
+
+
 def test_run_polling_skips_non_message_and_missing_ids(bot, monkeypatch):
     updates = [
         (

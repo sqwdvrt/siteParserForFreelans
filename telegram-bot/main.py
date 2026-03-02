@@ -117,6 +117,8 @@ API_RETRY_MAX_DELAY_SEC = 3.0
 API_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 POLL_RETRY_BASE_DELAY_SEC = 0.5
 POLL_RETRY_MAX_DELAY_SEC = 10.0
+HEARTBEAT_FILE_ENV = "TELEGRAM_HEARTBEAT_FILE"
+DEFAULT_HEARTBEAT_FILE = "/tmp/telegram-bot-heartbeat"
 
 
 def _read_positive_int_env(name: str, default: int) -> int:
@@ -203,6 +205,15 @@ def _retry_delay_sec(attempt: int) -> float:
 def _poll_retry_delay_sec(attempt: int) -> float:
     delay = min(POLL_RETRY_MAX_DELAY_SEC, POLL_RETRY_BASE_DELAY_SEC * (2 ** attempt))
     return delay + random.uniform(0.0, 0.2)
+
+
+def _touch_heartbeat(path: str) -> None:
+    try:
+        with open(path, "a", encoding="utf-8"):
+            pass
+        os.utime(path, None)
+    except OSError as e:
+        logger.warning("failed to update heartbeat file %s: %s", path, e)
 
 
 def _shannon_entropy_bits(secret: str) -> float:
@@ -500,7 +511,9 @@ def run_polling(token: str, api_url: str, api_auth_token: str, api_user_hmac_sec
     """Цикл getUpdates → обработка /start, /profile."""
     offset: int | None = None
     poll_error_streak = 0
+    heartbeat_file = os.getenv(HEARTBEAT_FILE_ENV, DEFAULT_HEARTBEAT_FILE)
     while True:
+        _touch_heartbeat(heartbeat_file)
         result = get_updates(token, offset, include_status=True)
         poll_ok = True
         if isinstance(result, tuple) and len(result) == 3:
@@ -514,6 +527,7 @@ def run_polling(token: str, api_url: str, api_auth_token: str, api_user_hmac_sec
             poll_error_streak += 1
             continue
         poll_error_streak = 0
+        _touch_heartbeat(heartbeat_file)
         for u in updates:
             msg = u.get("message")
             if not msg:
