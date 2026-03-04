@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	stdhttp "net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -112,10 +113,13 @@ func main() {
 
 	proxyURL := strings.TrimSpace(os.Getenv("CRAWL_PROXY_URL"))
 	if proxyURL != "" {
-		parsed, err := stdhttp.ProxyURL(nil)(_ = parsed; _ = err) // validate only
-		// Use url.Parse directly for clean validation
-		if pURL, err := stdhttp.NoBody, error(nil); pURL == nil {
-			_ = err
+		parsed, err := url.Parse(proxyURL)
+		if err != nil {
+			slog.Warn("invalid CRAWL_PROXY_URL, ignoring", "url", proxyURL, "err", err)
+			proxyURL = ""
+		} else if parsed.Scheme == "" || parsed.Host == "" {
+			slog.Warn("invalid CRAWL_PROXY_URL (missing scheme or host), ignoring", "url", proxyURL)
+			proxyURL = ""
 		}
 	}
 	if proxyURL != "" {
