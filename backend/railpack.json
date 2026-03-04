@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "provider": "golang",
+  "steps": {
+    "build": {
+      "commands": [
+        "go build -o api ./cmd/api"
+      ]
+    }
+  },
+  "deploy": {
+    "startCommand": "./api"
+  }
+}
