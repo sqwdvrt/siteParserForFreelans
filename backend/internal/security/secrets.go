@@ -41,7 +41,11 @@ func ValidateSecret(name, secret string, minLen int) error {
 	if len(secret) < minLen {
 		return fmt.Errorf("%s must be at least %d chars", name, minLen)
 	}
-	minEntropyBits := math.Max(80, float64(minLen)*3.0)
+	// Shannon-энтропия строки ≠ криптографическая стойкость пароля.
+	// Машинно-сгенерированные пароли (Supabase, Railway) имеют реальную стойкость ~95 бит
+	// при 16 символах, но Shannon-энтропия строки не превышает log2(n)*n ≈ 64 бит при n=16.
+	// Порог 64 бита достаточен: отсеивает словарные пароли и короткие секреты.
+	minEntropyBits := math.Max(64, float64(minLen)*3.0)
 	if entropy := shannonEntropyBits(secret); entropy < minEntropyBits {
 		return fmt.Errorf("%s is too weak (entropy %.1f < %.1f bits)", name, entropy, minEntropyBits)
 	}

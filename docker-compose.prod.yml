@@ -9,6 +9,8 @@ services:
     environment:
       APP_ENV: production
       DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
+      # DATABASE_MIGRATE_URL — session pooler для Supabase (порт 6543, нужен pg_advisory_lock).
+      DATABASE_MIGRATE_URL: ${DATABASE_MIGRATE_URL:-}
       RUN_MIGRATIONS: "1"
     read_only: true
     cap_drop:
@@ -294,6 +296,9 @@ services:
     environment:
       APP_ENV: production
       API_URL: ${API_URL:?set_HTTPS_API_URL_in_.env.production}
+    depends_on:
+      backend-api:
+        condition: service_healthy
       TELEGRAM_HEARTBEAT_FILE: /tmp/telegram-bot-heartbeat
       TELEGRAM_HEARTBEAT_MAX_AGE_SEC: ${TELEGRAM_HEARTBEAT_MAX_AGE_SEC:-90}
     healthcheck:
