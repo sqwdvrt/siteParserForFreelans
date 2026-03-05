@@ -124,6 +124,14 @@ docker compose --env-file .env.production -f docker-compose.prod.yml --profile a
 
 В production compose **не** поднимает локальные PostgreSQL/Redis контейнеры: используются внешние managed endpoints.
 
+### Railway (монорепо)
+
+Сборка идёт через **Railpack**. Чтобы он видел Go-проект, в настройках сервиса **обязательно** задай:
+
+- **Settings → Build → Root Directory:** `backend` (без слэша в конце).
+
+Без этого Railpack анализирует корень репо, не находит `go.mod` и падает с «could not determine how to build». Конфиг сборки и старта — в `backend/railpack.json`. Watch paths можно задать `backend/**`, чтобы деплой триггерился только при изменениях в backend.
+
 ### Deploy Pipeline: Secrets for Staging Smoke/E2E Gate
 
 Для workflow `.github/workflows/deploy.yml` (job `staging-smoke-e2e-gate`) нужны:

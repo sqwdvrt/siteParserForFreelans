@@ -19,6 +19,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	redisclient "github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/postgres"
 	redisqueue "github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/redis"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/api"
@@ -30,6 +31,14 @@ import (
 func main() {
 	_ = godotenv.Load()
 	_ = godotenv.Load("../.env") // при запуске из backend/
+
+	ctx := context.Background()
+	shutdownTracer, err := telemetry.InitTracerProvider(ctx, "site-parser-api", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	if err != nil {
+		slog.Warn("tracer init failed, tracing disabled", "err", err)
+	} else {
+		defer func() { _ = shutdownTracer(context.Background()) }()
+	}
 
 	isProd := security.IsProductionEnv(os.Getenv("APP_ENV"))
 
@@ -59,6 +68,13 @@ func main() {
 	if err := security.ValidateSecret("API_USER_HMAC_SECRET", userHMACSecret, 32); err != nil {
 		fatal("invalid API_USER_HMAC_SECRET secret policy", "err", err)
 	}
+	adminToken := os.Getenv("ADMIN_AUTH_TOKEN")
+	if adminToken == "" {
+		fatal("ADMIN_AUTH_TOKEN not set")
+	}
+	if err := security.ValidateSecret("ADMIN_AUTH_TOKEN", adminToken, 32); err != nil {
+		fatal("invalid ADMIN_AUTH_TOKEN secret policy", "err", err)
+	}
 	redisURL := os.Getenv("REDIS_URL")
 	if redisURL == "" {
 		redisURL = "redis://localhost:6379/0"
@@ -83,6 +99,8 @@ func main() {
 	defer pool.Close()
 
 	userRepo := postgres.NewUserRepository(pool)
+	feedbackRepo := postgres.NewFeedbackRepository(pool)
+	adminRepo := postgres.NewAdminRepository(pool)
 
 	var userEmbedQueue port.UserEmbedQueue
 	var nonceStore api.NonceStore
@@ -139,9 +157,16 @@ func main() {
 		fatal("invalid API_TRUSTED_PROXY_CIDRS", "err", err)
 	}
 
+	adminHandlers := &api.AdminHandlers{
+		AdminRepo:  adminRepo,
+		AdminToken: adminToken,
+		Logger:     slog.Default(),
+	}
+
 	handlers := &api.Handlers{
 		UserRepo:          userRepo,
 		UserEmbedQueue:    userEmbedQueue,
+		FeedbackRepo:      feedbackRepo,
 		AuthToken:         apiToken,
 		UserHMACSecret:    userHMACSecret,
 		Logger:            slog.Default(),
@@ -161,6 +186,7 @@ func main() {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
 	httpMetrics := telemetry.NewHTTPMetrics(registry)
+	r.Use(otelhttp.NewMiddleware("site-parser-api"))
 	r.Use(httpMetrics.Middleware)
 	r.Use(api.RequestIDMiddleware())
 	r.Use(api.RequestLoggingMiddleware(slog.Default()))
@@ -173,6 +199,14 @@ func main() {
 	r.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	r.Post("/users", handlers.PostUsers)
 	r.Put("/users/{id}/profile", handlers.PutUserProfile)
+	r.Post("/users/{id}/feedback", handlers.PostUserFeedback)
+	r.Route("/admin", func(r chi.Router) {
+		r.Get("/stats", adminHandlers.GetStats)
+		r.Get("/users", adminHandlers.ListUsers)
+		r.Get("/users/{id}", adminHandlers.GetUser)
+		r.Delete("/users/{id}", adminHandlers.DeleteUser)
+		r.Get("/jobs", adminHandlers.ListJobs)
+	})
 
 	addr := os.Getenv("API_ADDR")
 	if addr == "" {

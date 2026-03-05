@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	redis "github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/observability"
 )
 
@@ -31,12 +32,16 @@ func (q *Queue) Enqueue(ctx context.Context, jobID int64) error {
 	if jobID <= 0 {
 		return fmt.Errorf("job_id must be positive, got %d", jobID)
 	}
+	carrier := MapCarrier{}
+	otel.GetTextMapPropagator().Inject(ctx, carrier)
 	payloadData := struct {
-		JobID   int64  `json:"job_id"`
-		TraceID string `json:"trace_id,omitempty"`
+		JobID       int64  `json:"job_id"`
+		TraceID     string `json:"trace_id,omitempty"`
+		Traceparent string `json:"traceparent,omitempty"`
 	}{
-		JobID:   jobID,
-		TraceID: observability.TraceIDFromContext(ctx),
+		JobID:       jobID,
+		TraceID:     observability.TraceIDFromContext(ctx),
+		Traceparent: carrier["traceparent"],
 	}
 	payload, err := json.Marshal(payloadData)
 	if err != nil {

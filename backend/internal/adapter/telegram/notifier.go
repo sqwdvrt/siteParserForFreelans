@@ -160,6 +160,17 @@ func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayl
 		"text":       text,
 		"parse_mode": "HTML",
 	}
+	// Кнопки 👍/👎 только для одиночных уведомлений (batch-сообщения содержат несколько проектов)
+	if len(p.Batch) == 0 && p.Job != nil {
+		body["reply_markup"] = map[string]interface{}{
+			"inline_keyboard": [][]map[string]interface{}{
+				{
+					{"text": "👍", "callback_data": fmt.Sprintf("fb:g:%d", p.Job.ID)},
+					{"text": "👎", "callback_data": fmt.Sprintf("fb:b:%d", p.Job.ID)},
+				},
+			},
+		}
+	}
 	raw, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 )
 
@@ -51,13 +52,14 @@ type RequestRateLimiter interface {
 // Handlers — HTTP handlers для API.
 type Handlers struct {
 	UserRepo          port.UserRepository
-	UserEmbedQueue    port.UserEmbedQueue // nil — очередь не используется
-	AuthToken         string              // обязательный bearer token для API
-	UserHMACSecret    string              // обязательный секрет подписи user-level запросов
-	Logger            *slog.Logger        // optional structured logger; defaults to slog.Default()
-	NonceStore        NonceStore          // optional: anti-replay (nonce)
-	RateLimiter       RequestRateLimiter  // optional: rate limit (per ip/per telegram id)
-	TrustedProxyCIDRs []*net.IPNet        // optional: trusted reverse proxies for forwarded headers
+	UserEmbedQueue    port.UserEmbedQueue    // nil — очередь не используется
+	FeedbackRepo      port.FeedbackRepository // nil — feedback не сохраняется
+	AuthToken         string                  // обязательный bearer token для API
+	UserHMACSecret    string                  // обязательный секрет подписи user-level запросов
+	Logger            *slog.Logger            // optional structured logger; defaults to slog.Default()
+	NonceStore        NonceStore              // optional: anti-replay (nonce)
+	RateLimiter       RequestRateLimiter      // optional: rate limit (per ip/per telegram id)
+	TrustedProxyCIDRs []*net.IPNet            // optional: trusted reverse proxies for forwarded headers
 	NonceTTL          time.Duration
 	RateLimitWindow   time.Duration
 	IPRateLimit       int
@@ -208,7 +210,7 @@ func (h *Handlers) PutUserProfile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if err := h.UserRepo.UpdateProfile(r.Context(), userID, req.ProfileText); err != nil {
+	if err := h.UserRepo.UpdateProfileScoped(r.Context(), userID, req.ProfileText); err != nil {
 		h.logger().Error("put user profile update failed", "user_id", userID, "err", err)
 		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
 		return
@@ -231,6 +233,82 @@ func (h *Handlers) PutUserProfile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// PostUserFeedbackRequest — тело POST /users/{id}/feedback.
+type PostUserFeedbackRequest struct {
+	JobID    int64  `json:"job_id"`
+	Feedback string `json:"feedback"`
+}
+
+// PostUserFeedback обрабатывает POST /users/{id}/feedback.
+// Аутентификация: Bearer + HMAC (X-Telegram-ID, X-Request-Signature) — как у PutUserProfile.
+func (h *Handlers) PostUserFeedback(w http.ResponseWriter, r *http.Request) {
+	if !h.authorize(w, r) {
+		return
+	}
+	idStr := chi.URLParam(r, "id")
+	userID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || userID <= 0 {
+		http.Error(w, "invalid user id", http.StatusBadRequest)
+		return
+	}
+	callerTelegramID, err := parseTelegramIDHeader(r.Header.Get(headerTelegramID))
+	if err != nil {
+		http.Error(w, "invalid x-telegram-id header", http.StatusBadRequest)
+		return
+	}
+	var req PostUserFeedbackRequest
+	rawBody, err := decodeJSONBody(w, r, &req)
+	if err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if req.JobID <= 0 {
+		http.Error(w, "invalid job_id", http.StatusBadRequest)
+		return
+	}
+	fb := domain.FeedbackType(req.Feedback)
+	if !fb.IsValid() {
+		http.Error(w, "feedback must be 'good' or 'bad'", http.StatusBadRequest)
+		return
+	}
+	if !h.enforceIPRateLimit(w, r) {
+		return
+	}
+	if !h.authorizeUserRequest(w, r, callerTelegramID, rawBody) {
+		return
+	}
+	if !h.enforceTelegramRateLimit(w, r, callerTelegramID) {
+		return
+	}
+	user, err := h.UserRepo.GetByID(r.Context(), userID)
+	if err != nil {
+		h.logger().Error("post user feedback get user failed", "user_id", userID, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	if user == nil {
+		http.Error(w, "user not found", http.StatusNotFound)
+		return
+	}
+	if user.TelegramID != callerTelegramID {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if h.FeedbackRepo != nil {
+		if err := h.FeedbackRepo.Upsert(r.Context(), userID, req.JobID, fb); err != nil {
+			h.logger().Error("post user feedback upsert failed", "user_id", userID, "job_id", req.JobID, "err", err)
+			http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+			return
+		}
+	}
+	h.logger().Info("feedback recorded", "user_id", userID, "job_id", req.JobID, "feedback", req.Feedback)
 	w.WriteHeader(http.StatusNoContent)
 }
 

@@ -3,11 +3,14 @@ package postgres
 import (
 	"context"
 	"errors"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 )
+
+const setUserScopeSQL = `SELECT set_config('app.current_user_id', $1, true)`
 
 // UserRepository реализует port.UserRepository для PostgreSQL.
 type UserRepository struct {
@@ -61,10 +64,30 @@ func (r *UserRepository) GetByTelegramID(ctx context.Context, telegramID int64) 
 	return &u, nil
 }
 
-// UpdateProfile обновляет profile_text пользователя.
+// UpdateProfile обновляет profile_text пользователя (без RLS-скопа; для воркеров/миграций).
 func (r *UserRepository) UpdateProfile(ctx context.Context, userID int64, profileText string) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE users SET profile_text = $1, updated_at = NOW() WHERE id = $2
 	`, profileText, userID)
 	return err
+}
+
+// UpdateProfileScoped обновляет профиль в транзакции с установкой app.current_user_id для RLS.
+// Используется в API, чтобы даже при утечке учётки БД нельзя было менять чужой профиль.
+func (r *UserRepository) UpdateProfileScoped(ctx context.Context, userID int64, profileText string) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, setUserScopeSQL, strconv.FormatInt(userID, 10)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE users SET profile_text = $1, updated_at = NOW() WHERE id = $2
+	`, profileText, userID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }

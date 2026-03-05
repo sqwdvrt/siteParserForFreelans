@@ -81,6 +81,7 @@ class ProcessJobUseCase:
         *,
         similarity_threshold: float = 0.7,
         max_matches_per_job: int = 20,
+        feedback_repo=None,
     ) -> None:
         self._repo = repo
         self._embedding = embedding_service
@@ -90,6 +91,7 @@ class ProcessJobUseCase:
         self._match_notify_queue = match_notify_queue
         self._threshold = similarity_threshold
         self._limit = max_matches_per_job
+        self._feedback_repo = feedback_repo
 
     def execute(self, job_id: int) -> bool:
         """Обработать job_id. Возвращает True если embedding сохранён, False если пропущен."""
@@ -137,6 +139,28 @@ class ProcessJobUseCase:
                 logger.info("job_id=%s trace_id=%s: %d match candidates", job_id, trace_id, len(candidates))
             else:
                 logger.info("job_id=%s: %d match candidates", job_id, len(candidates))
+
+            # Корректировка скоров на основе обратной связи пользователей.
+            # Пользователи, давшие много 👎 в последние 30 дней, получают
+            # пониженный скор совпадения — снижает вероятность нерелевантных уведомлений.
+            if self._feedback_repo is not None and candidates:
+                import dataclasses
+                adjusted = []
+                for candidate in candidates:
+                    try:
+                        bad_ratio = self._feedback_repo.get_bad_ratio(candidate.user_id)
+                        if bad_ratio > 0.6:
+                            # Снижаем скор пропорционально доле отрицательных оценок
+                            adjusted_score = candidate.match_score * (1.0 - (bad_ratio - 0.6) * 0.5)
+                            if adjusted_score >= self._threshold:
+                                adjusted.append(dataclasses.replace(candidate, match_score=adjusted_score))
+                            # else: отсеиваем — скор упал ниже порога
+                        else:
+                            adjusted.append(candidate)
+                    except Exception:
+                        adjusted.append(candidate)  # при ошибке оставляем исходный
+                candidates = adjusted
+
             if candidates:
                 why_it_fits = _build_why_it_fits(classification)
                 for c in candidates:

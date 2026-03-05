@@ -74,6 +74,44 @@ try:
 except ImportError:
     pass
 
+try:
+    from opentelemetry import trace as _otel_trace
+    from opentelemetry import propagate as _otel_propagate
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    _OTEL_AVAILABLE = True
+except ImportError:
+    _OTEL_AVAILABLE = False
+
+
+def _init_bot_tracer() -> None:
+    if not _OTEL_AVAILABLE:
+        return
+    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+    if not endpoint:
+        return
+    try:
+        exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
+        provider = TracerProvider(resource=Resource({"service.name": "site-parser-bot"}))
+        provider.add_span_processor(BatchSpanProcessor(exporter))
+        _otel_trace.set_tracer_provider(provider)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _get_traceparent_header() -> str:
+    """Возвращает traceparent текущего span или пустую строку."""
+    if not _OTEL_AVAILABLE:
+        return ""
+    try:
+        carrier: dict[str, str] = {}
+        _otel_propagate.inject(carrier)
+        return carrier.get("traceparent", "")
+    except Exception:  # noqa: BLE001
+        return ""
+
 
 def _parse_log_level(raw: str | None, default: int = logging.INFO) -> tuple[int, bool]:
     if raw is None:
@@ -392,13 +430,17 @@ def _signed_user_headers(
     timestamp = str(int(time.time()))
     nonce = secrets.token_hex(16)
     signature = _sign_user_request(user_hmac_secret, method, path, telegram_id, timestamp, nonce, body)
-    return {
+    headers: dict[str, str] = {
         "Authorization": f"Bearer {api_auth_token}",
         "X-Telegram-ID": str(telegram_id),
         "X-Request-Timestamp": timestamp,
         "X-Request-Nonce": nonce,
         "X-Request-Signature": signature,
     }
+    traceparent = _get_traceparent_header()
+    if traceparent:
+        headers["traceparent"] = traceparent
+    return headers
 
 
 def post_users(api_url: str, telegram_id: int, api_auth_token: str, api_user_hmac_secret: str) -> int | None:
@@ -473,6 +515,74 @@ def _resolve_user_id(api_url: str, telegram_id: int, api_auth_token: str, api_us
     return user_id
 
 
+def post_feedback(
+    api_url: str,
+    user_id: int,
+    telegram_id: int,
+    job_id: int,
+    feedback: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> bool:
+    """POST /users/{user_id}/feedback — записывает 👍/👎 для проекта."""
+    url = f"{api_url.rstrip('/')}/users/{user_id}/feedback"
+    payload = {"job_id": job_id, "feedback": feedback}
+    body = _json_body(payload)
+    status, _ = _http_post(
+        url,
+        payload,
+        headers=_signed_user_headers(api_auth_token, api_user_hmac_secret, "POST", url, telegram_id, body),
+    )
+    if status not in (200, 204):
+        logger.warning("POST /users/:id/feedback failed: status=%s", status)
+        return False
+    return True
+
+
+def answer_callback_query(token: str, callback_query_id: str) -> None:
+    """Отвечает на callback_query, чтобы убрать состояние загрузки в Telegram."""
+    url = f"{TELEGRAM_BASE}{token}/answerCallbackQuery"
+    try:
+        _http_post(url, {"callback_query_id": callback_query_id})
+    except Exception as e:
+        logger.warning("answerCallbackQuery failed: %s", _exception_name(e))
+
+
+def handle_callback(
+    callback: dict,
+    token: str,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> None:
+    """Обрабатывает inline-кнопки (👍/👎 feedback).
+    Формат callback_data: fb:g:<job_id> (good) или fb:b:<job_id> (bad).
+    """
+    data = callback.get("data", "")
+    callback_id = callback.get("id", "")
+    from_user = callback.get("from", {})
+    telegram_id = from_user.get("id")
+    try:
+        if data.startswith("fb:") and telegram_id is not None:
+            parts = data.split(":")
+            if len(parts) == 3:
+                feedback = "good" if parts[1] == "g" else "bad"
+                job_id = int(parts[2])
+                user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+                if user_id is not None:
+                    post_feedback(
+                        api_url, user_id, telegram_id, job_id, feedback,
+                        api_auth_token, api_user_hmac_secret,
+                    )
+                    logger.info("feedback sent: job_id=%d feedback=%s", job_id, feedback)
+                else:
+                    logger.warning("feedback: could not resolve user_id for telegram_id=%s", telegram_id)
+    except Exception as e:
+        logger.error("callback handling failed: %s", e)
+    finally:
+        answer_callback_query(token, callback_id)
+
+
 def send_message(token: str, chat_id: int, text: str) -> bool:
     """Отправить сообщение в чат."""
     url = f"{TELEGRAM_BASE}{token}/sendMessage"
@@ -529,6 +639,12 @@ def run_polling(token: str, api_url: str, api_auth_token: str, api_user_hmac_sec
         poll_error_streak = 0
         _touch_heartbeat(heartbeat_file)
         for u in updates:
+            # Обработка inline-кнопок (👍/👎 feedback)
+            callback = u.get("callback_query")
+            if callback:
+                handle_callback(callback, token, api_url, api_auth_token, api_user_hmac_secret)
+                continue
+
             msg = u.get("message")
             if not msg:
                 continue
@@ -540,7 +656,14 @@ def run_polling(token: str, api_url: str, api_auth_token: str, api_user_hmac_sec
                 continue
 
             if text == "/start":
-                user_id = post_users(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+                if _OTEL_AVAILABLE:
+                    _tracer = _otel_trace.get_tracer(__name__)
+                    with _tracer.start_as_current_span("bot.user_action") as _span:
+                        _span.set_attribute("bot.command", "/start")
+                        _span.set_attribute("telegram.user_id", telegram_id)
+                        user_id = post_users(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+                else:
+                    user_id = post_users(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
                 if user_id is not None:
                     _cache_user_id(telegram_id, user_id)
                     send_message(
@@ -564,13 +687,22 @@ def run_polling(token: str, api_url: str, api_auth_token: str, api_user_hmac_sec
                 if user_id is None:
                     send_message(token, chat_id, "Сначала отправьте /start")
                     continue
-                if put_user_profile(api_url, user_id, telegram_id, rest, api_auth_token, api_user_hmac_secret):
+                if _OTEL_AVAILABLE:
+                    _tracer = _otel_trace.get_tracer(__name__)
+                    with _tracer.start_as_current_span("bot.user_action") as _span:
+                        _span.set_attribute("bot.command", "/profile")
+                        _span.set_attribute("telegram.user_id", telegram_id)
+                        ok = put_user_profile(api_url, user_id, telegram_id, rest, api_auth_token, api_user_hmac_secret)
+                else:
+                    ok = put_user_profile(api_url, user_id, telegram_id, rest, api_auth_token, api_user_hmac_secret)
+                if ok:
                     send_message(token, chat_id, "Профиль обновлён.")
                 else:
                     send_message(token, chat_id, "Ошибка обновления профиля.")
 
 
 def main() -> None:
+    _init_bot_tracer()
     app_env = os.getenv("APP_ENV", "development")
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     api_auth_token = os.getenv("API_AUTH_TOKEN")

@@ -20,6 +20,9 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	redisclient "github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
+	"go.opentelemetry.io/otel"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/flru"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/freelancehunt"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/http"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/kwork"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/postgres"
@@ -102,13 +105,38 @@ func main() {
 		os.Exit(1)
 	}
 
-	listURL := os.Getenv("CRAWL_LIST_URL")
-	if listURL == "" {
+	// ENABLED_SOURCES — comma-separated список источников: kwork,flru,freelancehunt
+	// По умолчанию только kwork (обратная совместимость).
+	enabledSourcesRaw := strings.TrimSpace(os.Getenv("ENABLED_SOURCES"))
+	if enabledSourcesRaw == "" {
+		enabledSourcesRaw = "kwork"
+	}
+	enabledSources := make(map[string]bool)
+	for _, s := range strings.Split(enabledSourcesRaw, ",") {
+		s = strings.TrimSpace(strings.ToLower(s))
+		if s != "" {
+			enabledSources[s] = true
+		}
+	}
+
+	// Kwork list URL (поддерживаем CRAWL_LIST_URL для обратной совместимости)
+	kworkListURL := os.Getenv("CRAWL_LIST_URL")
+	if kworkListURL == "" {
 		base := strings.TrimSuffix(os.Getenv("KWORK_BASE_URL"), "/")
 		if base == "" {
 			base = "https://kwork.ru"
 		}
-		listURL = base + "/projects"
+		kworkListURL = base + "/projects"
+	}
+
+	flruListURL := os.Getenv("FLRU_LIST_URL")
+	if flruListURL == "" {
+		flruListURL = "https://www.fl.ru/projects/"
+	}
+
+	freelancehuntListURL := os.Getenv("FREELANCEHUNT_LIST_URL")
+	if freelancehuntListURL == "" {
+		freelancehuntListURL = "https://freelancehunt.com/projects/"
 	}
 
 	proxyURL := strings.TrimSpace(os.Getenv("CRAWL_PROXY_URL"))
@@ -132,6 +160,13 @@ func main() {
 	}
 
 	ctx := context.Background()
+	shutdownTracer, err := telemetry.InitTracerProvider(ctx, "site-parser-crawler", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	if err != nil {
+		slog.Warn("tracer init failed, tracing disabled", "err", err)
+	} else {
+		defer func() { _ = shutdownTracer(context.Background()) }()
+	}
+
 	pool, err := postgres.NewConfiguredPool(ctx, dbURL)
 	if err != nil {
 		slog.Error("pgxpool", "err", err)
@@ -171,10 +206,42 @@ func main() {
 		RetryMaxAttempts:        retryMaxAttempts,
 		RetryBaseBackoff:        retryBaseBackoff,
 		RetryMaxBackoff:         retryMaxBackoff,
+		ProxyURL:                proxyURL,
 	})
-	extractor := kwork.NewExtractor()
 	repo := postgres.NewJobRepository(pool)
-	crawl := usecase.NewCrawlProjects(fetcher, extractor, repo, queue)
+
+	type crawlSource struct {
+		name    string
+		listURL string
+		crawl   *usecase.CrawlProjects
+	}
+	var sources []crawlSource
+	if enabledSources["kwork"] {
+		sources = append(sources, crawlSource{
+			name:    "kwork",
+			listURL: kworkListURL,
+			crawl:   usecase.NewCrawlProjects(fetcher, kwork.NewExtractor(), repo, queue),
+		})
+	}
+	if enabledSources["flru"] {
+		sources = append(sources, crawlSource{
+			name:    "flru",
+			listURL: flruListURL,
+			crawl:   usecase.NewCrawlProjects(fetcher, flru.NewExtractor(), repo, queue),
+		})
+	}
+	if enabledSources["freelancehunt"] {
+		sources = append(sources, crawlSource{
+			name:    "freelancehunt",
+			listURL: freelancehuntListURL,
+			crawl:   usecase.NewCrawlProjects(fetcher, freelancehunt.NewExtractor(), repo, queue),
+		})
+	}
+	if len(sources) == 0 {
+		slog.Error("no valid sources configured in ENABLED_SOURCES", "raw", enabledSourcesRaw)
+		os.Exit(1)
+	}
+	slog.Info("crawler sources configured", "sources", enabledSourcesRaw)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -211,27 +278,38 @@ func main() {
 		defer observeCrawlerQueueDepth(rdb, crawlerMetrics, queueName)
 		traceID := observability.NewTraceID()
 		crawlCtx := observability.WithTraceID(ctx, traceID)
+		crawlCtx, span := otel.Tracer("site-parser-crawler").Start(crawlCtx, "crawl.run")
+		defer span.End()
 		crawlCtx, cancelCrawl := context.WithTimeout(crawlCtx, crawlRunTimeout)
 		defer cancelCrawl()
-		slog.Info("crawl run started", "url", listURL, "trace_id", traceID, "timeout", crawlRunTimeout)
-		saved, err := crawl.Execute(crawlCtx, listURL)
-		if err != nil {
-			if errors.Is(crawlCtx.Err(), context.Canceled) {
-				crawlerMetrics.ObserveRunInterrupted(time.Since(startedAt))
-				slog.Info("crawl interrupted by shutdown")
-				return
+
+		totalSaved := 0
+		for _, src := range sources {
+			if crawlCtx.Err() != nil {
+				break
 			}
-			if errors.Is(crawlCtx.Err(), context.DeadlineExceeded) {
+			slog.Info("crawl run started", "source", src.name, "url", src.listURL, "trace_id", traceID)
+			saved, err := src.crawl.Execute(crawlCtx, src.listURL)
+			if err != nil {
+				if errors.Is(crawlCtx.Err(), context.Canceled) {
+					crawlerMetrics.ObserveRunInterrupted(time.Since(startedAt))
+					slog.Info("crawl interrupted by shutdown", "source", src.name)
+					return
+				}
+				if errors.Is(crawlCtx.Err(), context.DeadlineExceeded) {
+					crawlerMetrics.ObserveRunFailure(time.Since(startedAt))
+					slog.Error("crawl timed out", "source", src.name, "timeout", crawlRunTimeout, "trace_id", traceID)
+					return
+				}
 				crawlerMetrics.ObserveRunFailure(time.Since(startedAt))
-				slog.Error("crawl timed out", "timeout", crawlRunTimeout, "trace_id", traceID)
-				return
+				slog.Error("crawl failed", "source", src.name, "err", err, "trace_id", traceID)
+				continue
 			}
-			crawlerMetrics.ObserveRunFailure(time.Since(startedAt))
-			slog.Error("crawl failed", "err", err, "trace_id", traceID)
-			return
+			slog.Info("crawl source done", "source", src.name, "saved", saved, "trace_id", traceID)
+			totalSaved += saved
 		}
-		crawlerMetrics.ObserveRunSuccess(saved, time.Since(startedAt))
-		slog.Info("CrawlOnce done", "saved", saved, "trace_id", traceID)
+		crawlerMetrics.ObserveRunSuccess(totalSaved, time.Since(startedAt))
+		slog.Info("CrawlOnce done", "total_saved", totalSaved, "sources", len(sources), "trace_id", traceID)
 	}
 
 	c := cron.New()

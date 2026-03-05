@@ -26,6 +26,7 @@ from ai_service.adapter.postgres import (
     PostgresUserRepository,
 )
 from ai_service.adapter.redis import ACBatchMessage, RedisACBatchQueueConsumer, RedisMatchNotifyQueue
+from ai_service.tracing.setup import extract_context, init_tracer
 from ai_service.usecase.actor_critic_loop import ActorCriticConfig, ActorCriticLoop
 from ai_service.usecase.process_ac_batch import ACBatch, ProcessACBatchUseCase
 from ai_service.util.fallback_metrics import start_metrics_server_from_env
@@ -36,6 +37,12 @@ from ai_service.util.transport_security import (
     validate_postgres_tls_for_production,
     validate_redis_tls_for_production,
 )
+
+try:
+    from opentelemetry import trace as otel_trace
+    _OTEL_AVAILABLE = True
+except ImportError:
+    _OTEL_AVAILABLE = False
 
 logging.basicConfig(
     level=logging.INFO,
@@ -169,6 +176,8 @@ def main() -> None:
     if not probe_ollama(ollama_url, required=ollama_required) and ollama_required:
         sys.exit(1)
 
+    init_tracer("site-parser-ac")
+
     user_repo = PostgresUserRepository(db_url)
     job_repo = PostgresJobRepository(db_url)
     pending_repo = PostgresPendingJobsRepository(db_url)
@@ -274,8 +283,16 @@ def main() -> None:
             if message is None:
                 continue
             token = set_trace_id(message.trace_id)
+            trace_ctx = extract_context(message.traceparent)
             try:
-                process_batch.execute(ACBatch(user_id=message.user_id, job_ids=message.job_ids))
+                if _OTEL_AVAILABLE:
+                    tracer = otel_trace.get_tracer(__name__)
+                    with tracer.start_as_current_span("ac.process_batch", context=trace_ctx) as span:  # type: ignore[arg-type]
+                        span.set_attribute("user.id", message.user_id)
+                        span.set_attribute("batch.size", len(message.job_ids))
+                        process_batch.execute(ACBatch(user_id=message.user_id, job_ids=message.job_ids))
+                else:
+                    process_batch.execute(ACBatch(user_id=message.user_id, job_ids=message.job_ids))
             except Exception as exc:  # noqa: BLE001
                 logger.exception("ac batch processing failed user_id=%d: %s", message.user_id, exc)
                 try:

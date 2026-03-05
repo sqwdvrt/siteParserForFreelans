@@ -16,6 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	redisclient "github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/postgres"
 	redisadapter "github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/redis"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/telegram"
@@ -108,6 +109,13 @@ func main() {
 	queueDepthSamplePeriod := getDurationEnv("NOTIFIER_QUEUE_DEPTH_SAMPLE_PERIOD", defaultQueueDepthSamplePeriod)
 
 	ctx := context.Background()
+	shutdownTracer, err := telemetry.InitTracerProvider(ctx, "site-parser-notifier", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
+	if err != nil {
+		slog.Warn("tracer init failed, tracing disabled", "err", err)
+	} else {
+		defer func() { _ = shutdownTracer(context.Background()) }()
+	}
+
 	pool, err := postgres.NewConfiguredPool(ctx, dbURL)
 	if err != nil {
 		slog.Error("pgxpool", "err", err)
@@ -245,12 +253,19 @@ func main() {
 				continue
 			}
 			p := msg.Payload
+			msgCtx := ctx
+			if p.Traceparent != "" {
+				carrier := redisadapter.MapCarrier{"traceparent": p.Traceparent}
+				msgCtx = otel.GetTextMapPropagator().Extract(ctx, carrier)
+			}
+			msgCtx, span := otel.Tracer("site-parser-notifier").Start(msgCtx, "notifier.send")
 			var sendErr error
 			if len(p.Jobs) > 0 {
-				sendErr = sendBatchNotification(ctx, sendNotif, p)
+				sendErr = sendBatchNotification(msgCtx, sendNotif, p)
 			} else {
-				sendErr = sendNotif.Execute(ctx, p.UserID, p.JobID, p.MatchScore, p.WhyItFits)
+				sendErr = sendNotif.Execute(msgCtx, p.UserID, p.JobID, p.MatchScore, p.WhyItFits)
 			}
+			span.End()
 			if sendErr != nil {
 				notifierMetrics.ObserveFailed()
 				slog.Error(

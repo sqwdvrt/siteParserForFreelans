@@ -386,6 +386,20 @@ services:
       - /tmp:mode=1777,size=32m
       - /home/app:mode=0700,size=16m
 
+  jaeger:
+    profiles:
+      - tracing
+    image: jaegertracing/all-in-one:1.62
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:16686:16686"
+      - "127.0.0.1:4317:4317"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
+
 volumes:
   postgres_data:
   ollama_data:

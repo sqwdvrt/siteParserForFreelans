@@ -21,6 +21,7 @@ except ImportError:
 from ai_service.adapter.postgres import PostgresUserRepository
 from ai_service.adapter.redis import RedisUserEmbedQueueConsumer
 from ai_service.adapter.sentence_transformers import SentenceTransformerEmbedding
+from ai_service.tracing.setup import init_tracer
 from ai_service.usecase.process_user_embed import ProcessUserEmbedUseCase
 from ai_service.usecase.user_embed_consumer_loop import run_user_embed_consumer
 from ai_service.util.transport_security import (
@@ -120,6 +121,8 @@ def main() -> None:
         except ValueError as e:
             logger.error("%s", e)
             sys.exit(1)
+
+    init_tracer("site-parser-user-embed")
 
     queue_name = os.getenv("USER_EMBED_QUEUE", "user-embed")
     model_name = os.getenv("EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")

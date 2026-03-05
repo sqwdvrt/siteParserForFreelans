@@ -19,6 +19,7 @@ type MatchNotifyPayload struct {
 	Jobs        []BatchJobItem `json:"jobs,omitempty"`
 	CriticScore float64        `json:"critic_score,omitempty"`
 	TraceID     string         `json:"trace_id,omitempty"`
+	Traceparent string         `json:"traceparent,omitempty"`
 }
 
 // MatchNotifyMessage — доставленное сообщение из match-notify.

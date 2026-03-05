@@ -56,15 +56,16 @@ class RedisQueueConsumer(JobQueueConsumer):
             self._ack_raw(payload)  # invalid payload: discard
             return None
         trace_id = self._normalize_trace_id(data.get("trace_id"))
+        traceparent = self._normalize_trace_id(data.get("traceparent"))
         with self._inflight_lock:
-            self._inflight_by_job_id[jid].append((payload, trace_id))
+            self._inflight_by_job_id[jid].append((payload, trace_id, traceparent))
         return jid
 
     def ack(self, job_id: int) -> None:
         inflight = self._take_inflight(job_id)
         if inflight is None:
             return
-        raw, _trace_id = inflight
+        raw, _trace_id, _traceparent = inflight
         self._ack_raw(raw)
 
     def trace_id(self, job_id: int) -> str:
@@ -72,14 +73,22 @@ class RedisQueueConsumer(JobQueueConsumer):
             inflight = self._inflight_by_job_id.get(job_id)
             if not inflight:
                 return ""
-            _raw, trace_id = inflight[0]
+            _raw, trace_id, _traceparent = inflight[0]
             return trace_id
+
+    def traceparent(self, job_id: int) -> str:
+        with self._inflight_lock:
+            inflight = self._inflight_by_job_id.get(job_id)
+            if not inflight:
+                return ""
+            _raw, _trace_id, traceparent = inflight[0]
+            return traceparent
 
     def nack(self, job_id: int) -> None:
         inflight = self._take_inflight(job_id)
         if inflight is None:
             return
-        raw, _trace_id = inflight
+        raw, _trace_id, _traceparent = inflight
         out_raw, to_dlq = self._prepare_nack_payload(raw)
         target_queue = self._dlq_queue if to_dlq else self._queue
         if to_dlq:
@@ -97,7 +106,7 @@ class RedisQueueConsumer(JobQueueConsumer):
 
     def nack_all_inflight(self) -> int:
         with self._inflight_lock:
-            raws: list[str] = [raw for values in self._inflight_by_job_id.values() for raw, _trace_id in values]
+            raws: list[str] = [raw for values in self._inflight_by_job_id.values() for raw, _trace_id, _tp in values]
             self._inflight_by_job_id.clear()
 
         for raw in raws:

@@ -24,6 +24,7 @@ class ACBatchMessage:
     user_id: int
     job_ids: list[int]
     trace_id: str = ""
+    traceparent: str = ""
 
 
 class RedisACBatchQueueConsumer:
@@ -57,14 +58,14 @@ class RedisACBatchQueueConsumer:
             self._ack_raw(payload)
             return None
         with self._inflight_lock:
-            self._inflight_by_user_id[parsed.user_id].append((payload, parsed.trace_id))
+            self._inflight_by_user_id[parsed.user_id].append((payload, parsed.trace_id, parsed.traceparent))
         return parsed
 
     def ack(self, user_id: int) -> None:
         inflight = self._take_inflight(user_id)
         if inflight is None:
             return
-        raw, _trace_id = inflight
+        raw, _trace_id, _traceparent = inflight
         self._ack_raw(raw)
 
     def trace_id(self, user_id: int) -> str:
@@ -72,14 +73,22 @@ class RedisACBatchQueueConsumer:
             inflight = self._inflight_by_user_id.get(user_id)
             if not inflight:
                 return ""
-            _raw, trace_id = inflight[0]
+            _raw, trace_id, _traceparent = inflight[0]
             return trace_id
+
+    def traceparent(self, user_id: int) -> str:
+        with self._inflight_lock:
+            inflight = self._inflight_by_user_id.get(user_id)
+            if not inflight:
+                return ""
+            _raw, _trace_id, traceparent = inflight[0]
+            return traceparent
 
     def nack(self, user_id: int) -> None:
         inflight = self._take_inflight(user_id)
         if inflight is None:
             return
-        raw, _trace_id = inflight
+        raw, _trace_id, _traceparent = inflight
         out_raw, to_dlq = self._prepare_nack_payload(raw)
         target_queue = self._dlq_queue if to_dlq else self._queue
         pipe = self._client.pipeline(transaction=True)
@@ -95,7 +104,7 @@ class RedisACBatchQueueConsumer:
 
     def nack_all_inflight(self) -> int:
         with self._inflight_lock:
-            raws: list[str] = [raw for values in self._inflight_by_user_id.values() for raw, _trace_id in values]
+            raws: list[str] = [raw for values in self._inflight_by_user_id.values() for raw, _trace_id, _tp in values]
             self._inflight_by_user_id.clear()
 
         for raw in raws:
@@ -116,6 +125,9 @@ class RedisACBatchQueueConsumer:
         normalized_trace = RedisACBatchQueueConsumer._normalize_trace_id(message.trace_id)
         if normalized_trace:
             payload["trace_id"] = normalized_trace
+        normalized_tp = RedisACBatchQueueConsumer._normalize_trace_id(message.traceparent)
+        if normalized_tp:
+            payload["traceparent"] = normalized_tp
         return json.dumps(payload)
 
     @staticmethod
@@ -143,6 +155,7 @@ class RedisACBatchQueueConsumer:
             user_id=uid,
             job_ids=parsed_job_ids,
             trace_id=RedisACBatchQueueConsumer._normalize_trace_id(data.get("trace_id")),
+            traceparent=RedisACBatchQueueConsumer._normalize_trace_id(data.get("traceparent")),
         )
 
     def _ack_raw(self, raw: str) -> None:

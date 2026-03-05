@@ -91,6 +91,10 @@ func (m *mockUserRepo) UpdateProfile(ctx context.Context, userID int64, profileT
 	return nil
 }
 
+func (m *mockUserRepo) UpdateProfileScoped(ctx context.Context, userID int64, profileText string) error {
+	return m.UpdateProfile(ctx, userID, profileText)
+}
+
 const testAuthToken = "test-api-token"
 const testTelegramIDHeader = "123456789"
 const testUserHMACSecret = "test-hmac-secret"

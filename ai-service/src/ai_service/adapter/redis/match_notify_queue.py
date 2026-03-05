@@ -10,6 +10,7 @@ import redis
 from ai_service.domain.ranked_job import RankedJob
 from ai_service.port.match_notify_queue import MatchNotifyQueue
 from ai_service.port.match_repository import MatchCandidate
+from ai_service.tracing.setup import inject_context
 from ai_service.util.trace_context import get_trace_id
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,9 @@ class RedisMatchNotifyQueue(MatchNotifyQueue):
             payload["why_it_fits"] = candidate.why_it_fits
         if trace_id:
             payload["trace_id"] = trace_id
+        traceparent = inject_context(None)
+        if traceparent:
+            payload["traceparent"] = traceparent
         return json.dumps(payload)
 
     @staticmethod
@@ -92,4 +96,7 @@ class RedisMatchNotifyQueue(MatchNotifyQueue):
         }
         if normalized_trace:
             payload["trace_id"] = normalized_trace
+        traceparent = inject_context(None)
+        if traceparent:
+            payload["traceparent"] = traceparent
         return json.dumps(payload)

@@ -25,6 +25,7 @@ from ai_service.adapter.postgres import (
 from ai_service.adapter.redis import RedisQueueConsumer
 from ai_service.adapter.rule_based import RuleBasedClassifier
 from ai_service.adapter.sentence_transformers import SentenceTransformerEmbedding
+from ai_service.tracing.setup import init_tracer
 from ai_service.usecase.accumulate_matches import AccumulateMatchesUseCase
 from ai_service.usecase.consumer_loop import run_consumer
 from ai_service.usecase.process_job import ProcessJobUseCase
@@ -159,6 +160,7 @@ def main() -> None:
         accumulate_matches=accumulate_matches,
         similarity_threshold=threshold, max_matches_per_job=max_matches,
     )
+    init_tracer("site-parser-ai")
     queue = RedisQueueConsumer(redis_url, queue_name)
     _mark_ready(ready_file)
 

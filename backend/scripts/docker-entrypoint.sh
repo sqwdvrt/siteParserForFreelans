@@ -76,7 +76,7 @@ if should_run_migrations; then
   fi
 
   echo "Running migrations (attempts=${MIGRATION_RETRY_ATTEMPTS}, delay=${MIGRATION_RETRY_DELAY_SEC}s)..."
-  for f in /app/migrations/*.sql; do
+  for f in $(ls /app/migrations/*.sql | sort); do
     [ -f "$f" ] || continue
     echo "  Applying $(basename "$f")..."
     run_migration_with_retry "$f"
