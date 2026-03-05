@@ -586,9 +586,9 @@ def handle_callback(
 def send_message(token: str, chat_id: int, text: str) -> bool:
     """Отправить сообщение в чат."""
     url = f"{TELEGRAM_BASE}{token}/sendMessage"
-    status, _ = _http_post(url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
+    status, body = _http_post(url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
     if status != 200:
-        logger.error("sendMessage failed: status=%s", status)
+        logger.error("sendMessage failed: status=%s chat_id=%s body=%s", status, chat_id, body)
         return False
     return True
 

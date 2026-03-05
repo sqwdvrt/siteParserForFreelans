@@ -109,6 +109,35 @@ services:
       - /tmp:mode=1777,size=64m
       - /home/app:mode=0700,size=16m
 
+  browser-service:
+    profiles:
+      - workers
+    build:
+      context: ./browser-service
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:${BROWSER_PORT:-8090}:8090"
+    environment:
+      BROWSER_TIMEOUT_MS: ${BROWSER_TIMEOUT_MS:-30000}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${BROWSER_MEM_LIMIT:-1g}
+          cpus: '1.0'
+        reservations:
+          memory: 256m
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=256m
+
   backend-crawler:
     profiles:
       - workers
@@ -122,12 +151,15 @@ services:
       REDIS_URL: redis://redis:6379/0
       RUN_MIGRATIONS: "0"
       CRAWLER_HEALTH_ADDR: ":8081"
+      BROWSER_SERVICE_URL: ${BROWSER_SERVICE_URL:-http://browser-service:8090}
     depends_on:
       backend-migrate:
         condition: service_completed_successfully
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      browser-service:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8081/healthz"]

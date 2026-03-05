@@ -21,11 +21,13 @@ import (
 	redisclient "github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
 	"go.opentelemetry.io/otel"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/browser"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/flru"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/freelancehunt"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/http"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/kwork"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/postgres"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 	redisqueue "github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/redis"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/observability"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/security"
@@ -210,6 +212,18 @@ func main() {
 	})
 	repo := postgres.NewJobRepository(pool)
 
+	// BROWSER_SERVICE_URL — адрес Browser Render Service (browser-service).
+	// Если задан, Kwork использует headless-браузер для рендера JS-страниц.
+	// Если не задан — используется обычный HTTP-фетчер (без JS-рендера).
+	browserServiceURL := strings.TrimSpace(os.Getenv("BROWSER_SERVICE_URL"))
+	var kworkFetcher port.Fetcher = fetcher
+	if browserServiceURL != "" {
+		kworkFetcher = browser.NewFetcher(browserServiceURL)
+		slog.Info("kwork using browser render service", "service", browserServiceURL)
+	} else {
+		slog.Warn("BROWSER_SERVICE_URL not set: kwork list will use plain HTTP fetcher (JS-rendered content won't be visible)")
+	}
+
 	type crawlSource struct {
 		name    string
 		listURL string
@@ -220,7 +234,7 @@ func main() {
 		sources = append(sources, crawlSource{
 			name:    "kwork",
 			listURL: kworkListURL,
-			crawl:   usecase.NewCrawlProjects(fetcher, kwork.NewExtractor(), repo, queue),
+			crawl:   usecase.NewCrawlProjects(kworkFetcher, kwork.NewExtractor(), repo, queue),
 		})
 	}
 	if enabledSources["flru"] {
