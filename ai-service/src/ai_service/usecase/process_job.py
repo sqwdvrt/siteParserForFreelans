@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING
 
 from ai_service.port.classifier import ClassificationResult
 from ai_service.port.embedding import EmbeddingService
-from ai_service.port.match_notify_queue import MatchNotifyQueue
 from ai_service.port.match_repository import MatchRepository
 from ai_service.port.repository import JobRepository
 from ai_service.util.text_cleaner import clean_text
@@ -77,7 +76,6 @@ class ProcessJobUseCase:
         classifier: Classifier | None = None,
         match_repo: MatchRepository | None = None,
         accumulate_matches: AccumulateMatchesUseCase | None = None,
-        match_notify_queue: MatchNotifyQueue | None = None,
         *,
         similarity_threshold: float = 0.7,
         max_matches_per_job: int = 20,
@@ -88,7 +86,6 @@ class ProcessJobUseCase:
         self._classifier = classifier
         self._match_repo = match_repo
         self._accumulate_matches = accumulate_matches
-        self._match_notify_queue = match_notify_queue
         self._threshold = similarity_threshold
         self._limit = max_matches_per_job
         self._feedback_repo = feedback_repo
@@ -169,13 +166,5 @@ class ProcessJobUseCase:
                         c.trace_id = trace_id
                 if self._accumulate_matches is not None:
                     self._accumulate_matches.execute(candidates)
-                elif self._match_notify_queue is not None:
-                    # Legacy path: direct notify queue. Phase 2+ should use accumulator.
-                    enqueue_many = getattr(self._match_notify_queue, "enqueue_many", None)
-                    if callable(enqueue_many):
-                        enqueue_many(candidates)
-                    else:
-                        for c in candidates:
-                            self._match_notify_queue.enqueue(c)
 
         return True

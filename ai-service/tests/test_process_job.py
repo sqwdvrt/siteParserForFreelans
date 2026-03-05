@@ -116,34 +116,6 @@ def test_execute_calls_matching_after_save() -> None:
     assert call[0][3] == 20
 
 
-def test_execute_enqueues_candidates_to_match_notify() -> None:
-    """При match_notify_queue кандидаты добавляются в очередь."""
-    job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
-    repo = MagicMock()
-    repo.get.return_value = job
-    repo.has_embedding.return_value = False
-    emb = MagicMock()
-    emb.encode.return_value = [0.1] * 384
-    emb.model_name = "test"
-    match_repo = MagicMock()
-    candidates = [
-        MatchCandidate(user_id=10, job_id=1, match_score=0.85),
-        MatchCandidate(user_id=20, job_id=1, match_score=0.72),
-    ]
-    match_repo.find_users_for_job.return_value = candidates
-    match_notify_queue = MagicMock()
-    uc = ProcessJobUseCase(
-        repo, emb, match_repo=match_repo, match_notify_queue=match_notify_queue
-    )
-    assert uc.execute(1) is True
-    match_notify_queue.enqueue_many.assert_called_once()
-    calls = match_notify_queue.enqueue_many.call_args_list
-    sent = calls[0][0][0]
-    assert len(sent) == 2
-    assert sent[0].user_id == 10
-    assert sent[0].match_score == 0.85
-    assert sent[1].user_id == 20
-    assert sent[1].match_score == 0.72
 
 
 def test_execute_accumulates_candidates_to_pending_repo() -> None:
@@ -177,30 +149,6 @@ def test_execute_accumulates_candidates_to_pending_repo() -> None:
     assert sent[1].user_id == 20
 
 
-def test_execute_prefers_accumulate_over_notify_queue() -> None:
-    job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
-    repo = MagicMock()
-    repo.get.return_value = job
-    repo.has_embedding.return_value = False
-    emb = MagicMock()
-    emb.encode.return_value = [0.1] * 384
-    emb.model_name = "test"
-    match_repo = MagicMock()
-    candidates = [MatchCandidate(user_id=10, job_id=1, match_score=0.85)]
-    match_repo.find_users_for_job.return_value = candidates
-    accumulate_matches = MagicMock()
-    match_notify_queue = MagicMock()
-    uc = ProcessJobUseCase(
-        repo,
-        emb,
-        match_repo=match_repo,
-        accumulate_matches=accumulate_matches,
-        match_notify_queue=match_notify_queue,
-    )
-
-    assert uc.execute(1) is True
-    accumulate_matches.execute.assert_called_once()
-    match_notify_queue.enqueue_many.assert_not_called()
 
 
 def test_execute_propagates_accumulate_error() -> None:
@@ -240,14 +188,14 @@ def test_execute_sets_why_it_fits_from_classification() -> None:
     match_repo = MagicMock()
     candidates = [MatchCandidate(user_id=10, job_id=1, match_score=0.85)]
     match_repo.find_users_for_job.return_value = candidates
-    match_notify_queue = MagicMock()
+    accumulate_matches = MagicMock()
     classifier = RuleBasedClassifier()
     uc = ProcessJobUseCase(
         repo, emb, classifier=classifier, match_repo=match_repo,
-        match_notify_queue=match_notify_queue,
+        accumulate_matches=accumulate_matches,
     )
     uc.execute(1)
-    sent = match_notify_queue.enqueue_many.call_args[0][0]
+    sent = accumulate_matches.execute.call_args[0][0]
     assert len(sent) == 1
     assert sent[0].why_it_fits != "", "why_it_fits должен быть заполнен при наличии классификатора"
     assert "python" in sent[0].why_it_fits.lower() or "веб" in sent[0].why_it_fits.lower()
@@ -265,41 +213,11 @@ def test_execute_why_it_fits_empty_without_classifier() -> None:
     match_repo = MagicMock()
     candidates = [MatchCandidate(user_id=10, job_id=1, match_score=0.85)]
     match_repo.find_users_for_job.return_value = candidates
-    match_notify_queue = MagicMock()
-    uc = ProcessJobUseCase(repo, emb, match_repo=match_repo, match_notify_queue=match_notify_queue)
+    accumulate_matches = MagicMock()
+    uc = ProcessJobUseCase(repo, emb, match_repo=match_repo, accumulate_matches=accumulate_matches)
     uc.execute(1)
-    sent = match_notify_queue.enqueue_many.call_args[0][0]
+    sent = accumulate_matches.execute.call_args[0][0]
     assert sent[0].why_it_fits == ""
-
-
-def test_execute_fallbacks_to_enqueue_when_batch_method_absent() -> None:
-    job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
-    repo = MagicMock()
-    repo.get.return_value = job
-    repo.has_embedding.return_value = False
-    emb = MagicMock()
-    emb.encode.return_value = [0.1] * 384
-    emb.model_name = "test"
-    match_repo = MagicMock()
-    candidates = [
-        MatchCandidate(user_id=10, job_id=1, match_score=0.85),
-        MatchCandidate(user_id=20, job_id=1, match_score=0.72),
-    ]
-    match_repo.find_users_for_job.return_value = candidates
-
-    class _EnqueueOnlyQueue:
-        def __init__(self) -> None:
-            self.items: list[MatchCandidate] = []
-
-        def enqueue(self, candidate: MatchCandidate) -> None:
-            self.items.append(candidate)
-
-    queue = _EnqueueOnlyQueue()
-    uc = ProcessJobUseCase(repo, emb, match_repo=match_repo, match_notify_queue=queue)
-    assert uc.execute(1) is True
-    assert len(queue.items) == 2
-    assert queue.items[0].user_id == 10
-    assert queue.items[1].user_id == 20
 
 
 def test_execute_propagates_trace_id_to_candidates() -> None:
@@ -313,8 +231,8 @@ def test_execute_propagates_trace_id_to_candidates() -> None:
     match_repo = MagicMock()
     candidates = [MatchCandidate(user_id=10, job_id=1, match_score=0.85)]
     match_repo.find_users_for_job.return_value = candidates
-    match_notify_queue = MagicMock()
-    uc = ProcessJobUseCase(repo, emb, match_repo=match_repo, match_notify_queue=match_notify_queue)
+    accumulate_matches = MagicMock()
+    uc = ProcessJobUseCase(repo, emb, match_repo=match_repo, accumulate_matches=accumulate_matches)
 
     token = set_trace_id("trace-ai-1")
     try:
@@ -322,5 +240,5 @@ def test_execute_propagates_trace_id_to_candidates() -> None:
     finally:
         reset_trace_id(token)
 
-    sent = match_notify_queue.enqueue_many.call_args[0][0]
+    sent = accumulate_matches.execute.call_args[0][0]
     assert sent[0].trace_id == "trace-ai-1"

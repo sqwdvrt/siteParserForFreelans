@@ -5,7 +5,8 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "startCommand": "python cmd/consumer/main.py",
+    "startCommand": "sh -lc \"AI_METRICS_BIND=0.0.0.0 AI_CONSUMER_METRICS_PORT=${PORT} python -u cmd/consumer/main.py\"",
+    "healthcheckPath": "/metrics",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
   }

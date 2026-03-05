@@ -2,7 +2,7 @@
 -- Когда переменная не задана (воркеры, миграции, создание пользователя) — доступ ко всем строкам.
 -- Когда задана — только строки текущего пользователя (users.id = app.current_user_id, notifications.user_id = app.current_user_id).
 
-SELECT pg_advisory_lock(20260216, 1);
+SELECT pg_advisory_lock(20260305, 9);
 
 -- users: при пустой app.current_user_id — полный доступ (бэкенд/воркеры); при заданной — только строка с id = app.current_user_id
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
@@ -43,4 +43,4 @@ DO $$ BEGIN
   END IF;
 END $$;
 
-SELECT pg_advisory_unlock(20260216, 1);
+SELECT pg_advisory_unlock(20260305, 9);

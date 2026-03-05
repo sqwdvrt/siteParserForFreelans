@@ -64,6 +64,12 @@ services:
     tmpfs:
       - /tmp:mode=1777,size=64m
       - /home/app:mode=0700,size=16m
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://localhost:8443/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
     depends_on:
       backend-migrate:
         condition: service_completed_successfully
@@ -296,11 +302,11 @@ services:
     environment:
       APP_ENV: production
       API_URL: ${API_URL:?set_HTTPS_API_URL_in_.env.production}
+      TELEGRAM_HEARTBEAT_FILE: /tmp/telegram-bot-heartbeat
+      TELEGRAM_HEARTBEAT_MAX_AGE_SEC: ${TELEGRAM_HEARTBEAT_MAX_AGE_SEC:-90}
     depends_on:
       backend-api:
         condition: service_healthy
-      TELEGRAM_HEARTBEAT_FILE: /tmp/telegram-bot-heartbeat
-      TELEGRAM_HEARTBEAT_MAX_AGE_SEC: ${TELEGRAM_HEARTBEAT_MAX_AGE_SEC:-90}
     healthcheck:
       test:
         - CMD

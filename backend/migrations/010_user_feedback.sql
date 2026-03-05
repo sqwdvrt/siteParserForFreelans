@@ -1,7 +1,7 @@
 -- Обратная связь пользователей на уведомления о проектах (👍/👎).
 -- Идемпотентно: безопасно запускать повторно.
 
-SELECT pg_advisory_lock(20260216, 1);
+SELECT pg_advisory_lock(20260305, 10);
 
 CREATE TABLE IF NOT EXISTS user_feedback (
     id         BIGSERIAL    PRIMARY KEY,
@@ -19,4 +19,4 @@ COMMENT ON COLUMN user_feedback.feedback  IS 'good = 👍, bad = 👎';
 CREATE INDEX IF NOT EXISTS idx_user_feedback_user_created
     ON user_feedback (user_id, created_at DESC);
 
-SELECT pg_advisory_unlock(20260216, 1);
+SELECT pg_advisory_unlock(20260305, 10);
