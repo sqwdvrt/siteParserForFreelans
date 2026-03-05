@@ -53,6 +53,8 @@ func ValidateSecret(name, secret string, minLen int) error {
 }
 
 // ValidateURLPassword извлекает пароль из URL и проверяет его как секрет.
+// Для DATABASE_URL порог энтропии ограничен 60 битами, чтобы типичные пароли
+// Supabase/Railway (16 символов, ~60 бит по Шеннону) проходили проверку.
 func ValidateURLPassword(urlName, rawURL string, minLen int) error {
 	u, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil {
@@ -65,7 +67,35 @@ func ValidateURLPassword(urlName, rawURL string, minLen int) error {
 	if !ok || strings.TrimSpace(pw) == "" {
 		return fmt.Errorf("%s must include password", urlName)
 	}
-	return ValidateSecret(urlName+" password", pw, minLen)
+	return validateURLPasswordEntropy(urlName+" password", pw, minLen, 60)
+}
+
+// validateURLPasswordEntropy проверяет пароль с заданным потолком энтропии (maxEntropyCap).
+func validateURLPasswordEntropy(name, secret string, minLen int, maxEntropyCap float64) error {
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return fmt.Errorf("%s is empty", name)
+	}
+	if minLen <= 0 {
+		minLen = 24
+	}
+	lower := strings.ToLower(secret)
+	for _, p := range forbiddenSecretPrefixes {
+		if strings.HasPrefix(lower, p) {
+			return fmt.Errorf("%s uses placeholder prefix %q", name, p)
+		}
+	}
+	if len(secret) < minLen {
+		return fmt.Errorf("%s must be at least %d chars", name, minLen)
+	}
+	minEntropyBits := math.Max(64, float64(minLen)*3.0)
+	if maxEntropyCap > 0 && minEntropyBits > maxEntropyCap {
+		minEntropyBits = maxEntropyCap
+	}
+	if entropy := shannonEntropyBits(secret); entropy < minEntropyBits {
+		return fmt.Errorf("%s is too weak (entropy %.1f < %.1f bits)", name, entropy, minEntropyBits)
+	}
+	return nil
 }
 
 // IsProductionEnv сообщает, следует ли применять production policy для транспорта.
