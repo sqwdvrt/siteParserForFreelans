@@ -72,7 +72,7 @@ services:
       context: ./browser-service
       dockerfile: Dockerfile
     environment:
-      BROWSER_TIMEOUT_MS: ${BROWSER_TIMEOUT_MS:-30000}
+      BROWSER_TIMEOUT_MS: ${BROWSER_TIMEOUT_MS:-60000}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/healthz')"]
@@ -106,7 +106,7 @@ services:
       REDIS_URL: ${REDIS_URL:?set_REDIS_URL_in_.env.production}
       RUN_MIGRATIONS: "0"
       CRAWLER_HEALTH_ADDR: ":8081"
-      BROWSER_SERVICE_URL: ${BROWSER_SERVICE_URL:-http://browser-service:8090}
+      BROWSER_SERVICE_URL: http://browser-service:8090
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost:8081/healthz"]
       interval: 30s

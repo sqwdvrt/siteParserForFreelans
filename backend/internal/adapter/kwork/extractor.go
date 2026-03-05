@@ -38,6 +38,10 @@ func (e *Extractor) ExtractList(html []byte) ([]string, error) {
 		if !ok || href == "" {
 			return
 		}
+		// Пропускаем страницы-списки вида /projects/list/... — это не проекты
+		if !projectURLRe.MatchString(href) {
+			return
+		}
 		abs, err := resolveURL(href)
 		if err != nil {
 			return
@@ -68,28 +72,29 @@ func (e *Extractor) ExtractDetail(html []byte, pageURL string) (*domain.Job, err
 		RawHTML:    string(html),
 		CreatedAt:  time.Now(),
 	}
-	if title := strings.TrimSpace(doc.Find(".project-title").First().Text()); title != "" {
+
+	// Заголовок: h1.wants-card__header-title → <title> без суффикса " - Kwork"
+	if title := strings.TrimSpace(doc.Find("h1.wants-card__header-title").First().Text()); title != "" {
 		job.Title = title
+	} else if title := strings.TrimSpace(doc.Find("h1").First().Text()); title != "" {
+		job.Title = title
+	} else if pageTitle := strings.TrimSpace(doc.Find("title").First().Text()); pageTitle != "" {
+		job.Title = strings.TrimSuffix(strings.TrimSuffix(pageTitle, " - Kwork"), " — Kwork")
 	} else {
 		job.Title = "(без названия)"
 	}
-	job.Description = strings.TrimSpace(doc.Find(".project-description").First().Text())
-	if budget := strings.TrimSpace(doc.Find(".project-budget").First().Text()); budget != "" {
-		job.Budget = strings.TrimPrefix(budget, "Бюджет: ")
+
+	// Описание: .wants-card__description-text
+	job.Description = strings.TrimSpace(doc.Find(".wants-card__description-text").First().Text())
+
+	// Бюджет: .wants-card__price — содержит "Цена 500 ₽", берём полный текст и чистим
+	if raw := strings.TrimSpace(doc.Find(".wants-card__price").First().Text()); raw != "" {
+		// Убираем слово "Цена" в начале, нормализуем пробелы
+		budget := strings.TrimSpace(strings.TrimPrefix(raw, "Цена"))
+		budget = strings.Join(strings.Fields(budget), " ")
+		job.Budget = budget
 	}
-	skillsText := strings.TrimSpace(doc.Find(".project-skills").First().Text())
-	if skillsText != "" {
-		for _, s := range strings.Split(skillsText, ",") {
-			if t := strings.TrimSpace(s); t != "" {
-				job.Skills = append(job.Skills, t)
-			}
-		}
-	}
-	if dateText := strings.TrimSpace(doc.Find(".project-date").First().Text()); dateText != "" {
-		if t := parsePostedAt(dateText); t != nil {
-			job.PostedAt = t
-		}
-	}
+
 	return job, nil
 }
 
@@ -124,7 +129,8 @@ func isAllowedHost(host string) bool {
 	return host == baseHost || strings.HasSuffix(host, "."+baseHost)
 }
 
-var externalIDRe = regexp.MustCompile(`/projects/(\d+)/`)
+var externalIDRe = regexp.MustCompile(`/projects/(\d+)`)
+var projectURLRe = regexp.MustCompile(`/projects/\d+`)
 
 func extractExternalID(u string) string {
 	m := externalIDRe.FindStringSubmatch(u)

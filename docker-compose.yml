@@ -46,7 +46,10 @@ services:
     command: ["true"]
     env_file: .env
     environment:
-      DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
+      # DATABASE_MIGRATE_URL — session pooler (нужен для pg_advisory_lock в миграциях).
+      # Если используется Supabase: порт 6543 = session mode.
+      # Если локальный postgres — entrypoint упадёт на DATABASE_URL из env_file.
+      DATABASE_MIGRATE_URL: ${DATABASE_MIGRATE_URL:-}
       RUN_MIGRATIONS: "1"
     depends_on:
       postgres:
@@ -118,7 +121,7 @@ services:
     ports:
       - "127.0.0.1:${BROWSER_PORT:-8090}:8090"
     environment:
-      BROWSER_TIMEOUT_MS: ${BROWSER_TIMEOUT_MS:-30000}
+      BROWSER_TIMEOUT_MS: ${BROWSER_TIMEOUT_MS:-60000}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/healthz')"]
@@ -151,7 +154,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       RUN_MIGRATIONS: "0"
       CRAWLER_HEALTH_ADDR: ":8081"
-      BROWSER_SERVICE_URL: ${BROWSER_SERVICE_URL:-http://browser-service:8090}
+      BROWSER_SERVICE_URL: http://browser-service:8090
     depends_on:
       backend-migrate:
         condition: service_completed_successfully

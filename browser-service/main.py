@@ -13,12 +13,15 @@ from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
-from playwright.async_api import async_playwright, Browser, Playwright
+from playwright.async_api import async_playwright, Browser, Playwright, TimeoutError as PWTimeoutError
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 log = logging.getLogger(__name__)
 
-_TIMEOUT_MS = int(os.getenv("BROWSER_TIMEOUT_MS", "30000"))
+_TIMEOUT_MS = int(os.getenv("BROWSER_TIMEOUT_MS", "60000"))
+# CSS-селектор, появление которого означает что страница готова.
+# Kwork: карточки проектов в .want-card или .wants-list__item
+_KWORK_READY_SELECTOR = os.getenv("KWORK_READY_SELECTOR", ".want-card,.wants-list__item,article[data-id]")
 _MAX_BODY = 10 * 1024 * 1024  # 10 MB
 
 app = FastAPI(title="Browser Render Service", version="1.0.0")
@@ -85,12 +88,33 @@ async def render(url: str = Query(..., description="URL страницы для 
     page = await context.new_page()
     try:
         log.info("render start url=%s", url)
-        await page.goto(url, wait_until="networkidle", timeout=_TIMEOUT_MS)
+
+        # Шаг 1: грузим страницу до DOMContentLoaded — это быстро.
+        # networkidle на kwork.ru никогда не наступает (фоновые поллинги).
+        await page.goto(url, wait_until="domcontentloaded", timeout=_TIMEOUT_MS)
+
+        # Шаг 2: ждём появления контента, загружаемого через JS.
+        # Для kwork.ru — карточки проектов; для других сайтов пропускаем.
+        if "kwork.ru" in parsed.netloc:
+            try:
+                await page.wait_for_selector(
+                    _KWORK_READY_SELECTOR,
+                    timeout=min(_TIMEOUT_MS, 20_000),
+                )
+                log.info("render kwork selector found url=%s", url)
+            except PWTimeoutError:
+                # Селектор не появился — возможно, другая страница или бот-защита.
+                # Берём что есть.
+                log.warning("render kwork selector timeout url=%s — returning current DOM", url)
+
         html = await page.content()
         if len(html) > _MAX_BODY:
             html = html[:_MAX_BODY]
         log.info("render ok url=%s html_len=%d", url, len(html))
         return JSONResponse({"html": html, "url": url})
+    except PWTimeoutError as exc:
+        log.warning("render timeout url=%s err=%s", url, exc)
+        raise HTTPException(status_code=504, detail=f"render timeout: {exc}") from exc
     except Exception as exc:
         log.warning("render failed url=%s err=%s", url, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc

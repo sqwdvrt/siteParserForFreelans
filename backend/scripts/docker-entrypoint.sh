@@ -66,8 +66,11 @@ if [ -z "${API_ADDR:-}" ] && [ -n "${PORT:-}" ]; then
 fi
 
 if should_run_migrations; then
-  if [ -z "${DATABASE_URL:-}" ]; then
-    echo "RUN_MIGRATIONS is enabled but DATABASE_URL is empty"
+  # DATABASE_MIGRATE_URL используется для миграций (session mode pooler — нужен pg_advisory_lock).
+  # Если не задан — fallback на DATABASE_URL.
+  _MIGRATE_URL="${DATABASE_MIGRATE_URL:-${DATABASE_URL:-}}"
+  if [ -z "$_MIGRATE_URL" ]; then
+    echo "RUN_MIGRATIONS is enabled but DATABASE_URL (and DATABASE_MIGRATE_URL) is empty"
     exit 1
   fi
   if [ ! -d /app/migrations ]; then
@@ -79,7 +82,8 @@ if should_run_migrations; then
   for f in $(ls /app/migrations/*.sql | sort); do
     [ -f "$f" ] || continue
     echo "  Applying $(basename "$f")..."
-    run_migration_with_retry "$f"
+    # Переопределяем DATABASE_URL для psql внутри функции
+    DATABASE_URL="$_MIGRATE_URL" run_migration_with_retry "$f"
   done
   echo "Migrations complete."
 fi
