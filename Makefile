@@ -34,9 +34,14 @@ _check_deps:
 ##@ Dev
 
 .PHONY: up
-up: _check_deps ## Запустить все сервисы
+up: _check_deps ## Запустить все сервисы (включая telegram-bot)
 	$(DC) up -d
 	$(call ok,Сервисы запущены)
+
+.PHONY: up-dev
+up-dev: _check_deps ## Запустить всё кроме telegram-bot (Railway держит бота)
+	$(DC) up -d postgres redis backend-api backend-crawler backend-notifier ai-service ai-user-embed browser-service
+	$(call ok,Dev-сервисы запущены (без telegram-bot))
 
 .PHONY: down
 down: ## Остановить все сервисы
@@ -151,6 +156,7 @@ deploy: ## Первый деплой (scripts/first-deploy.sh)
 
 .PHONY: rollback
 rollback: ## Откат образа: make rollback TAG=v1.2.3
+	@test "$(TAG)" != "latest" || { echo "❌ Укажите тег: make rollback TAG=v1.2.3"; exit 1; }
 	./scripts/rollback.sh $(TAG)
 
 .PHONY: prod-up
@@ -203,9 +209,9 @@ clean: ## Остановить контейнеры + удалить анони�
 	$(call ok,Очистка выполнена)
 
 .PHONY: clean-all
-clean-all: clean ## clean + удалить собранные образы
-	$(DC) down --rmi local
-	$(call ok,Образы удалены)
+clean-all: ## Остановить контейнеры, удалить тома + собранные образы
+	$(DC) down -v --remove-orphans --rmi local
+	$(call ok,Очистка и удаление образов выполнены)
 
 ##@ Справка
 

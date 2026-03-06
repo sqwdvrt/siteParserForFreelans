@@ -25,6 +25,7 @@ import (
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/flru"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/freelancehunt"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/http"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/weblancer"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/kwork"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/postgres"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
@@ -107,7 +108,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	// ENABLED_SOURCES — comma-separated список источников: kwork,flru,freelancehunt
+	// ENABLED_SOURCES — comma-separated список источников: kwork,flru,freelancehunt,weblancer
 	// По умолчанию только kwork (обратная совместимость).
 	enabledSourcesRaw := strings.TrimSpace(os.Getenv("ENABLED_SOURCES"))
 	if enabledSourcesRaw == "" {
@@ -139,6 +140,11 @@ func main() {
 	freelancehuntListURL := os.Getenv("FREELANCEHUNT_LIST_URL")
 	if freelancehuntListURL == "" {
 		freelancehuntListURL = "https://freelancehunt.com/projects/"
+	}
+
+	weblancerListURL := os.Getenv("WEBLANCER_LIST_URL")
+	if weblancerListURL == "" {
+		weblancerListURL = "https://www.weblancer.net/jobs/"
 	}
 
 	proxyURL := strings.TrimSpace(os.Getenv("CRAWL_PROXY_URL"))
@@ -249,6 +255,13 @@ func main() {
 			name:    "freelancehunt",
 			listURL: freelancehuntListURL,
 			crawl:   usecase.NewCrawlProjects(fetcher, freelancehunt.NewExtractor(), repo, queue),
+		})
+	}
+	if enabledSources["weblancer"] {
+		sources = append(sources, crawlSource{
+			name:    "weblancer",
+			listURL: weblancerListURL,
+			crawl:   usecase.NewCrawlProjects(fetcher, weblancer.NewExtractor(), repo, queue),
 		})
 	}
 	if len(sources) == 0 {

@@ -142,14 +142,92 @@
   "hotPaths": [
     {
       "path": "telegram-bot/main.py",
-      "accessCount": 6,
-      "lastAccessed": 1772819206212,
+      "accessCount": 17,
+      "lastAccessed": 1772831500445,
+      "type": "file"
+    },
+    {
+      "path": "ai-service/src/ai_service/usecase/process_job.py",
+      "accessCount": 7,
+      "lastAccessed": 1772831677214,
+      "type": "file"
+    },
+    {
+      "path": "Makefile",
+      "accessCount": 5,
+      "lastAccessed": 1772831510214,
+      "type": "file"
+    },
+    {
+      "path": "ai-service/src/ai_service/adapter/postgres/feedback_repository.py",
+      "accessCount": 3,
+      "lastAccessed": 1772831319869,
+      "type": "file"
+    },
+    {
+      "path": "ai-service/src/ai_service/adapter/postgres/__init__.py",
+      "accessCount": 2,
+      "lastAccessed": 1772831655011,
+      "type": "file"
+    },
+    {
+      "path": "backend/internal/port/notification_repository.go",
+      "accessCount": 2,
+      "lastAccessed": 1772832092507,
       "type": "file"
     },
     {
       "path": "telegram-bot/Dockerfile",
       "accessCount": 1,
       "lastAccessed": 1772819063097,
+      "type": "file"
+    },
+    {
+      "path": "ai-service/cmd/ac_consumer/main.py",
+      "accessCount": 1,
+      "lastAccessed": 1772831445650,
+      "type": "file"
+    },
+    {
+      "path": ".claude/worktrees/musing-spence/ai-service/cmd/user_rematch_consumer/main.py",
+      "accessCount": 1,
+      "lastAccessed": 1772831446028,
+      "type": "file"
+    },
+    {
+      "path": "ai-service/tests/test_process_job.py",
+      "accessCount": 1,
+      "lastAccessed": 1772831703118,
+      "type": "file"
+    },
+    {
+      "path": "backend/internal/port/notifier.go",
+      "accessCount": 1,
+      "lastAccessed": 1772832007450,
+      "type": "file"
+    },
+    {
+      "path": "backend/internal/port/match_notify_consumer.go",
+      "accessCount": 1,
+      "lastAccessed": 1772832007588,
+      "type": "file"
+    },
+    {
+      "path": "backend/internal/usecase/send_notification_test.go",
+      "accessCount": 1,
+      "lastAccessed": 1772832049819,
+      "type": "file"
+    },
+    {
+      "path": "backend/migrations/016_notifications_why_it_fits.sql",
+      "accessCount": 1,
+      "lastAccessed": 1772832070091,
+      "type": "file"
+    },
+    {
+      "path": "backend/internal/port/user_repository.go",
+      "accessCount": 1,
+      "lastAccessed": 1772832099007,
       "type": "file"
     }
   ],
