@@ -177,6 +177,9 @@ class OllamaActorAgent(ActorAgent):
                     why_it_fits=str(item.get("why_it_fits", ""))[:500],
                     rank=rank,
                     actor_confidence=confidence,
+                    final_score=job_map[job_id].final_score or job_map[job_id].match_score,
+                    ranker_version=job_map[job_id].ranker_version,
+                    reason_codes=tuple(job_map[job_id].reason_codes or ()),
                 )
             )
         return sorted(result, key=lambda job: job.rank)

@@ -69,6 +69,8 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
                 user_id=row["user_id"],
                 job_id=job_id,
                 match_score=float(row["similarity"]),
+                raw_similarity=float(row["similarity"]),
+                final_score=float(row["similarity"]),
             )
             for row in rows
         ]

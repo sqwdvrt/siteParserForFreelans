@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 )
 
 // NotificationRepository реализует port.NotificationRepository.
@@ -21,16 +22,33 @@ func NewNotificationRepository(pool *pgxpool.Pool) *NotificationRepository {
 
 // EnsurePending вставляет запись со статусом 'pending', если её нет.
 // Возвращает (wasInserted, shouldSend, err).
-func (r *NotificationRepository) EnsurePending(ctx context.Context, userID, jobID int64, matchScore float64) (bool, bool, error) {
+func (r *NotificationRepository) EnsurePending(
+	ctx context.Context,
+	userID, jobID int64,
+	matchScore float64,
+	finalScore float64,
+	rankerVersion string,
+	reasonCodes []string,
+	whyItFits string,
+) (bool, bool, error) {
 	var id int64
 	err := r.pool.QueryRow(ctx, `
-		INSERT INTO notifications (user_id, job_id, match_score, status)
-		VALUES ($1, $2, $3, 'pending')
+		INSERT INTO notifications (
+			user_id,
+			job_id,
+			match_score,
+			final_score,
+			ranker_version,
+			reason_codes,
+			why_it_fits,
+			sent_at,
+			status
+		)
+		VALUES ($1, $2, $3, $4, NULLIF($5, ''), $6, NULLIF($7, ''), NULL, 'pending')
 		ON CONFLICT (user_id, job_id) DO NOTHING
 		RETURNING id
-	`, userID, jobID, matchScore).Scan(&id)
+	`, userID, jobID, matchScore, finalScore, rankerVersion, reasonCodes, whyItFits).Scan(&id)
 	if err == nil {
-		// Успешно вставлено новое pending-уведомление.
 		return true, true, nil
 	}
 	if err != pgx.ErrNoRows {
@@ -43,6 +61,23 @@ func (r *NotificationRepository) EnsurePending(ctx context.Context, userID, jobI
 	`, userID, jobID).Scan(&status)
 	if err != nil {
 		return false, false, err
+	}
+	if status == "pending" {
+		if _, err := r.pool.Exec(ctx, `
+			UPDATE notifications
+			SET
+				match_score = GREATEST(COALESCE(match_score, 0), $3),
+				final_score = GREATEST(COALESCE(final_score, 0), $4),
+				ranker_version = COALESCE(NULLIF($5, ''), ranker_version),
+				reason_codes = CASE
+					WHEN array_length($6::text[], 1) IS NULL THEN reason_codes
+					ELSE $6
+				END,
+				why_it_fits = COALESCE(NULLIF($7, ''), why_it_fits)
+			WHERE user_id = $1 AND job_id = $2 AND status = 'pending'
+		`, userID, jobID, matchScore, finalScore, rankerVersion, reasonCodes, whyItFits); err != nil {
+			return false, false, err
+		}
 	}
 	// pending → нужно повторить отправку; sent → уже доставлено.
 	return false, status == "pending", nil
@@ -96,4 +131,30 @@ func (r *NotificationRepository) CountToday(ctx context.Context, userID int64) (
 		  AND sent_at < ((date_trunc('day', now() AT TIME ZONE 'UTC') + INTERVAL '1 day') AT TIME ZONE 'UTC')
 	`, userID).Scan(&n)
 	return n, err
+}
+
+// GetPendingForUser возвращает все pending-записи пользователя для дайджеста (по убыванию final_score).
+func (r *NotificationRepository) GetPendingForUser(ctx context.Context, userID int64) ([]port.PendingNotification, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT job_id,
+		       COALESCE(final_score, match_score, 0),
+		       COALESCE(why_it_fits, '')
+		FROM notifications
+		WHERE user_id = $1 AND status = 'pending'
+		ORDER BY COALESCE(final_score, match_score, 0) DESC
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []port.PendingNotification
+	for rows.Next() {
+		var pn port.PendingNotification
+		if err := rows.Scan(&pn.JobID, &pn.MatchScore, &pn.WhyItFits); err != nil {
+			return nil, err
+		}
+		result = append(result, pn)
+	}
+	return result, rows.Err()
 }

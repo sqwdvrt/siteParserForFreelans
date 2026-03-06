@@ -9,6 +9,7 @@ from ai_service.port.classifier import ClassificationResult
 from ai_service.port.embedding import EmbeddingService
 from ai_service.port.match_repository import MatchRepository
 from ai_service.port.repository import JobRepository
+from ai_service.util.feedback_adjuster import adjust_candidates
 from ai_service.util.text_cleaner import clean_text
 from ai_service.util.trace_context import get_trace_id
 
@@ -137,26 +138,17 @@ class ProcessJobUseCase:
             else:
                 logger.info("job_id=%s: %d match candidates", job_id, len(candidates))
 
-            # Корректировка скоров на основе обратной связи пользователей.
-            # Пользователи, давшие много 👎 в последние 30 дней, получают
-            # пониженный скор совпадения — снижает вероятность нерелевантных уведомлений.
+            # Корректировка скоров на основе обратной связи (👍/👎).
+            # Учитывает как позитивный (буст до +15%), так и негативный (штраф до -50%) сигнал.
+            # Сигнал считается по навыкам job + глобально, результаты смешиваются 50/50.
             if self._feedback_repo is not None and candidates:
-                import dataclasses
-                adjusted = []
-                for candidate in candidates:
-                    try:
-                        bad_ratio = self._feedback_repo.get_bad_ratio(candidate.user_id)
-                        if bad_ratio > 0.6:
-                            # Снижаем скор пропорционально доле отрицательных оценок
-                            adjusted_score = candidate.match_score * (1.0 - (bad_ratio - 0.6) * 0.5)
-                            if adjusted_score >= self._threshold:
-                                adjusted.append(dataclasses.replace(candidate, match_score=adjusted_score))
-                            # else: отсеиваем — скор упал ниже порога
-                        else:
-                            adjusted.append(candidate)
-                    except Exception:
-                        adjusted.append(candidate)  # при ошибке оставляем исходный
-                candidates = adjusted
+                job_skills = getattr(job, "skills", None) or []
+                candidates = adjust_candidates(
+                    candidates,
+                    get_job_skills=lambda _: job_skills,
+                    feedback_repo=self._feedback_repo,
+                    threshold=self._threshold,
+                )
 
             if candidates:
                 why_it_fits = _build_why_it_fits(classification)

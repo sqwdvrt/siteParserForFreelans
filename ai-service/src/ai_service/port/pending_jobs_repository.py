@@ -9,17 +9,35 @@ class PendingJobsRepository(ABC):
     """Repository for pending_ac_jobs table."""
 
     @abstractmethod
-    def upsert(self, user_id: int, job_id: int, match_score: float, trace_id: str = "") -> None:
+    def upsert(
+        self,
+        user_id: int,
+        job_id: int,
+        match_score: float,
+        *,
+        raw_similarity: float = 0.0,
+        final_score: float = 0.0,
+        ranker_version: str = "",
+        reason_codes: list[str] | None = None,
+        trace_id: str = "",
+    ) -> None:
         """Insert or update pending match."""
         ...
 
-    def upsert_many(self, rows: list[tuple[int, int, float, str]]) -> None:
+    def upsert_many(
+        self,
+        rows: list[tuple[int, int, float, float, float, str, list[str] | None, str]],
+    ) -> None:
         """Insert or update multiple pending matches."""
-        for user_id, job_id, match_score, trace_id in rows:
+        for user_id, job_id, match_score, raw_similarity, final_score, ranker_version, reason_codes, trace_id in rows:
             self.upsert(
                 user_id=user_id,
                 job_id=job_id,
                 match_score=match_score,
+                raw_similarity=raw_similarity,
+                final_score=final_score,
+                ranker_version=ranker_version,
+                reason_codes=reason_codes,
                 trace_id=trace_id,
             )
 

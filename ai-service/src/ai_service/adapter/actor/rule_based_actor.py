@@ -33,6 +33,9 @@ class RuleBasedActorAgent(ActorAgent):
                     why_it_fits="Соответствует вашему профилю по схожести.",
                     rank=index + 1,
                     actor_confidence=confidence,
+                    final_score=job.final_score or job.match_score,
+                    ranker_version=job.ranker_version,
+                    reason_codes=tuple(job.reason_codes or ()),
                 )
             )
         return ranked

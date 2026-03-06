@@ -29,3 +29,8 @@ class JobRepository(ABC):
     def has_embedding(self, job_id: int) -> bool:
         """Проверить наличие embedding для job_id."""
         ...
+
+    @abstractmethod
+    def has_recent_similar_title(self, job_id: int, title: str, days: int = 7) -> bool:
+        """Проверить, есть ли недавняя задача с похожим нормализованным заголовком."""
+        ...

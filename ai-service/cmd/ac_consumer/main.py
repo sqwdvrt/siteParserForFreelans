@@ -176,7 +176,11 @@ def main() -> None:
     actor_timeout = int(os.getenv("ACTOR_OLLAMA_TIMEOUT_SEC", "45"))
     critic_timeout = int(os.getenv("CRITIC_OLLAMA_TIMEOUT_SEC", "30"))
     ollama_required = os.getenv("OLLAMA_REQUIRED", "1" if is_production_env(app_env) else "0") == "1"
-    if not probe_ollama(ollama_url, required=ollama_required) and ollama_required:
+    if not probe_ollama(
+        ollama_url,
+        required=ollama_required,
+        required_models=[actor_model, critic_model],
+    ) and ollama_required:
         sys.exit(1)
 
     init_tracer("site-parser-ac")

@@ -24,6 +24,7 @@ from ai_service.adapter.postgres import (
     PostgresJobRepository,
     PostgresMatchRepository,
     PostgresPendingJobsRepository,
+    PostgresUserRepository,
 )
 from ai_service.adapter.redis import RedisQueueConsumer
 from ai_service.adapter.rule_based import RuleBasedClassifier
@@ -151,12 +152,17 @@ def main() -> None:
     ollama_model = os.getenv("OLLAMA_MODEL", "llama3.2:3b-instruct-q4_K_M")
     ollama_timeout = int(os.getenv("OLLAMA_TIMEOUT_SEC", "30"))
     ollama_required = os.getenv("OLLAMA_REQUIRED", "1" if is_production_env(app_env) else "0") == "1"
-    if not probe_ollama(ollama_url, required=ollama_required) and ollama_required:
+    if not probe_ollama(
+        ollama_url,
+        required=ollama_required,
+        required_models=[ollama_model],
+    ) and ollama_required:
         sys.exit(1)
 
     repo = PostgresJobRepository(db_url)
     match_repo = PostgresMatchRepository(db_url)
     pending_repo = PostgresPendingJobsRepository(db_url)
+    user_repo = PostgresUserRepository(db_url)
     accumulate_matches = AccumulateMatchesUseCase(pending_repo)
     embedding = SentenceTransformerEmbedding(model_name)
     if _warmup_enabled():
@@ -172,6 +178,7 @@ def main() -> None:
         repo, embedding, classifier, match_repo,
         accumulate_matches=accumulate_matches,
         similarity_threshold=threshold, max_matches_per_job=max_matches,
+        user_repo=user_repo,
     )
     init_tracer("site-parser-ai")
     queue = RedisQueueConsumer(redis_url, queue_name)

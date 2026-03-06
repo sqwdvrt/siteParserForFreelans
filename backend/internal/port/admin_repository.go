@@ -7,28 +7,31 @@ import (
 
 // AdminStats — агрегированная статистика системы.
 type AdminStats struct {
-	TotalUsers             int64 `json:"total_users"`
-	UsersWithProfile       int64 `json:"users_with_profile"`
-	UsersWithEmbedding     int64 `json:"users_with_embedding"`
-	TotalJobs              int64 `json:"total_jobs"`
-	JobsLast7Days          int64 `json:"jobs_last_7_days"`
-	TotalJobEmbeddings     int64 `json:"total_job_embeddings"`
-	TotalNotificationsSent int64 `json:"total_notifications_sent"`
-	NotificationsToday     int64 `json:"notifications_today"`
-	PendingNotifications   int64 `json:"pending_notifications"`
-	PendingACJobs          int64 `json:"pending_ac_jobs"`
+	TotalUsers             int64            `json:"total_users"`
+	UsersWithProfile       int64            `json:"users_with_profile"`
+	UsersWithEmbedding     int64            `json:"users_with_embedding"`
+	TotalJobs              int64            `json:"total_jobs"`
+	JobsLast7Days          int64            `json:"jobs_last_7_days"`
+	TotalJobEmbeddings     int64            `json:"total_job_embeddings"`
+	TotalNotificationsSent int64            `json:"total_notifications_sent"`
+	NotificationsToday     int64            `json:"notifications_today"`
+	PendingNotifications   int64            `json:"pending_notifications"`
+	PendingACJobs          int64            `json:"pending_ac_jobs"`
+	AvgBadFeedbackRate     float64          `json:"avg_bad_feedback_rate"`
+	FeedbackConversionRate float64          `json:"feedback_conversion_rate"`
+	FinalScoreDistribution map[string]int64 `json:"final_score_distribution,omitempty"`
 }
 
 // AdminUser — пользователь для панели администратора.
 type AdminUser struct {
-	ID                int64      `json:"id"`
-	TelegramID        int64      `json:"telegram_id"`
-	HasProfile        bool       `json:"has_profile"`
-	HasEmbedding      bool       `json:"has_embedding"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
-	NotificationsSent int64      `json:"notifications_sent"`
-	ProfileSnippet    string     `json:"profile_snippet,omitempty"` // первые 200 символов
+	ID                int64     `json:"id"`
+	TelegramID        int64     `json:"telegram_id"`
+	HasProfile        bool      `json:"has_profile"`
+	HasEmbedding      bool      `json:"has_embedding"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
+	NotificationsSent int64     `json:"notifications_sent"`
+	ProfileSnippet    string    `json:"profile_snippet,omitempty"` // первые 200 символов
 }
 
 // AdminJob — задача для панели администратора.

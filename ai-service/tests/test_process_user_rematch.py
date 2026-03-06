@@ -1,0 +1,106 @@
+"""Tests for ProcessUserRematchUseCase — including feedback adjustment."""
+
+from __future__ import annotations
+
+from unittest.mock import MagicMock
+
+import pytest
+
+from ai_service.port.feedback_repository import FeedbackSignal
+from ai_service.port.match_repository import MatchCandidate
+from ai_service.usecase.process_user_rematch import ProcessUserRematchUseCase
+
+
+def _make_use_case(
+    embedding=None,
+    candidates=None,
+    feedback_repo=None,
+    threshold: float = 0.7,
+):
+    user_repo = MagicMock()
+    user_repo.get_embedding.return_value = embedding or [0.1] * 384
+
+    match_repo = MagicMock()
+    match_repo.find_jobs_for_user.return_value = candidates or []
+
+    queue = MagicMock()
+
+    uc = ProcessUserRematchUseCase(
+        user_repo,
+        match_repo,
+        queue,
+        similarity_threshold=threshold,
+        feedback_repo=feedback_repo,
+    )
+    return uc, user_repo, match_repo, queue
+
+
+def test_execute_skips_when_no_embedding() -> None:
+    uc, user_repo, match_repo, queue = _make_use_case(embedding=None)
+    user_repo.get_embedding.return_value = None
+    assert uc.execute(42) == 0
+    match_repo.find_jobs_for_user.assert_not_called()
+    queue.enqueue.assert_not_called()
+
+
+def test_execute_enqueues_all_candidates_without_feedback_repo() -> None:
+    candidates = [
+        MatchCandidate(user_id=1, job_id=10, match_score=0.80),
+        MatchCandidate(user_id=1, job_id=11, match_score=0.75),
+    ]
+    uc, _, _, queue = _make_use_case(candidates=candidates, feedback_repo=None)
+    result = uc.execute(1)
+    assert result == 2
+    assert queue.enqueue.call_count == 2
+
+
+def test_execute_applies_feedback_adjustment() -> None:
+    """feedback_repo present → adjust_candidates is applied."""
+    candidates = [
+        MatchCandidate(user_id=1, job_id=10, match_score=0.75),
+        MatchCandidate(user_id=1, job_id=11, match_score=0.72),
+    ]
+    feedback_repo = MagicMock()
+    # Good feedback for job 10: boost score
+    # Bad feedback for job 11: reduce below threshold → filter
+    def side_effect(user_id, job_skills):
+        return FeedbackSignal(good_ratio=0.9, bad_ratio=0.1, total=10)
+
+    feedback_repo.get_feedback_signal.side_effect = side_effect
+
+    uc, _, _, queue = _make_use_case(candidates=candidates, feedback_repo=feedback_repo)
+    result = uc.execute(1)
+    # Both have net=0.8 → boost → both above threshold, both enqueued
+    assert result == 2
+    assert queue.enqueue.call_count == 2
+    # Scores should be boosted (×1.12)
+    enqueued = [call.args[0] for call in queue.enqueue.call_args_list]
+    assert all(c.match_score > 0.75 for c in enqueued)
+
+
+def test_execute_filters_candidate_below_threshold_after_feedback() -> None:
+    """Candidate whose score drops below threshold after bad feedback is not enqueued."""
+    candidates = [
+        MatchCandidate(user_id=1, job_id=10, match_score=0.72),  # will be reduced
+    ]
+    feedback_repo = MagicMock()
+    # net = 0.1 - 0.9 = -0.8  →  multiplier=0.6  →  0.72*0.6=0.432 < 0.70
+    feedback_repo.get_feedback_signal.return_value = FeedbackSignal(
+        good_ratio=0.1, bad_ratio=0.9, total=10
+    )
+    uc, _, _, queue = _make_use_case(candidates=candidates, feedback_repo=feedback_repo)
+    result = uc.execute(1)
+    assert result == 0
+    queue.enqueue.assert_not_called()
+
+
+def test_execute_uses_empty_skills_for_global_signal() -> None:
+    """In rematch direction, get_feedback_signal is called with empty skills list."""
+    candidates = [MatchCandidate(user_id=1, job_id=10, match_score=0.80)]
+    feedback_repo = MagicMock()
+    feedback_repo.get_feedback_signal.return_value = FeedbackSignal(
+        good_ratio=0.0, bad_ratio=0.0, total=0
+    )
+    uc, _, _, queue = _make_use_case(candidates=candidates, feedback_repo=feedback_repo)
+    uc.execute(1)
+    feedback_repo.get_feedback_signal.assert_called_once_with(1, [])

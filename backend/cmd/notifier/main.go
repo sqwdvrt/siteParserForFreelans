@@ -16,7 +16,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	redisclient "github.com/redis/go-redis/v9"
-	"go.opentelemetry.io/otel"
+	"github.com/robfig/cron/v3"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/postgres"
 	redisadapter "github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/redis"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/telegram"
@@ -24,6 +24,7 @@ import (
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/security"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/telemetry"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/usecase"
+	"go.opentelemetry.io/otel"
 )
 
 const (
@@ -148,6 +149,24 @@ func main() {
 	})
 	sendNotif := usecase.NewSendNotification(notifRepo, userRepo, jobRepo, notifier, rateLimit, maxPerDay)
 
+	dailyDigest := usecase.NewDailyDigest(userRepo, notifRepo, jobRepo, notifier, maxPerDay)
+	digestCronSpec := os.Getenv("DIGEST_CRON")
+	if digestCronSpec == "" {
+		digestCronSpec = "0 * * * *" // каждый час; notifyHour по МСК выбирает нужных пользователей
+	}
+	digestCron := cron.New()
+	if _, err := digestCron.AddFunc(digestCronSpec, func() {
+		digestCtx, digestCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer digestCancel()
+		dailyDigest.Execute(digestCtx)
+	}); err != nil {
+		slog.Error("digest cron add func", "spec", digestCronSpec, "err", err)
+		os.Exit(1)
+	}
+	digestCron.Start()
+	defer digestCron.Stop()
+	slog.Info("digest cron started", "spec", digestCronSpec)
+
 	consumer := redisadapter.NewMatchNotifyConsumer(rdb, queueName)
 	if err := consumer.Recover(ctx); err != nil {
 		slog.Error("recover processing queue failed", "queue", queueName, "err", err)
@@ -263,7 +282,16 @@ func main() {
 			if len(p.Jobs) > 0 {
 				sendErr = sendBatchNotification(msgCtx, sendNotif, p)
 			} else {
-				sendErr = sendNotif.Execute(msgCtx, p.UserID, p.JobID, p.MatchScore, p.WhyItFits)
+				sendErr = sendNotif.Execute(
+					msgCtx,
+					p.UserID,
+					p.JobID,
+					p.MatchScore,
+					p.FinalScore,
+					p.RankerVersion,
+					p.ReasonCodes,
+					p.WhyItFits,
+				)
 			}
 			span.End()
 			if sendErr != nil {

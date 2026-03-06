@@ -12,18 +12,22 @@ import (
 )
 
 type mockNotifRepo struct {
-	ensurePendingFunc func(ctx context.Context, userID, jobID int64, score float64) (bool, bool, error)
+	ensurePendingFunc func(ctx context.Context, userID, jobID int64, score float64, finalScore float64, rankerVersion string, reasonCodes []string, whyItFits string) (bool, bool, error)
 	markSentFunc      func(ctx context.Context, userID, jobID int64) error
 	deleteFunc        func(ctx context.Context, userID, jobID int64) error
 	sentRecentlyFunc  func(ctx context.Context, userID int64, within time.Duration) (bool, error)
 	countTodayFunc    func(ctx context.Context, userID int64) (int, error)
 }
 
-func (m *mockNotifRepo) EnsurePending(ctx context.Context, userID, jobID int64, score float64) (bool, bool, error) {
+func (m *mockNotifRepo) EnsurePending(ctx context.Context, userID, jobID int64, score float64, finalScore float64, rankerVersion string, reasonCodes []string, whyItFits string) (bool, bool, error) {
 	if m.ensurePendingFunc != nil {
-		return m.ensurePendingFunc(ctx, userID, jobID, score)
+		return m.ensurePendingFunc(ctx, userID, jobID, score, finalScore, rankerVersion, reasonCodes, whyItFits)
 	}
 	return true, true, nil // default: новое, нужно отправить
+}
+
+func (m *mockNotifRepo) GetPendingForUser(ctx context.Context, userID int64) ([]port.PendingNotification, error) {
+	return nil, nil
 }
 
 func (m *mockNotifRepo) MarkSent(ctx context.Context, userID, jobID int64) error {
@@ -78,6 +82,15 @@ func (m *mockUserRepo) UpdateProfileScoped(ctx context.Context, userID int64, te
 func (m *mockUserRepo) UpdateNotifyHourScoped(ctx context.Context, userID int64, hour int) error {
 	return nil
 }
+func (m *mockUserRepo) GetPreferencesScoped(ctx context.Context, userID int64) (*domain.UserPreferences, error) {
+	return &domain.UserPreferences{}, nil
+}
+func (m *mockUserRepo) UpsertPreferencesScoped(ctx context.Context, userID int64, prefs domain.UserPreferences) error {
+	return nil
+}
+func (m *mockUserRepo) GetProUsersWithNotifyHour(ctx context.Context, hour int) ([]int64, error) {
+	return nil, nil
+}
 
 type mockJobRepo struct {
 	getByIDFunc  func(ctx context.Context, id int64) (*domain.Job, error)
@@ -120,7 +133,7 @@ func TestSendNotification_Execute_RateLimited(t *testing.T) {
 	sent := false
 	uc := NewSendNotification(
 		&mockNotifRepo{
-			ensurePendingFunc: func(context.Context, int64, int64, float64) (bool, bool, error) {
+			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
 				return true, true, nil // новое уведомление
 			},
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) {
@@ -138,7 +151,7 @@ func TestSendNotification_Execute_RateLimited(t *testing.T) {
 		5*time.Minute,
 		5,
 	)
-	err := uc.Execute(context.Background(), 1, 1, 0.9, "")
+	err := uc.Execute(context.Background(), 1, 1, 0.9, 0.9, "v2", nil, "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -151,7 +164,7 @@ func TestSendNotification_Execute_DailyLimitReached(t *testing.T) {
 	sent := false
 	uc := NewSendNotification(
 		&mockNotifRepo{
-			ensurePendingFunc: func(context.Context, int64, int64, float64) (bool, bool, error) {
+			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
 				return true, true, nil
 			},
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
@@ -168,7 +181,7 @@ func TestSendNotification_Execute_DailyLimitReached(t *testing.T) {
 		5*time.Minute,
 		5,
 	)
-	err := uc.Execute(context.Background(), 1, 1, 0.9, "")
+	err := uc.Execute(context.Background(), 1, 1, 0.9, 0.9, "v2", nil, "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -181,7 +194,7 @@ func TestSendNotification_Execute_AlreadySentSkipped(t *testing.T) {
 	sent := false
 	uc := NewSendNotification(
 		&mockNotifRepo{
-			ensurePendingFunc: func(context.Context, int64, int64, float64) (bool, bool, error) {
+			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
 				return false, false, nil // shouldSend=false → уже доставлено
 			},
 		},
@@ -196,7 +209,7 @@ func TestSendNotification_Execute_AlreadySentSkipped(t *testing.T) {
 		5*time.Minute,
 		5,
 	)
-	err := uc.Execute(context.Background(), 1, 1, 0.9, "")
+	err := uc.Execute(context.Background(), 1, 1, 0.9, 0.9, "v2", nil, "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -209,7 +222,7 @@ func TestSendNotification_Execute_RetrySkipsRateLimit(t *testing.T) {
 	sent := false
 	uc := NewSendNotification(
 		&mockNotifRepo{
-			ensurePendingFunc: func(context.Context, int64, int64, float64) (bool, bool, error) {
+			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
 				return false, true, nil // wasInserted=false → retry, пропустить rate limit
 			},
 		},
@@ -224,7 +237,7 @@ func TestSendNotification_Execute_RetrySkipsRateLimit(t *testing.T) {
 		5*time.Minute,
 		5,
 	)
-	err := uc.Execute(context.Background(), 1, 1, 0.9, "")
+	err := uc.Execute(context.Background(), 1, 1, 0.9, 0.9, "v2", nil, "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -238,7 +251,7 @@ func TestSendNotification_Execute_Success(t *testing.T) {
 	markSentCalled := false
 	uc := NewSendNotification(
 		&mockNotifRepo{
-			ensurePendingFunc: func(context.Context, int64, int64, float64) (bool, bool, error) {
+			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
 				return true, true, nil
 			},
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
@@ -267,7 +280,7 @@ func TestSendNotification_Execute_Success(t *testing.T) {
 		5*time.Minute,
 		5,
 	)
-	err := uc.Execute(context.Background(), 1, 1, 0.85, "")
+	err := uc.Execute(context.Background(), 1, 1, 0.85, 0.85, "v2", nil, "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -283,7 +296,7 @@ func TestSendNotification_Execute_WhyItFits_Passed(t *testing.T) {
 	var gotPayload port.NotifyPayload
 	uc := NewSendNotification(
 		&mockNotifRepo{
-			ensurePendingFunc: func(context.Context, int64, int64, float64) (bool, bool, error) {
+			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
 				return true, true, nil
 			},
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
@@ -298,12 +311,21 @@ func TestSendNotification_Execute_WhyItFits_Passed(t *testing.T) {
 		5*time.Minute,
 		5,
 	)
-	err := uc.Execute(context.Background(), 1, 1, 0.85, "Веб-проект со стеком python, react.")
+	err := uc.Execute(context.Background(), 1, 1, 0.85, 0.85, "v2", []string{"strong_similarity"}, "Веб-проект со стеком python, react.")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if gotPayload.WhyItFits != "Веб-проект со стеком python, react." {
 		t.Errorf("WhyItFits not passed through: got %q", gotPayload.WhyItFits)
+	}
+	if gotPayload.FinalScore != 0.85 {
+		t.Errorf("FinalScore=%v want 0.85", gotPayload.FinalScore)
+	}
+	if gotPayload.RankerVersion != "v2" {
+		t.Errorf("RankerVersion=%q want v2", gotPayload.RankerVersion)
+	}
+	if len(gotPayload.ReasonCodes) != 1 || gotPayload.ReasonCodes[0] != "strong_similarity" {
+		t.Errorf("ReasonCodes=%v want [strong_similarity]", gotPayload.ReasonCodes)
 	}
 }
 
@@ -321,7 +343,7 @@ func TestSendNotification_Execute_UserNotFound(t *testing.T) {
 		5*time.Minute,
 		5,
 	)
-	err := uc.Execute(context.Background(), 999, 1, 0.9, "")
+	err := uc.Execute(context.Background(), 999, 1, 0.9, 0.9, "v2", nil, "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -339,7 +361,7 @@ func TestSendNotification_Execute_UserLookupError(t *testing.T) {
 		5,
 	)
 
-	err := uc.Execute(context.Background(), 1, 1, 0.9, "")
+	err := uc.Execute(context.Background(), 1, 1, 0.9, 0.9, "v2", nil, "")
 	if err == nil {
 		t.Fatal("want error on user lookup failure")
 	}
@@ -365,7 +387,7 @@ func TestSendNotification_Execute_JobNotFound(t *testing.T) {
 		5,
 	)
 
-	err := uc.Execute(context.Background(), 1, 999, 0.9, "")
+	err := uc.Execute(context.Background(), 1, 999, 0.9, 0.9, "v2", nil, "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -385,7 +407,7 @@ func TestSendNotification_Execute_JobLookupError(t *testing.T) {
 		5,
 	)
 
-	err := uc.Execute(context.Background(), 1, 1, 0.9, "")
+	err := uc.Execute(context.Background(), 1, 1, 0.9, 0.9, "v2", nil, "")
 	if err == nil {
 		t.Fatal("want error on job lookup failure")
 	}
@@ -400,7 +422,7 @@ func TestSendNotification_Execute_SendFailed_KeepsPending(t *testing.T) {
 	deleteCalled := false
 	uc := NewSendNotification(
 		&mockNotifRepo{
-			ensurePendingFunc: func(context.Context, int64, int64, float64) (bool, bool, error) {
+			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
 				return true, true, nil
 			},
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
@@ -423,7 +445,7 @@ func TestSendNotification_Execute_SendFailed_KeepsPending(t *testing.T) {
 		5,
 	)
 
-	err := uc.Execute(context.Background(), 1, 1, 0.85, "")
+	err := uc.Execute(context.Background(), 1, 1, 0.85, 0.85, "v2", nil, "")
 	if err == nil {
 		t.Fatal("want error when notifier send fails")
 	}
@@ -441,7 +463,7 @@ func TestSendNotification_Execute_RateLimited_DeletesRecord(t *testing.T) {
 	deleteCalled := false
 	uc := NewSendNotification(
 		&mockNotifRepo{
-			ensurePendingFunc: func(context.Context, int64, int64, float64) (bool, bool, error) {
+			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
 				return true, true, nil // wasInserted=true → проверяем rate limit
 			},
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) {
@@ -464,7 +486,7 @@ func TestSendNotification_Execute_RateLimited_DeletesRecord(t *testing.T) {
 		5,
 	)
 
-	err := uc.Execute(context.Background(), 1, 1, 0.9, "")
+	err := uc.Execute(context.Background(), 1, 1, 0.9, 0.9, "v2", nil, "")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
@@ -478,7 +500,7 @@ func TestSendNotification_ExecuteBatch_RateLimited_DropsNewItems(t *testing.T) {
 	deletedJobIDs := make([]int64, 0, 2)
 	uc := NewSendNotification(
 		&mockNotifRepo{
-			ensurePendingFunc: func(_ context.Context, _ int64, _ int64, _ float64) (bool, bool, error) {
+			ensurePendingFunc: func(_ context.Context, _ int64, _ int64, _ float64, _ float64, _ string, _ []string, _ string) (bool, bool, error) {
 				return true, true, nil // new batch items
 			},
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return true, nil },
@@ -520,7 +542,7 @@ func TestSendNotification_ExecuteBatch_RetryBypassesRateLimit(t *testing.T) {
 	markSentCalls := 0
 	uc := NewSendNotification(
 		&mockNotifRepo{
-			ensurePendingFunc: func(_ context.Context, _ int64, _ int64, _ float64) (bool, bool, error) {
+			ensurePendingFunc: func(_ context.Context, _ int64, _ int64, _ float64, _ float64, _ string, _ []string, _ string) (bool, bool, error) {
 				return false, true, nil // retry items
 			},
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) {
@@ -573,7 +595,7 @@ func TestSendNotification_ExecuteBatch_DailyLimit_TrimsNewItems(t *testing.T) {
 
 	uc := NewSendNotification(
 		&mockNotifRepo{
-			ensurePendingFunc: func(_ context.Context, _ int64, _ int64, _ float64) (bool, bool, error) {
+			ensurePendingFunc: func(_ context.Context, _ int64, _ int64, _ float64, _ float64, _ string, _ []string, _ string) (bool, bool, error) {
 				ensureCalls++
 				switch ensureCalls {
 				case 1:
@@ -635,7 +657,7 @@ func TestSendNotification_ExecuteBatch_SingleJobsQuery(t *testing.T) {
 	getByIDsCalls := 0
 	uc := NewSendNotification(
 		&mockNotifRepo{
-			ensurePendingFunc: func(context.Context, int64, int64, float64) (bool, bool, error) {
+			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
 				return true, true, nil
 			},
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
@@ -665,5 +687,46 @@ func TestSendNotification_ExecuteBatch_SingleJobsQuery(t *testing.T) {
 	}
 	if getByIDsCalls != 1 {
 		t.Fatalf("GetByIDs called %d times, want exactly 1", getByIDsCalls)
+	}
+}
+
+func TestSendNotification_ExecuteBatch_SortsByFinalScore(t *testing.T) {
+	var gotPayload port.NotifyPayload
+	uc := NewSendNotification(
+		&mockNotifRepo{
+			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
+				return true, true, nil
+			},
+			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
+			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
+		},
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 777}, nil
+		}},
+		&mockJobRepo{},
+		&mockNotifier{sendFunc: func(_ context.Context, _ int64, p port.NotifyPayload) error {
+			gotPayload = p
+			return nil
+		}},
+		5*time.Minute,
+		5,
+	)
+
+	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{
+		{JobID: 10, Rank: 1, FinalScore: 0.61, ReasonCodes: []string{"standard_recency"}},
+		{JobID: 20, Rank: 2, FinalScore: 0.93, ReasonCodes: []string{"high_similarity"}},
+		{JobID: 30, Rank: 3, FinalScore: 0.72, ReasonCodes: []string{"fresh_job"}},
+	}, 8.4)
+	if err != nil {
+		t.Fatalf("ExecuteBatch: %v", err)
+	}
+	if len(gotPayload.Batch) != 3 {
+		t.Fatalf("batch items=%d want 3", len(gotPayload.Batch))
+	}
+	if gotPayload.Batch[0].Job == nil || gotPayload.Batch[0].Job.ID != 20 {
+		t.Fatalf("first batch job=%+v want job 20", gotPayload.Batch[0].Job)
+	}
+	if gotPayload.Batch[0].Rank != 1 || gotPayload.Batch[1].Rank != 2 || gotPayload.Batch[2].Rank != 3 {
+		t.Fatalf("unexpected ranks: %+v", gotPayload.Batch)
 	}
 }

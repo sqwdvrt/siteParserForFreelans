@@ -21,51 +21,138 @@ class PostgresPendingJobsRepository(PooledPostgresRepository, PendingJobsReposit
     ) -> None:
         super().__init__(dsn, minconn=minconn, maxconn=maxconn, statement_timeout_ms=statement_timeout_ms)
 
-    def upsert(self, user_id: int, job_id: int, match_score: float, trace_id: str = "") -> None:
+    def upsert(
+        self,
+        user_id: int,
+        job_id: int,
+        match_score: float,
+        *,
+        raw_similarity: float = 0.0,
+        final_score: float = 0.0,
+        ranker_version: str = "",
+        reason_codes: list[str] | None = None,
+        trace_id: str = "",
+    ) -> None:
         normalized_trace = (trace_id or "").strip()[:128]
+        normalized_reasons = [str(code).strip()[:64] for code in (reason_codes or []) if str(code).strip()]
         with self._conn() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO pending_ac_jobs (user_id, job_id, match_score, trace_id)
-                    VALUES (%s, %s, %s, NULLIF(%s, ''))
+                    INSERT INTO pending_ac_jobs (
+                        user_id,
+                        job_id,
+                        match_score,
+                        raw_similarity,
+                        final_score,
+                        ranker_version,
+                        reason_codes,
+                        trace_id
+                    )
+                    VALUES (%s, %s, %s, %s, %s, NULLIF(%s, ''), %s, NULLIF(%s, ''))
                     ON CONFLICT (user_id, job_id) DO UPDATE
                     SET
                         match_score = GREATEST(pending_ac_jobs.match_score, EXCLUDED.match_score),
+                        raw_similarity = GREATEST(
+                            COALESCE(pending_ac_jobs.raw_similarity, 0),
+                            COALESCE(EXCLUDED.raw_similarity, 0)
+                        ),
+                        final_score = GREATEST(
+                            COALESCE(pending_ac_jobs.final_score, 0),
+                            COALESCE(EXCLUDED.final_score, 0)
+                        ),
+                        ranker_version = CASE
+                            WHEN COALESCE(EXCLUDED.final_score, 0) >= COALESCE(pending_ac_jobs.final_score, 0)
+                                THEN COALESCE(EXCLUDED.ranker_version, pending_ac_jobs.ranker_version)
+                            ELSE pending_ac_jobs.ranker_version
+                        END,
+                        reason_codes = CASE
+                            WHEN COALESCE(EXCLUDED.final_score, 0) >= COALESCE(pending_ac_jobs.final_score, 0)
+                                THEN COALESCE(EXCLUDED.reason_codes, pending_ac_jobs.reason_codes)
+                            ELSE pending_ac_jobs.reason_codes
+                        END,
                         trace_id = COALESCE(EXCLUDED.trace_id, pending_ac_jobs.trace_id),
                         created_at = NOW(),
                         processed_at = NULL,
                         queued_at = NULL
                     """,
-                    (user_id, job_id, match_score, normalized_trace),
+                    (
+                        user_id,
+                        job_id,
+                        match_score,
+                        raw_similarity,
+                        final_score,
+                        ranker_version,
+                        normalized_reasons,
+                        normalized_trace,
+                    ),
                 )
 
-    def upsert_many(self, rows: list[tuple[int, int, float, str]]) -> None:
+    def upsert_many(
+        self,
+        rows: list[tuple[int, int, float, float, float, str, list[str] | None, str]],
+    ) -> None:
         if not rows:
             return
 
         merged = self._merge_rows(rows)
         values = [
-            (user_id, job_id, match_score, trace_id)
-            for (user_id, job_id), (match_score, trace_id) in merged.items()
+            (
+                user_id,
+                job_id,
+                match_score,
+                raw_similarity,
+                final_score,
+                ranker_version,
+                reason_codes,
+                trace_id,
+            )
+            for (user_id, job_id), (match_score, raw_similarity, final_score, ranker_version, reason_codes, trace_id) in merged.items()
         ]
         with self._conn() as conn:
             with conn.cursor() as cur:
                 execute_values(
                     cur,
                     """
-                    INSERT INTO pending_ac_jobs (user_id, job_id, match_score, trace_id)
+                    INSERT INTO pending_ac_jobs (
+                        user_id,
+                        job_id,
+                        match_score,
+                        raw_similarity,
+                        final_score,
+                        ranker_version,
+                        reason_codes,
+                        trace_id
+                    )
                     VALUES %s
                     ON CONFLICT (user_id, job_id) DO UPDATE
                     SET
                         match_score = GREATEST(pending_ac_jobs.match_score, EXCLUDED.match_score),
+                        raw_similarity = GREATEST(
+                            COALESCE(pending_ac_jobs.raw_similarity, 0),
+                            COALESCE(EXCLUDED.raw_similarity, 0)
+                        ),
+                        final_score = GREATEST(
+                            COALESCE(pending_ac_jobs.final_score, 0),
+                            COALESCE(EXCLUDED.final_score, 0)
+                        ),
+                        ranker_version = CASE
+                            WHEN COALESCE(EXCLUDED.final_score, 0) >= COALESCE(pending_ac_jobs.final_score, 0)
+                                THEN COALESCE(EXCLUDED.ranker_version, pending_ac_jobs.ranker_version)
+                            ELSE pending_ac_jobs.ranker_version
+                        END,
+                        reason_codes = CASE
+                            WHEN COALESCE(EXCLUDED.final_score, 0) >= COALESCE(pending_ac_jobs.final_score, 0)
+                                THEN COALESCE(EXCLUDED.reason_codes, pending_ac_jobs.reason_codes)
+                            ELSE pending_ac_jobs.reason_codes
+                        END,
                         trace_id = COALESCE(EXCLUDED.trace_id, pending_ac_jobs.trace_id),
                         created_at = NOW(),
                         processed_at = NULL,
                         queued_at = NULL
                     """,
                     values,
-                    template="(%s, %s, %s, NULLIF(%s, ''))",
+                    template="(%s, %s, %s, %s, %s, NULLIF(%s, ''), %s, NULLIF(%s, ''))",
                 )
 
     def mark_processed(self, user_id: int, job_ids: list[int]) -> None:
@@ -206,17 +293,37 @@ class PostgresPendingJobsRepository(PooledPostgresRepository, PendingJobsReposit
         return job_ids, trace_id
 
     @staticmethod
-    def _merge_rows(rows: list[tuple[int, int, float, str]]) -> dict[tuple[int, int], tuple[float, str]]:
-        merged: dict[tuple[int, int], tuple[float, str]] = {}
-        for user_id, job_id, match_score, trace_id in rows:
+    def _merge_rows(
+        rows: list[tuple[int, int, float, float, float, str, list[str] | None, str]],
+    ) -> dict[tuple[int, int], tuple[float, float, float, str, list[str], str]]:
+        merged: dict[tuple[int, int], tuple[float, float, float, str, list[str], str]] = {}
+        for user_id, job_id, match_score, raw_similarity, final_score, ranker_version, reason_codes, trace_id in rows:
             key = (int(user_id), int(job_id))
             score = float(match_score)
+            similarity = float(raw_similarity)
+            normalized_final = float(final_score)
+            normalized_ranker = str(ranker_version or "").strip()[:64]
+            normalized_reasons = [str(code).strip()[:64] for code in (reason_codes or []) if str(code).strip()]
             normalized_trace = str(trace_id or "").strip()[:128]
             current = merged.get(key)
             if current is None:
-                merged[key] = (score, normalized_trace)
+                merged[key] = (
+                    score,
+                    similarity,
+                    normalized_final,
+                    normalized_ranker,
+                    normalized_reasons,
+                    normalized_trace,
+                )
                 continue
-            current_score, current_trace = current
-            # Preserve highest score and latest non-empty trace for duplicate keys.
-            merged[key] = (max(current_score, score), normalized_trace or current_trace)
+            current_score, current_similarity, current_final, current_ranker, current_reasons, current_trace = current
+            keep_new = normalized_final >= current_final
+            merged[key] = (
+                max(current_score, score),
+                max(current_similarity, similarity),
+                max(current_final, normalized_final),
+                normalized_ranker if keep_new and normalized_ranker else current_ranker,
+                normalized_reasons if keep_new and normalized_reasons else current_reasons,
+                normalized_trace or current_trace,
+            )
         return merged

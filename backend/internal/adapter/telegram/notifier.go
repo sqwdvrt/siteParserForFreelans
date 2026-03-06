@@ -156,9 +156,10 @@ func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayl
 
 	url := apiBase + n.token + "/sendMessage"
 	body := map[string]interface{}{
-		"chat_id":    telegramID,
-		"text":       text,
-		"parse_mode": "HTML",
+		"chat_id":                  telegramID,
+		"text":                     text,
+		"parse_mode":               "HTML",
+		"disable_web_page_preview": true,
 	}
 	// Кнопки 👍/👎 только для одиночных уведомлений (batch-сообщения содержат несколько проектов)
 	if len(p.Batch) == 0 && p.Job != nil {

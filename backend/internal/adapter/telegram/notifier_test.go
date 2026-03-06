@@ -158,6 +158,35 @@ func TestNotifier_Send_BatchPayload_Success(t *testing.T) {
 	if !strings.Contains(text, `Открыть #1`) || !strings.Contains(text, `Открыть #2`) {
 		t.Fatalf("batch links labels missing: %q", text)
 	}
+	if previewDisabled, ok := body["disable_web_page_preview"].(bool); !ok || !previewDisabled {
+		t.Fatalf("disable_web_page_preview must be true, got: %#v", body["disable_web_page_preview"])
+	}
+}
+
+func TestNotifier_Send_DisablesWebPagePreview(t *testing.T) {
+	transport := &captureTransport{status: 200}
+	n := NewNotifierWithClient("test-token", &http.Client{
+		Transport: transport,
+		Timeout:   5 * time.Second,
+	})
+
+	job := &domain.Job{
+		ID:          1,
+		Title:       "Test Job",
+		Description: "Desc",
+		URL:         "https://fl.ru/projects/1",
+	}
+	if err := n.Send(context.Background(), 123456, port.NotifyPayload{Job: job, Score: 0.85}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal([]byte(transport.lastBody), &body); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	if previewDisabled, ok := body["disable_web_page_preview"].(bool); !ok || !previewDisabled {
+		t.Fatalf("disable_web_page_preview must be true, got: %#v", body["disable_web_page_preview"])
+	}
 }
 
 func TestFormatBatchMessage_SortsByRank(t *testing.T) {

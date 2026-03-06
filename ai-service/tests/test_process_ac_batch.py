@@ -182,3 +182,76 @@ def test_execute_propagates_ollama_timeout_and_keeps_batch_unprocessed() -> None
 
     notify_queue.enqueue_batch.assert_not_called()
     pending_repo.mark_processed.assert_not_called()
+
+
+def test_execute_diversifies_selection_by_source_and_tags() -> None:
+    user_repo = MagicMock()
+    user_repo.get_by_id.return_value = _user_with_profile()
+    job_repo = MagicMock()
+    job_repo.get_with_scores.return_value = [
+        (
+            Job(
+                id=1,
+                title="A",
+                description="Desc A",
+                raw_html="<p>a</p>",
+                source="kwork",
+                technologies=["python"],
+                final_score=0.91,
+                ranker_version="v2",
+                reason_codes=["positive_tag_affinity"],
+            ),
+            0.9,
+        ),
+        (
+            Job(
+                id=2,
+                title="B",
+                description="Desc B",
+                raw_html="<p>b</p>",
+                source="kwork",
+                technologies=["python"],
+                final_score=0.89,
+                ranker_version="v2",
+                reason_codes=["positive_tag_affinity"],
+            ),
+            0.88,
+        ),
+        (
+            Job(
+                id=3,
+                title="C",
+                description="Desc C",
+                raw_html="<p>c</p>",
+                source="kwork",
+                technologies=["python"],
+                final_score=0.87,
+                ranker_version="v2",
+                reason_codes=["positive_tag_affinity"],
+            ),
+            0.87,
+        ),
+    ]
+    pending_repo = MagicMock()
+    ac_loop = MagicMock()
+    ac_loop.run.return_value = ActorCriticResult(
+        selection=[
+            RankedJob(job_id=1, title="A", why_it_fits="fit A", rank=1, actor_confidence=0.95),
+            RankedJob(job_id=2, title="B", why_it_fits="fit B", rank=2, actor_confidence=0.90),
+            RankedJob(job_id=3, title="C", why_it_fits="fit C", rank=3, actor_confidence=0.85),
+        ],
+        final_score=7.0,
+        attempts=1,
+        passed=True,
+    )
+    notify_queue = MagicMock()
+    uc = ProcessACBatchUseCase(user_repo, job_repo, pending_repo, ac_loop, notify_queue)
+
+    uc.execute(ACBatch(user_id=1, job_ids=[1, 2, 3]))
+
+    notify_queue.enqueue_batch.assert_called_once()
+    jobs = notify_queue.enqueue_batch.call_args.kwargs["ranked_jobs"]
+    assert [item.job_id for item in jobs] == [1, 2]
+    assert jobs[0].final_score == pytest.approx(0.91)
+    assert jobs[0].ranker_version == "v2"
+    assert jobs[0].reason_codes == ("positive_tag_affinity",)

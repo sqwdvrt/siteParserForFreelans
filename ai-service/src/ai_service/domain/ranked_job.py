@@ -14,3 +14,6 @@ class RankedJob:
     why_it_fits: str
     rank: int
     actor_confidence: float
+    final_score: float = 0.0
+    ranker_version: str = ""
+    reason_codes: tuple[str, ...] = ()

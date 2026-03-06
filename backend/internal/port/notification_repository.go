@@ -5,13 +5,28 @@ import (
 	"time"
 )
 
+// PendingNotification — pending-запись для дайджеста pro-пользователя.
+type PendingNotification struct {
+	JobID      int64
+	MatchScore float64
+	WhyItFits  string
+}
+
 // NotificationRepository — репозиторий уведомлений (дедупликация, retry, rate limit).
 type NotificationRepository interface {
 	// EnsurePending вставляет запись со статусом 'pending', если её ещё нет.
 	// Если запись уже 'sent' — shouldSend=false (уже доставлено, пропустить).
 	// Если запись уже 'pending' — wasInserted=false, shouldSend=true (retry, rate limit не применяется).
 	// Если записи не было — wasInserted=true, shouldSend=true (новое уведомление).
-	EnsurePending(ctx context.Context, userID, jobID int64, matchScore float64) (wasInserted bool, shouldSend bool, err error)
+	EnsurePending(
+		ctx context.Context,
+		userID, jobID int64,
+		matchScore float64,
+		finalScore float64,
+		rankerVersion string,
+		reasonCodes []string,
+		whyItFits string,
+	) (wasInserted bool, shouldSend bool, err error)
 
 	// MarkSent переводит запись в статус 'sent' и фиксирует время доставки.
 	// Вызывается только после подтверждённой доставки в Telegram.
@@ -27,4 +42,7 @@ type NotificationRepository interface {
 	// CountToday возвращает количество успешно (status='sent') отправленных уведомлений
 	// пользователю за текущие сутки (UTC).
 	CountToday(ctx context.Context, userID int64) (int, error)
+
+	// GetPendingForUser возвращает все pending-записи пользователя для дайджеста.
+	GetPendingForUser(ctx context.Context, userID int64) ([]PendingNotification, error)
 }

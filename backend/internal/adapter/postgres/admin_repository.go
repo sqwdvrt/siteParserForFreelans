@@ -70,6 +70,64 @@ func (r *AdminRepository) GetStats(ctx context.Context) (*port.AdminStats, error
 		return nil, err
 	}
 
+	if err := r.pool.QueryRow(ctx, `
+		SELECT COALESCE(AVG(bad_ratio), 0)
+		FROM (
+			SELECT
+				user_id,
+				COUNT(*) FILTER (WHERE feedback = 'bad')::float / NULLIF(COUNT(*), 0)::float AS bad_ratio
+			FROM user_feedback
+			GROUP BY user_id
+		) ratios
+	`).Scan(&s.AvgBadFeedbackRate); err != nil {
+		return nil, err
+	}
+
+	if err := r.pool.QueryRow(ctx, `
+		SELECT COALESCE(
+			COUNT(*) FILTER (
+				WHERE status = 'sent'
+				  AND EXISTS (
+					  SELECT 1
+					  FROM user_feedback uf
+					  WHERE uf.user_id = n.user_id
+					    AND uf.job_id = n.job_id
+				  )
+			)::float / NULLIF(COUNT(*) FILTER (WHERE status = 'sent'), 0)::float,
+			0
+		)
+		FROM notifications n
+	`).Scan(&s.FeedbackConversionRate); err != nil {
+		return nil, err
+	}
+
+	s.FinalScoreDistribution = map[string]int64{
+		"lt_0_40":   0,
+		"0_40_0_60": 0,
+		"0_60_0_80": 0,
+		"gte_0_80":  0,
+	}
+	var lt040, bucket040060, bucket060080, gte080 int64
+	if err := r.pool.QueryRow(ctx, `
+		SELECT
+			COUNT(*) FILTER (WHERE final_score IS NOT NULL AND final_score < 0.4)                           AS lt_0_40,
+			COUNT(*) FILTER (WHERE final_score >= 0.4 AND final_score < 0.6)                                AS bucket_0_40_0_60,
+			COUNT(*) FILTER (WHERE final_score >= 0.6 AND final_score < 0.8)                                AS bucket_0_60_0_80,
+			COUNT(*) FILTER (WHERE final_score >= 0.8)                                                       AS gte_0_80
+		FROM notifications
+	`).Scan(
+		&lt040,
+		&bucket040060,
+		&bucket060080,
+		&gte080,
+	); err != nil {
+		return nil, err
+	}
+	s.FinalScoreDistribution["lt_0_40"] = lt040
+	s.FinalScoreDistribution["0_40_0_60"] = bucket040060
+	s.FinalScoreDistribution["0_60_0_80"] = bucket060080
+	s.FinalScoreDistribution["gte_0_80"] = gte080
+
 	return &s, nil
 }
 

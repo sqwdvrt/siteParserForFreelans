@@ -36,6 +36,9 @@ const defaultNonceTTL = 10 * time.Minute
 const defaultRateLimitWindow = time.Minute
 const defaultIPRateLimit = 120
 const defaultTelegramRateLimit = 60
+const maxPreferenceKeywords = 32
+const maxPreferenceSources = 16
+const maxPreferenceValueLen = 64
 
 var errTelegramIDInvalid = errors.New("telegram_id must be positive integer")
 
@@ -155,6 +158,24 @@ type PutUserProfileRequest struct {
 // PutUserNotifyHourRequest — тело PUT /users/:id/notify-hour.
 type PutUserNotifyHourRequest struct {
 	Hour int `json:"hour"`
+}
+
+// UserPreferencesRequest — тело PUT /users/:id/preferences.
+type UserPreferencesRequest struct {
+	IncludeKeywords  []string `json:"include_keywords"`
+	ExcludeKeywords  []string `json:"exclude_keywords"`
+	MinBudget        *float64 `json:"min_budget"`
+	MaxBudget        *float64 `json:"max_budget"`
+	PreferredSources []string `json:"preferred_sources"`
+}
+
+// UserPreferencesResponse — ответ GET /users/:id/preferences.
+type UserPreferencesResponse struct {
+	IncludeKeywords  []string `json:"include_keywords"`
+	ExcludeKeywords  []string `json:"exclude_keywords"`
+	MinBudget        *float64 `json:"min_budget,omitempty"`
+	MaxBudget        *float64 `json:"max_budget,omitempty"`
+	PreferredSources []string `json:"preferred_sources"`
 }
 
 // PutUserProfile обновляет profile_text пользователя.
@@ -306,6 +327,110 @@ func (h *Handlers) PutUserNotifyHour(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// GetUserPreferences возвращает user_preferences для пользователя.
+func (h *Handlers) GetUserPreferences(w http.ResponseWriter, r *http.Request) {
+	if !h.authorize(w, r) {
+		return
+	}
+	userID, callerTelegramID, ok := h.authorizeOwnedUserRequest(w, r, nil)
+	if !ok {
+		return
+	}
+	user, err := h.UserRepo.GetByID(r.Context(), userID)
+	if err != nil {
+		h.logger().Error("get user preferences get user failed", "user_id", userID, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	if user == nil {
+		http.Error(w, "user not found", http.StatusNotFound)
+		return
+	}
+	if user.TelegramID != callerTelegramID {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	prefs, err := h.UserRepo.GetPreferencesScoped(r.Context(), userID)
+	if err != nil {
+		h.logger().Error("get user preferences failed", "user_id", userID, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	if prefs == nil {
+		prefs = &domain.UserPreferences{}
+	}
+	writeJSON(w, UserPreferencesResponse{
+		IncludeKeywords:  cloneAndNormalizePreferenceValues(prefs.IncludeKeywords, maxPreferenceKeywords),
+		ExcludeKeywords:  cloneAndNormalizePreferenceValues(prefs.ExcludeKeywords, maxPreferenceKeywords),
+		MinBudget:        prefs.MinBudget,
+		MaxBudget:        prefs.MaxBudget,
+		PreferredSources: cloneAndNormalizePreferenceValues(prefs.PreferredSources, maxPreferenceSources),
+	})
+}
+
+// PutUserPreferences обновляет user_preferences пользователя.
+func (h *Handlers) PutUserPreferences(w http.ResponseWriter, r *http.Request) {
+	if !h.authorize(w, r) {
+		return
+	}
+	var req UserPreferencesRequest
+	rawBody, err := decodeJSONBody(w, r, &req)
+	if err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if req.MinBudget != nil && *req.MinBudget < 0 {
+		http.Error(w, "min_budget must be >= 0", http.StatusBadRequest)
+		return
+	}
+	if req.MaxBudget != nil && *req.MaxBudget < 0 {
+		http.Error(w, "max_budget must be >= 0", http.StatusBadRequest)
+		return
+	}
+	if req.MinBudget != nil && req.MaxBudget != nil && *req.MinBudget > *req.MaxBudget {
+		http.Error(w, "min_budget must be <= max_budget", http.StatusBadRequest)
+		return
+	}
+
+	userID, callerTelegramID, ok := h.authorizeOwnedUserRequest(w, r, rawBody)
+	if !ok {
+		return
+	}
+	user, err := h.UserRepo.GetByID(r.Context(), userID)
+	if err != nil {
+		h.logger().Error("put user preferences get user failed", "user_id", userID, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	if user == nil {
+		http.Error(w, "user not found", http.StatusNotFound)
+		return
+	}
+	if user.TelegramID != callerTelegramID {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+
+	prefs := domain.UserPreferences{
+		UserID:           userID,
+		IncludeKeywords:  cloneAndNormalizePreferenceValues(req.IncludeKeywords, maxPreferenceKeywords),
+		ExcludeKeywords:  cloneAndNormalizePreferenceValues(req.ExcludeKeywords, maxPreferenceKeywords),
+		MinBudget:        req.MinBudget,
+		MaxBudget:        req.MaxBudget,
+		PreferredSources: cloneAndNormalizePreferenceValues(req.PreferredSources, maxPreferenceSources),
+	}
+	if err := h.UserRepo.UpsertPreferencesScoped(r.Context(), userID, prefs); err != nil {
+		h.logger().Error("put user preferences upsert failed", "user_id", userID, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // PostUserFeedbackRequest — тело POST /users/{id}/feedback.
 type PostUserFeedbackRequest struct {
 	JobID    int64  `json:"job_id"`
@@ -403,6 +528,53 @@ func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst interface{}) ([]
 		return nil, fmt.Errorf("trailing data: %w", err)
 	}
 	return body, nil
+}
+
+func (h *Handlers) authorizeOwnedUserRequest(w http.ResponseWriter, r *http.Request, rawBody []byte) (int64, int64, bool) {
+	idStr := chi.URLParam(r, "id")
+	userID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || userID <= 0 {
+		http.Error(w, "invalid user id", http.StatusBadRequest)
+		return 0, 0, false
+	}
+	callerTelegramID, err := parseTelegramIDHeader(r.Header.Get(headerTelegramID))
+	if err != nil {
+		http.Error(w, "invalid x-telegram-id header", http.StatusBadRequest)
+		return 0, 0, false
+	}
+	if !h.enforceIPRateLimit(w, r) {
+		return 0, 0, false
+	}
+	if !h.authorizeUserRequest(w, r, callerTelegramID, rawBody) {
+		return 0, 0, false
+	}
+	if !h.enforceTelegramRateLimit(w, r, callerTelegramID) {
+		return 0, 0, false
+	}
+	return userID, callerTelegramID, true
+}
+
+func cloneAndNormalizePreferenceValues(values []string, maxItems int) []string {
+	if maxItems <= 0 {
+		return []string{}
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, raw := range values {
+		value := strings.ToLower(strings.TrimSpace(raw))
+		if value == "" || len(value) > maxPreferenceValueLen {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+		if len(out) >= maxItems {
+			break
+		}
+	}
+	return out
 }
 
 func (h *Handlers) authorize(w http.ResponseWriter, r *http.Request) bool {

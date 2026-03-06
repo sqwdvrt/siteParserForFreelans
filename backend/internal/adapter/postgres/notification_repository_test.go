@@ -72,7 +72,7 @@ func TestNotificationRepository_EnsurePending_New(t *testing.T) {
 	ctx := context.Background()
 	userID, jobID := createTestUserAndJob(t, pool, "EnsurePendingNew")
 
-	wasInserted, shouldSend, err := repo.EnsurePending(ctx, userID, jobID, 0.85)
+	wasInserted, shouldSend, err := repo.EnsurePending(ctx, userID, jobID, 0.85, 0.85, "v2", []string{"strong_similarity"})
 	if err != nil {
 		t.Fatalf("EnsurePending: %v", err)
 	}
@@ -91,13 +91,13 @@ func TestNotificationRepository_EnsurePending_RetryWhenPending(t *testing.T) {
 	userID, jobID := createTestUserAndJob(t, pool, "EnsurePendingRetry")
 
 	// Первый вызов — вставляет pending
-	_, _, err := repo.EnsurePending(ctx, userID, jobID, 0.85)
+	_, _, err := repo.EnsurePending(ctx, userID, jobID, 0.85, 0.85, "v2", []string{"strong_similarity"})
 	if err != nil {
 		t.Fatalf("EnsurePending 1: %v", err)
 	}
 
 	// Второй вызов при status=pending — wasInserted=false, shouldSend=true
-	wasInserted, shouldSend, err := repo.EnsurePending(ctx, userID, jobID, 0.9)
+	wasInserted, shouldSend, err := repo.EnsurePending(ctx, userID, jobID, 0.9, 0.9, "v2", []string{"strong_similarity"})
 	if err != nil {
 		t.Fatalf("EnsurePending 2: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestNotificationRepository_EnsurePending_SkipWhenSent(t *testing.T) {
 	userID, jobID := createTestUserAndJob(t, pool, "EnsurePendingSkipSent")
 
 	// Вставляем и помечаем как sent
-	_, _, err := repo.EnsurePending(ctx, userID, jobID, 0.85)
+	_, _, err := repo.EnsurePending(ctx, userID, jobID, 0.85, 0.85, "v2", []string{"strong_similarity"})
 	if err != nil {
 		t.Fatalf("EnsurePending: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestNotificationRepository_EnsurePending_SkipWhenSent(t *testing.T) {
 	}
 
 	// После MarkSent — shouldSend=false
-	wasInserted, shouldSend, err := repo.EnsurePending(ctx, userID, jobID, 0.9)
+	wasInserted, shouldSend, err := repo.EnsurePending(ctx, userID, jobID, 0.9, 0.9, "v2", []string{"strong_similarity"})
 	if err != nil {
 		t.Fatalf("EnsurePending after sent: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestNotificationRepository_MarkSent(t *testing.T) {
 	ctx := context.Background()
 	userID, jobID := createTestUserAndJob(t, pool, "MarkSent")
 
-	_, _, err := repo.EnsurePending(ctx, userID, jobID, 0.85)
+	_, _, err := repo.EnsurePending(ctx, userID, jobID, 0.85, 0.85, "v2", []string{"strong_similarity"})
 	if err != nil {
 		t.Fatalf("EnsurePending: %v", err)
 	}
@@ -153,7 +153,7 @@ func TestNotificationRepository_MarkSent(t *testing.T) {
 	}
 
 	// После MarkSent запись должна считаться sent
-	_, shouldSend, err := repo.EnsurePending(ctx, userID, jobID, 0.9)
+	_, shouldSend, err := repo.EnsurePending(ctx, userID, jobID, 0.9, 0.9, "v2", []string{"strong_similarity"})
 	if err != nil {
 		t.Fatalf("EnsurePending after MarkSent: %v", err)
 	}
@@ -168,7 +168,7 @@ func TestNotificationRepository_Delete(t *testing.T) {
 	ctx := context.Background()
 	userID, jobID := createTestUserAndJob(t, pool, "Delete")
 
-	_, _, _ = repo.EnsurePending(ctx, userID, jobID, 0.85)
+	_, _, _ = repo.EnsurePending(ctx, userID, jobID, 0.85, 0.85, "v2", []string{"strong_similarity"})
 
 	err := repo.Delete(ctx, userID, jobID)
 	if err != nil {
@@ -182,7 +182,7 @@ func TestNotificationRepository_Delete(t *testing.T) {
 	}
 
 	// После Delete запись должна вставляться снова
-	wasInserted, shouldSend, err := repo.EnsurePending(ctx, userID, jobID, 0.85)
+	wasInserted, shouldSend, err := repo.EnsurePending(ctx, userID, jobID, 0.85, 0.85, "v2", []string{"strong_similarity"})
 	if err != nil {
 		t.Fatalf("EnsurePending after Delete: %v", err)
 	}
@@ -198,7 +198,7 @@ func TestNotificationRepository_SentRecently(t *testing.T) {
 	userID, jobID := createTestUserAndJob(t, pool, "SentRecently")
 
 	// pending-запись НЕ считается за "sent recently"
-	_, _, _ = repo.EnsurePending(ctx, userID, jobID, 0.85)
+	_, _, _ = repo.EnsurePending(ctx, userID, jobID, 0.85, 0.85, "v2", []string{"strong_similarity"})
 	recent, err := repo.SentRecently(ctx, userID, 5*time.Minute)
 	if err != nil {
 		t.Fatalf("SentRecently (pending): %v", err)
@@ -259,7 +259,7 @@ func TestNotificationRepository_CountToday(t *testing.T) {
 	}
 
 	// pending-запись НЕ считается в CountToday
-	_, _, _ = repo.EnsurePending(ctx, userID, jobID, 0.85)
+	_, _, _ = repo.EnsurePending(ctx, userID, jobID, 0.85, 0.85, "v2", []string{"strong_similarity"})
 	n, err = repo.CountToday(ctx, userID)
 	if err != nil {
 		t.Fatalf("CountToday after EnsurePending: %v", err)

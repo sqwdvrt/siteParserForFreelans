@@ -61,10 +61,12 @@ func (m *mockRateLimiter) Allow(ctx context.Context, key string, limit int, wind
 }
 
 type mockUserRepo struct {
-	saveFunc             func(ctx context.Context, telegramID int64) (int64, error)
-	getByIDFunc          func(ctx context.Context, userID int64) (*domain.User, error)
-	updateProfileFunc    func(ctx context.Context, userID int64, profileText string) error
-	updateNotifyHourFunc func(ctx context.Context, userID int64, hour int) error
+	saveFunc              func(ctx context.Context, telegramID int64) (int64, error)
+	getByIDFunc           func(ctx context.Context, userID int64) (*domain.User, error)
+	updateProfileFunc     func(ctx context.Context, userID int64, profileText string) error
+	updateNotifyHourFunc  func(ctx context.Context, userID int64, hour int) error
+	getPreferencesFunc    func(ctx context.Context, userID int64) (*domain.UserPreferences, error)
+	upsertPreferencesFunc func(ctx context.Context, userID int64, prefs domain.UserPreferences) error
 }
 
 func (m *mockUserRepo) Save(ctx context.Context, telegramID int64) (int64, error) {
@@ -101,6 +103,23 @@ func (m *mockUserRepo) UpdateNotifyHourScoped(ctx context.Context, userID int64,
 		return m.updateNotifyHourFunc(ctx, userID, hour)
 	}
 	return nil
+}
+
+func (m *mockUserRepo) GetPreferencesScoped(ctx context.Context, userID int64) (*domain.UserPreferences, error) {
+	if m.getPreferencesFunc != nil {
+		return m.getPreferencesFunc(ctx, userID)
+	}
+	return &domain.UserPreferences{}, nil
+}
+
+func (m *mockUserRepo) UpsertPreferencesScoped(ctx context.Context, userID int64, prefs domain.UserPreferences) error {
+	if m.upsertPreferencesFunc != nil {
+		return m.upsertPreferencesFunc(ctx, userID, prefs)
+	}
+	return nil
+}
+func (m *mockUserRepo) GetProUsersWithNotifyHour(ctx context.Context, hour int) ([]int64, error) {
+	return nil, nil
 }
 
 const testAuthToken = "test-api-token"
@@ -613,6 +632,136 @@ func TestHandlers_PutUserNotifyHour_UpdateError(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "internal error") {
 		t.Errorf("response = %q, want generic internal error", rr.Body.String())
+	}
+}
+
+func TestHandlers_GetUserPreferences_Success(t *testing.T) {
+	repo := &mockUserRepo{
+		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+			return &domain.User{ID: userID, TelegramID: 123456789, IsPro: true}, nil
+		},
+		getPreferencesFunc: func(ctx context.Context, userID int64) (*domain.UserPreferences, error) {
+			minBudget := 1000.0
+			maxBudget := 5000.0
+			return &domain.UserPreferences{
+				UserID:           userID,
+				IncludeKeywords:  []string{"Python", "python", "Go"},
+				ExcludeKeywords:  []string{"PHP"},
+				MinBudget:        &minBudget,
+				MaxBudget:        &maxBudget,
+				PreferredSources: []string{"KWORK", "freelancehunt"},
+			}, nil
+		},
+	}
+	h := &Handlers{UserRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+
+	req := newJSONRequest(
+		http.MethodGet,
+		"/users/7/preferences",
+		nil,
+		newAuthHeadersWithUserSign(http.MethodGet, "/users/7/preferences", 123456789, nil),
+	)
+	req = attachRouteUserID(req, "7")
+	rr := httptest.NewRecorder()
+
+	h.GetUserPreferences(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var resp UserPreferencesResponse
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.IncludeKeywords) != 2 || resp.IncludeKeywords[0] != "python" || resp.IncludeKeywords[1] != "go" {
+		t.Fatalf("include_keywords = %#v, want [python go]", resp.IncludeKeywords)
+	}
+	if len(resp.PreferredSources) != 2 || resp.PreferredSources[0] != "kwork" || resp.PreferredSources[1] != "freelancehunt" {
+		t.Fatalf("preferred_sources = %#v, want normalized sources", resp.PreferredSources)
+	}
+	if resp.MinBudget == nil || *resp.MinBudget != 1000 {
+		t.Fatalf("min_budget = %#v, want 1000", resp.MinBudget)
+	}
+	if resp.MaxBudget == nil || *resp.MaxBudget != 5000 {
+		t.Fatalf("max_budget = %#v, want 5000", resp.MaxBudget)
+	}
+}
+
+func TestHandlers_PutUserPreferences_Success(t *testing.T) {
+	var captured domain.UserPreferences
+	repo := &mockUserRepo{
+		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+			return &domain.User{ID: userID, TelegramID: 123456789, IsPro: true}, nil
+		},
+		upsertPreferencesFunc: func(ctx context.Context, userID int64, prefs domain.UserPreferences) error {
+			captured = prefs
+			return nil
+		},
+	}
+	h := &Handlers{UserRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+
+	body := []byte(`{
+		"include_keywords":["Python"," python ","Go"],
+		"exclude_keywords":["PHP","php"],
+		"min_budget":1500,
+		"max_budget":4000,
+		"preferred_sources":["KWORK","FreelanceHunt"]
+	}`)
+	req := newJSONRequest(
+		http.MethodPut,
+		"/users/8/preferences",
+		body,
+		newAuthHeadersWithUserSign(http.MethodPut, "/users/8/preferences", 123456789, body),
+	)
+	req = attachRouteUserID(req, "8")
+	rr := httptest.NewRecorder()
+
+	h.PutUserPreferences(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+	if captured.UserID != 8 {
+		t.Fatalf("captured user_id = %d, want 8", captured.UserID)
+	}
+	if len(captured.IncludeKeywords) != 2 || captured.IncludeKeywords[0] != "python" || captured.IncludeKeywords[1] != "go" {
+		t.Fatalf("include_keywords = %#v, want normalized unique list", captured.IncludeKeywords)
+	}
+	if len(captured.ExcludeKeywords) != 1 || captured.ExcludeKeywords[0] != "php" {
+		t.Fatalf("exclude_keywords = %#v, want [php]", captured.ExcludeKeywords)
+	}
+	if captured.MinBudget == nil || *captured.MinBudget != 1500 {
+		t.Fatalf("min_budget = %#v, want 1500", captured.MinBudget)
+	}
+	if captured.MaxBudget == nil || *captured.MaxBudget != 4000 {
+		t.Fatalf("max_budget = %#v, want 4000", captured.MaxBudget)
+	}
+	if len(captured.PreferredSources) != 2 || captured.PreferredSources[0] != "kwork" || captured.PreferredSources[1] != "freelancehunt" {
+		t.Fatalf("preferred_sources = %#v, want normalized unique list", captured.PreferredSources)
+	}
+}
+
+func TestHandlers_PutUserPreferences_InvalidBudgetRange(t *testing.T) {
+	h := &Handlers{
+		UserRepo:       &mockUserRepo{},
+		AuthToken:      testAuthToken,
+		UserHMACSecret: testUserHMACSecret,
+	}
+
+	body := []byte(`{"min_budget":5000,"max_budget":1000}`)
+	req := newJSONRequest(
+		http.MethodPut,
+		"/users/8/preferences",
+		body,
+		newAuthHeadersWithUserSign(http.MethodPut, "/users/8/preferences", 123456789, body),
+	)
+	req = attachRouteUserID(req, "8")
+	rr := httptest.NewRecorder()
+
+	h.PutUserPreferences(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
 	}
 }
 

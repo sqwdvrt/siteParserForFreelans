@@ -200,6 +200,8 @@ func main() {
 	r.Post("/users", handlers.PostUsers)
 	r.Put("/users/{id}/profile", handlers.PutUserProfile)
 	r.Put("/users/{id}/notify-hour", handlers.PutUserNotifyHour)
+	r.Get("/users/{id}/preferences", handlers.GetUserPreferences)
+	r.Put("/users/{id}/preferences", handlers.PutUserPreferences)
 	r.Post("/users/{id}/feedback", handlers.PostUserFeedback)
 	r.Route("/admin", func(r chi.Router) {
 		r.Get("/stats", adminHandlers.GetStats)

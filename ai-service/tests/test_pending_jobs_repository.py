@@ -51,8 +51,11 @@ def test_upsert_executes_insert_on_conflict(monkeypatch) -> None:
     sql, params = cursor.execute_calls[0]
     assert "INSERT INTO pending_ac_jobs" in sql
     assert "ON CONFLICT (user_id, job_id)" in sql
+    assert "raw_similarity" in sql
+    assert "final_score" in sql
+    assert "reason_codes" in sql
     assert "trace_id" in sql
-    assert params == (10, 20, 0.85, "")
+    assert params == (10, 20, 0.85, 0.0, 0.0, "", [], "")
 
 
 def test_upsert_with_trace_id_normalizes_and_persists(monkeypatch) -> None:
@@ -61,11 +64,20 @@ def test_upsert_with_trace_id_normalizes_and_persists(monkeypatch) -> None:
     conn = _FakeConn(cursor)
     monkeypatch.setattr(repo, "_conn", lambda: _fake_conn_ctx(conn))
 
-    repo.upsert(user_id=10, job_id=20, match_score=0.85, trace_id=" trace-x ")
+    repo.upsert(
+        user_id=10,
+        job_id=20,
+        match_score=0.85,
+        raw_similarity=0.8,
+        final_score=0.83,
+        ranker_version="v2",
+        reason_codes=["fresh_job"],
+        trace_id=" trace-x ",
+    )
 
     assert len(cursor.execute_calls) == 1
     _sql, params = cursor.execute_calls[0]
-    assert params == (10, 20, 0.85, "trace-x")
+    assert params == (10, 20, 0.85, 0.8, 0.83, "v2", ["fresh_job"], "trace-x")
 
 
 def test_upsert_many_executes_single_bulk_query(monkeypatch) -> None:
@@ -73,7 +85,7 @@ def test_upsert_many_executes_single_bulk_query(monkeypatch) -> None:
     cursor = _FakeCursor()
     conn = _FakeConn(cursor)
     monkeypatch.setattr(repo, "_conn", lambda: _fake_conn_ctx(conn))
-    calls: list[tuple[str, list[tuple[int, int, float, str]], str | None]] = []
+    calls: list[tuple[str, list[tuple[int, int, float, float, float, str, list[str] | None, str]], str | None]] = []
 
     def fake_execute_values(cur, sql, argslist, template=None, **_kwargs) -> None:
         assert cur is cursor
@@ -86,8 +98,8 @@ def test_upsert_many_executes_single_bulk_query(monkeypatch) -> None:
 
     repo.upsert_many(
         [
-            (10, 20, 0.85, " trace-1 "),
-            (30, 40, 0.65, ""),
+            (10, 20, 0.85, 0.81, 0.83, "v2", ["fresh_job"], " trace-1 "),
+            (30, 40, 0.65, 0.61, 0.6, "v2", ["standard_recency"], ""),
         ]
     )
 
@@ -96,10 +108,10 @@ def test_upsert_many_executes_single_bulk_query(monkeypatch) -> None:
     sql, argslist, template = calls[0]
     assert "INSERT INTO pending_ac_jobs" in sql
     assert "ON CONFLICT (user_id, job_id)" in sql
-    assert template == "(%s, %s, %s, NULLIF(%s, ''))"
+    assert template == "(%s, %s, %s, %s, %s, NULLIF(%s, ''), %s, NULLIF(%s, ''))"
     assert argslist == [
-        (10, 20, 0.85, "trace-1"),
-        (30, 40, 0.65, ""),
+        (10, 20, 0.85, 0.81, 0.83, "v2", ["fresh_job"], "trace-1"),
+        (30, 40, 0.65, 0.61, 0.6, "v2", ["standard_recency"], ""),
     ]
 
 
@@ -108,7 +120,7 @@ def test_upsert_many_merges_duplicate_rows(monkeypatch) -> None:
     cursor = _FakeCursor()
     conn = _FakeConn(cursor)
     monkeypatch.setattr(repo, "_conn", lambda: _fake_conn_ctx(conn))
-    captured_argslist: list[tuple[int, int, float, str]] = []
+    captured_argslist: list[tuple[int, int, float, float, float, str, list[str], str]] = []
 
     def fake_execute_values(cur, _sql, argslist, template=None, **_kwargs) -> None:
         assert cur is cursor
@@ -122,16 +134,16 @@ def test_upsert_many_merges_duplicate_rows(monkeypatch) -> None:
 
     repo.upsert_many(
         [
-            (10, 20, 0.4, ""),
-            (10, 20, 0.9, "trace-first"),
-            (10, 20, 0.6, "trace-last"),
-            (11, 21, 0.3, ""),
+            (10, 20, 0.4, 0.4, 0.4, "v2", ["baseline_similarity"], ""),
+            (10, 20, 0.9, 0.9, 0.9, "v2", ["high_similarity"], "trace-first"),
+            (10, 20, 0.6, 0.6, 0.6, "v2", ["standard_recency"], "trace-last"),
+            (11, 21, 0.3, 0.3, 0.3, "v2", ["baseline_similarity"], ""),
         ]
     )
 
     assert captured_argslist == [
-        (10, 20, 0.9, "trace-last"),
-        (11, 21, 0.3, ""),
+        (10, 20, 0.9, 0.9, 0.9, "v2", ["high_similarity"], "trace-last"),
+        (11, 21, 0.3, 0.3, 0.3, "v2", ["baseline_similarity"], ""),
     ]
 
 

@@ -182,6 +182,15 @@ func (s *stubUserRepo) UpdateProfileScoped(ctx context.Context, userID int64, te
 func (s *stubUserRepo) UpdateNotifyHourScoped(ctx context.Context, userID int64, hour int) error {
 	return nil
 }
+func (s *stubUserRepo) GetPreferencesScoped(ctx context.Context, userID int64) (*domain.UserPreferences, error) {
+	return &domain.UserPreferences{}, nil
+}
+func (s *stubUserRepo) UpsertPreferencesScoped(ctx context.Context, userID int64, prefs domain.UserPreferences) error {
+	return nil
+}
+func (s *stubUserRepo) GetProUsersWithNotifyHour(ctx context.Context, hour int) ([]int64, error) {
+	return nil, nil
+}
 
 type stubJobRepo struct {
 	getByID func(ctx context.Context, jobID int64) (*domain.Job, error)
@@ -219,18 +228,22 @@ func (s *captureNotifier) Send(ctx context.Context, telegramID int64, p port.Not
 }
 
 type stubNotifRepo struct {
-	ensurePending func(ctx context.Context, userID, jobID int64, matchScore float64) (bool, bool, error)
+	ensurePending func(ctx context.Context, userID, jobID int64, matchScore float64, finalScore float64, rankerVersion string, reasonCodes []string, whyItFits string) (bool, bool, error)
 	markSent      func(ctx context.Context, userID, jobID int64) error
 	deleteFunc    func(ctx context.Context, userID, jobID int64) error
 	sentRecently  func(ctx context.Context, userID int64, within time.Duration) (bool, error)
 	countToday    func(ctx context.Context, userID int64) (int, error)
 }
 
-func (s *stubNotifRepo) EnsurePending(ctx context.Context, userID, jobID int64, matchScore float64) (bool, bool, error) {
+func (s *stubNotifRepo) EnsurePending(ctx context.Context, userID, jobID int64, matchScore float64, finalScore float64, rankerVersion string, reasonCodes []string, whyItFits string) (bool, bool, error) {
 	if s.ensurePending != nil {
-		return s.ensurePending(ctx, userID, jobID, matchScore)
+		return s.ensurePending(ctx, userID, jobID, matchScore, finalScore, rankerVersion, reasonCodes, whyItFits)
 	}
 	return true, true, nil
+}
+
+func (s *stubNotifRepo) GetPendingForUser(ctx context.Context, userID int64) ([]port.PendingNotification, error) {
+	return nil, nil
 }
 
 func (s *stubNotifRepo) MarkSent(ctx context.Context, userID, jobID int64) error {
@@ -294,7 +307,7 @@ func TestSendBatchNotification_BuildsBatchPayload(t *testing.T) {
 	var gotPayload port.NotifyPayload
 	sendNotif := usecase.NewSendNotification(
 		&stubNotifRepo{
-			ensurePending: func(_ context.Context, _ int64, _ int64, _ float64) (bool, bool, error) {
+			ensurePending: func(_ context.Context, _ int64, _ int64, _ float64, _ float64, _ string, _ []string, _ string) (bool, bool, error) {
 				return true, true, nil
 			},
 		},

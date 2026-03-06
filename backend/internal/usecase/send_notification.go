@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
@@ -57,7 +58,15 @@ func NewSendNotification(
 
 // Execute обрабатывает кандидата: EnsurePending → rate limit (только для новых) → Send → MarkSent.
 // Пропускает при: уже доставлено, rate limit, daily limit, отсутствие user/job.
-func (u *SendNotification) Execute(ctx context.Context, userID, jobID int64, matchScore float64, whyItFits string) error {
+func (u *SendNotification) Execute(
+	ctx context.Context,
+	userID, jobID int64,
+	matchScore float64,
+	finalScore float64,
+	rankerVersion string,
+	reasonCodes []string,
+	whyItFits string,
+) error {
 	user, err := u.userRepo.GetByID(ctx, userID)
 	if err != nil {
 		return fmt.Errorf("get user by id: %w", err)
@@ -76,12 +85,31 @@ func (u *SendNotification) Execute(ctx context.Context, userID, jobID int64, mat
 		return nil
 	}
 
-	wasInserted, shouldSend, err := u.notifRepo.EnsurePending(ctx, userID, jobID, matchScore)
+	effectiveFinalScore := finalScore
+	if effectiveFinalScore <= 0 {
+		effectiveFinalScore = matchScore
+	}
+	wasInserted, shouldSend, err := u.notifRepo.EnsurePending(
+		ctx,
+		userID,
+		jobID,
+		matchScore,
+		effectiveFinalScore,
+		rankerVersion,
+		reasonCodes,
+		whyItFits,
+	)
 	if err != nil {
 		return err
 	}
 	if !shouldSend {
 		slog.Debug("send notification: already sent, skip", "user_id", userID, "job_id", jobID)
+		return nil
+	}
+
+	// Pro-пользователи получают уведомления только через дайджест (hourly cron).
+	if user.IsPro {
+		slog.Debug("send notification: pro user, deferred to digest", "user_id", userID, "job_id", jobID)
 		return nil
 	}
 
@@ -113,9 +141,12 @@ func (u *SendNotification) Execute(ctx context.Context, userID, jobID int64, mat
 	}
 
 	payload := port.NotifyPayload{
-		Job:       job,
-		Score:     matchScore,
-		WhyItFits: whyItFits,
+		Job:           job,
+		Score:         effectiveFinalScore,
+		FinalScore:    effectiveFinalScore,
+		RankerVersion: rankerVersion,
+		ReasonCodes:   cloneStrings(reasonCodes),
+		WhyItFits:     whyItFits,
 	}
 	if err := u.notifier.Send(ctx, user.TelegramID, payload); err != nil {
 		// Запись остаётся 'pending' — Redis-очередь повторит через Nack.
@@ -152,9 +183,12 @@ func (u *SendNotification) ExecuteBatch(
 
 	// Дедупликация и сбор уникальных ID для одного batch-запроса.
 	type itemMeta struct {
-		title     string
-		whyItFits string
-		rank      int
+		title         string
+		whyItFits     string
+		rank          int
+		finalScore    float64
+		rankerVersion string
+		reasonCodes   []string
 	}
 	metaByID := make(map[int64]itemMeta, len(jobs))
 	uniqueIDs := make([]int64, 0, len(jobs))
@@ -162,8 +196,16 @@ func (u *SendNotification) ExecuteBatch(
 		if item.JobID <= 0 {
 			continue
 		}
-		if _, dup := metaByID[item.JobID]; !dup {
-			metaByID[item.JobID] = itemMeta{title: item.Title, whyItFits: item.WhyItFits, rank: item.Rank}
+		current, dup := metaByID[item.JobID]
+		if !dup || item.FinalScore > current.finalScore {
+			metaByID[item.JobID] = itemMeta{
+				title:         item.Title,
+				whyItFits:     item.WhyItFits,
+				rank:          item.Rank,
+				finalScore:    item.FinalScore,
+				rankerVersion: item.RankerVersion,
+				reasonCodes:   cloneStrings(item.ReasonCodes),
+			}
 			uniqueIDs = append(uniqueIDs, item.JobID)
 		}
 	}
@@ -181,8 +223,18 @@ func (u *SendNotification) ExecuteBatch(
 			continue
 		}
 
-		// For batch payload we don't have per-item match_score; store neutral score.
-		wasInserted, shouldSend, err := u.notifRepo.EnsurePending(ctx, userID, jobID, 0)
+		meta := metaByID[jobID]
+		finalScore := meta.finalScore
+		wasInserted, shouldSend, err := u.notifRepo.EnsurePending(
+			ctx,
+			userID,
+			jobID,
+			finalScore,
+			finalScore,
+			meta.rankerVersion,
+			meta.reasonCodes,
+			meta.whyItFits,
+		)
 		if err != nil {
 			return err
 		}
@@ -190,7 +242,6 @@ func (u *SendNotification) ExecuteBatch(
 			continue
 		}
 
-		meta := metaByID[jobID]
 		jobCopy := *job
 		if meta.title != "" {
 			jobCopy.Title = meta.title
@@ -199,15 +250,24 @@ func (u *SendNotification) ExecuteBatch(
 			jobID:       jobID,
 			wasInserted: wasInserted,
 			payload: port.BatchNotifyItem{
-				Job:       &jobCopy,
-				WhyItFits: meta.whyItFits,
-				Rank:      meta.rank,
+				Job:           &jobCopy,
+				WhyItFits:     meta.whyItFits,
+				Rank:          meta.rank,
+				FinalScore:    meta.finalScore,
+				RankerVersion: meta.rankerVersion,
+				ReasonCodes:   cloneStrings(meta.reasonCodes),
 			},
 		})
 	}
 
 	if len(prepared) == 0 {
 		slog.Debug("send batch notification: no jobs to send", "user_id", userID)
+		return nil
+	}
+
+	// Pro-пользователи получают уведомления только через дайджест (hourly cron).
+	if user.IsPro {
+		slog.Debug("send batch notification: pro user, deferred to digest", "user_id", userID, "jobs", len(prepared))
 		return nil
 	}
 
@@ -218,6 +278,16 @@ func (u *SendNotification) ExecuteBatch(
 	if len(deliverable) == 0 {
 		return nil
 	}
+	sortBatchDeliveryItems(deliverable)
+	for idx := range deliverable {
+		deliverable[idx].payload.Rank = idx + 1
+	}
+	slog.Info(
+		"send batch notification: ranked batch",
+		"user_id", userID,
+		"jobs", len(deliverable),
+		"top_reasons", topReasonCodes(deliverable, 5),
+	)
 
 	payload := port.NotifyPayload{
 		Batch:       make([]port.BatchNotifyItem, 0, len(deliverable)),
@@ -241,6 +311,77 @@ func (u *SendNotification) ExecuteBatch(
 	}
 	slog.Info("batch notification sent", "user_id", userID, "jobs", len(deliverable))
 	return nil
+}
+
+func sortBatchDeliveryItems(items []batchDeliveryItem) {
+	sort.SliceStable(items, func(i, j int) bool {
+		left := items[i].payload.FinalScore
+		right := items[j].payload.FinalScore
+		if left == right {
+			ri := items[i].payload.Rank
+			rj := items[j].payload.Rank
+			if ri <= 0 && rj <= 0 {
+				return items[i].jobID < items[j].jobID
+			}
+			if ri <= 0 {
+				return false
+			}
+			if rj <= 0 {
+				return true
+			}
+			return ri < rj
+		}
+		return left > right
+	})
+}
+
+func topReasonCodes(items []batchDeliveryItem, limit int) []string {
+	if limit <= 0 {
+		return nil
+	}
+	counts := make(map[string]int, limit)
+	for _, item := range items {
+		for _, code := range item.payload.ReasonCodes {
+			if code == "" {
+				continue
+			}
+			counts[code]++
+		}
+	}
+	if len(counts) == 0 {
+		return nil
+	}
+	type reasonStat struct {
+		code  string
+		count int
+	}
+	stats := make([]reasonStat, 0, len(counts))
+	for code, count := range counts {
+		stats = append(stats, reasonStat{code: code, count: count})
+	}
+	sort.Slice(stats, func(i, j int) bool {
+		if stats[i].count == stats[j].count {
+			return stats[i].code < stats[j].code
+		}
+		return stats[i].count > stats[j].count
+	})
+	if len(stats) > limit {
+		stats = stats[:limit]
+	}
+	out := make([]string, 0, len(stats))
+	for _, stat := range stats {
+		out = append(out, stat.code)
+	}
+	return out
+}
+
+func cloneStrings(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]string, len(items))
+	copy(out, items)
+	return out
 }
 
 func (u *SendNotification) applyBatchLimits(

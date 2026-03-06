@@ -158,7 +158,7 @@ func main() {
 
 	cronSpec := os.Getenv("CRAWL_CRON")
 	if cronSpec == "" {
-		cronSpec = "*/10 * * * *" // каждые 10 мин по умолчанию
+		cronSpec = "0 5 * * *" // каждый день в 05:00 UTC по умолчанию
 	}
 
 	ctx := context.Background()

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
@@ -22,12 +23,24 @@ func NewFeedbackRepository(pool *pgxpool.Pool) *FeedbackRepository {
 
 // Upsert вставляет или обновляет feedback для (user_id, job_id).
 func (r *FeedbackRepository) Upsert(ctx context.Context, userID, jobID int64, fb domain.FeedbackType) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin feedback tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
 	const q = `
 		INSERT INTO user_feedback (user_id, job_id, feedback)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (user_id, job_id) DO UPDATE SET feedback = EXCLUDED.feedback, created_at = NOW()`
-	if _, err := r.pool.Exec(ctx, q, userID, jobID, string(fb)); err != nil {
+	if _, err := tx.Exec(ctx, q, userID, jobID, string(fb)); err != nil {
 		return fmt.Errorf("upsert feedback: %w", err)
+	}
+	if err := r.rebuildTagAffinity(ctx, tx, userID); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit feedback tx: %w", err)
 	}
 	return nil
 }
@@ -47,6 +60,75 @@ func (r *FeedbackRepository) StatsRecent(ctx context.Context, userID int64, with
 		return port.FeedbackStats{}, fmt.Errorf("stats recent: %w", err)
 	}
 	return stats, nil
+}
+
+func (r *FeedbackRepository) rebuildTagAffinity(ctx context.Context, tx pgxTx, userID int64) error {
+	const upsertAffinitySQL = `
+		WITH aggregated AS (
+			SELECT
+				uf.user_id,
+				lower(trim(tag.value)) AS tag,
+				COUNT(*) FILTER (WHERE uf.feedback = 'good')::int AS good_count,
+				COUNT(*) FILTER (WHERE uf.feedback = 'bad')::int  AS bad_count
+			FROM user_feedback uf
+			JOIN job_embeddings je ON je.job_id = uf.job_id
+			CROSS JOIN LATERAL jsonb_array_elements_text(
+				COALESCE(je.ai_metadata->'classification'->'technologies', '[]'::jsonb)
+			) AS tag(value)
+			WHERE uf.user_id = $1
+			  AND trim(tag.value) <> ''
+			GROUP BY uf.user_id, lower(trim(tag.value))
+		)
+		INSERT INTO user_tag_affinity (user_id, tag, good_count, bad_count, weight, updated_at)
+		SELECT
+			user_id,
+			tag,
+			good_count,
+			bad_count,
+			CASE
+				WHEN good_count + bad_count = 0 THEN 0
+				ELSE GREATEST(
+					-1,
+					LEAST(
+						1,
+						(good_count::float - bad_count::float) / NULLIF((good_count + bad_count)::float, 0)
+					)
+				)
+			END AS weight,
+			NOW()
+		FROM aggregated
+		ON CONFLICT (user_id, tag) DO UPDATE SET
+			good_count = EXCLUDED.good_count,
+			bad_count = EXCLUDED.bad_count,
+			weight = EXCLUDED.weight,
+			updated_at = NOW()
+	`
+	if _, err := tx.Exec(ctx, upsertAffinitySQL, userID); err != nil {
+		return fmt.Errorf("rebuild tag affinity upsert: %w", err)
+	}
+
+	const cleanupSQL = `
+		DELETE FROM user_tag_affinity uta
+		WHERE uta.user_id = $1
+		  AND NOT EXISTS (
+			  SELECT 1
+			  FROM user_feedback uf
+			  JOIN job_embeddings je ON je.job_id = uf.job_id
+			  CROSS JOIN LATERAL jsonb_array_elements_text(
+				  COALESCE(je.ai_metadata->'classification'->'technologies', '[]'::jsonb)
+			  ) AS tag(value)
+			  WHERE uf.user_id = uta.user_id
+			    AND lower(trim(tag.value)) = uta.tag
+		  )
+	`
+	if _, err := tx.Exec(ctx, cleanupSQL, userID); err != nil {
+		return fmt.Errorf("rebuild tag affinity cleanup: %w", err)
+	}
+	return nil
+}
+
+type pgxTx interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
 }
 
 var _ port.FeedbackRepository = (*FeedbackRepository)(nil)

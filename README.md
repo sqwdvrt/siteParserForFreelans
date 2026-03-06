@@ -46,8 +46,11 @@ export PYTHON_BIN=python3.11
 cp .env.example .env
 # Отредактировать .env: POSTGRES_PASSWORD, DATABASE_URL, REDIS_URL, API_AUTH_TOKEN, API_USER_HMAC_SECRET, TELEGRAM_BOT_TOKEN
 
-# 2. Запустить core (always-on: PostgreSQL, Redis, backend-migrate, API, Telegram-бот)
+# 2. Запустить core (always-on: PostgreSQL, Redis, backend-migrate, API)
 docker compose up -d
+
+# (опционально) локально включить Telegram-бота
+docker compose --profile bot up -d telegram-bot
 
 # (опционально) включить вторичные воркеры:
 # backend-crawler, backend-notifier, ai-service, ai-ac-consumer, ollama
@@ -57,7 +60,9 @@ docker compose --profile workers up -d
 docker compose --profile ai-user-embed up -d ai-user-embed
 
 # 3. Написать боту в Telegram: /start → /profile Ваш профиль
-# Уведомления придут на TELEGRAM_ID из .env
+# Project-уведомления идут в chat_id пользователя из таблицы users.
+# TELEGRAM_ID из .env нужен для локальных smoke/e2e-проверок и fallback Alertmanager,
+# если не задан ALERTMANAGER_TELEGRAM_CHAT_ID.
 
 # 4. E2E-проверка (опционально)
 ./scripts/e2e_test.sh
@@ -77,6 +82,7 @@ docker compose --profile ai-user-embed up -d ai-user-embed
 
 - `docker-compose.yml` — локальный dev-профиль (включает локальные PostgreSQL/Redis и допускает `sslmode=disable`, `redis://`, `http://`).
   Вторичные воркеры (`backend-crawler`, `backend-notifier`, `ai-service`, `ai-ac-consumer`) вынесены в profile `workers` и запускаются on-demand.
+  Локальный `telegram-bot` вынесен в profile `bot`; если бот уже живет отдельно, например на Railway, этот profile локально можно не запускать.
   Для точечного запуска `ai-user-embed` доступен отдельный profile `ai-user-embed`.
 - `docker-compose.prod.yml` — production-профиль (только внешние TLS endpoints, `APP_ENV=production`).
 - `docker-compose.monitoring.yml` — профиль мониторинга (Prometheus + Alertmanager, profile `monitoring`).
@@ -86,7 +92,8 @@ docker compose --profile ai-user-embed up -d ai-user-embed
 ```bash
 # Alertmanager получает секреты из env:
 # - ALERTMANAGER_TELEGRAM_BOT_TOKEN (или TELEGRAM_BOT_TOKEN)
-# - ALERTMANAGER_TELEGRAM_CHAT_ID (или TELEGRAM_ID)
+# - ALERTMANAGER_TELEGRAM_CHAT_ID (рекомендуется отдельный канал/ops-chat)
+# - если ALERTMANAGER_TELEGRAM_CHAT_ID не задан, используется TELEGRAM_ID
 # - ALERTMANAGER_SLACK_WEBHOOK_URL (опционально)
 # Не сохраняйте эти значения в plaintext-файлы monitoring/alertmanager/secrets/*
 # Очистка legacy-файлов (если были): rm -f monitoring/alertmanager/secrets/telegram_bot_token monitoring/alertmanager/secrets/telegram_chat_id monitoring/alertmanager/secrets/slack_webhook_url
@@ -182,8 +189,10 @@ cd backend && go run ./cmd/crawler
 | `API_ALLOW_REDIS_DEGRADED` | Явный opt-in запуска backend API без Redis (`1=true`) только для development. По умолчанию `0`: при недоступном Redis API завершится с ошибкой (fail-closed). В `APP_ENV=production` значение `1` запрещено |
 | `API_TRUSTED_PROXY_CIDRS` | CIDR-allowlist доверенных reverse-proxy (через запятую). Заголовки `X-Forwarded-For`/`X-Real-IP` учитываются только если `RemoteAddr` попадает в этот список |
 | `API_TLS_CERT_FILE`/`API_TLS_KEY_FILE` | Путь к TLS-сертификату и ключу API (обязательны в `APP_ENV=production`) |
-| `TELEGRAM_BOT_TOKEN` | Токен бота для уведомлений |
-| `TELEGRAM_ID` | Ваш chat_id (уведомления придут сюда) |
+| `TELEGRAM_BOT_TOKEN` | Токен Telegram-бота для notifier / smoke / Alertmanager fallback |
+| `TELEGRAM_ID` | Личный chat_id для локальных smoke/e2e-проверок и fallback Alertmanager, если `ALERTMANAGER_TELEGRAM_CHAT_ID` не задан |
+| `ALERTMANAGER_TELEGRAM_BOT_TOKEN` | Отдельный токен бота для Alertmanager (опционально; иначе используется `TELEGRAM_BOT_TOKEN`) |
+| `ALERTMANAGER_TELEGRAM_CHAT_ID` | Отдельный chat_id канала/ops-чата для monitoring alerts (рекомендуется) |
 | `NOTIFY_PRO_MAX_PER_DAY` | Предпочтительный суточный лимит уведомлений на пользователя (`backend-notifier`, по умолчанию `5`) |
 | `NOTIFY_MAX_PER_DAY` | Legacy fallback для суточного лимита уведомлений (если `NOTIFY_PRO_MAX_PER_DAY` не задан) |
 | `API_URL` | URL backend API (в production для telegram-bot только `https://`) |

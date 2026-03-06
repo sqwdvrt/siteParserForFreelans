@@ -31,7 +31,11 @@ class PostgresJobRepository(PooledPostgresRepository, JobRepository):
         with self._conn() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
-                    "SELECT id, title, description, raw_html FROM jobs WHERE id = %s",
+                    """
+                    SELECT id, source, url, title, description, COALESCE(budget, '') AS budget, raw_html, posted_at, created_at
+                    FROM jobs
+                    WHERE id = %s
+                    """,
                     (job_id,),
                 )
                 row: dict[str, Any] | None = cur.fetchone()
@@ -39,9 +43,14 @@ class PostgresJobRepository(PooledPostgresRepository, JobRepository):
             return None
         return Job(
             id=row["id"],
+            source=row["source"] or "kwork",
+            url=row["url"] or "",
             title=row["title"] or "",
             description=row["description"],
+            budget=row["budget"] or "",
             raw_html=row["raw_html"] or "",
+            posted_at=row["posted_at"],
+            created_at=row["created_at"],
         )
 
     def save_embedding(
@@ -74,7 +83,43 @@ class PostgresJobRepository(PooledPostgresRepository, JobRepository):
                 )
                 return cur.fetchone() is not None
 
-    def get_with_scores(self, job_ids: list[int], user_embedding: list[float]) -> list[tuple[Job, float]]:
+    def has_recent_similar_title(self, job_id: int, title: str, days: int = 7) -> bool:
+        normalized_title = " ".join((title or "").strip().lower().split())
+        if not normalized_title:
+            return False
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM jobs j
+                        WHERE j.id <> %s
+                          AND j.created_at >= NOW() - make_interval(days => %s)
+                          AND regexp_replace(
+                                regexp_replace(lower(COALESCE(j.title, '')), '[^[:alnum:][:space:]]+', ' ', 'g'),
+                                '\\s+',
+                                ' ',
+                                'g'
+                              ) = regexp_replace(
+                                regexp_replace(lower(%s), '[^[:alnum:][:space:]]+', ' ', 'g'),
+                                '\\s+',
+                                ' ',
+                                'g'
+                              )
+                    )
+                    """,
+                    (job_id, days, normalized_title),
+                )
+                row = cur.fetchone()
+        return bool(row[0]) if row else False
+
+    def get_with_scores(
+        self,
+        job_ids: list[int],
+        user_embedding: list[float],
+        user_id: int | None = None,
+    ) -> list[tuple[Job, float]]:
         """Load jobs by ids with similarity score against user embedding."""
         if not job_ids:
             return []
@@ -87,16 +132,45 @@ class PostgresJobRepository(PooledPostgresRepository, JobRepository):
                     """
                     SELECT
                         j.id,
+                        j.source,
+                        j.url,
                         j.title,
                         j.description,
+                        COALESCE(j.budget, '') AS budget,
                         j.raw_html,
-                        1 - (je.embedding <=> %s) AS similarity
+                        j.posted_at,
+                        j.created_at,
+                        ARRAY(
+                            SELECT lower(trim(tag.value))
+                            FROM jsonb_array_elements_text(
+                                COALESCE(je.ai_metadata->'classification'->'technologies', '[]'::jsonb)
+                            ) AS tag(value)
+                            WHERE trim(tag.value) <> ''
+                        ) AS technologies,
+                        1 - (je.embedding <=> %s) AS similarity,
+                        COALESCE(p.match_score, 1 - (je.embedding <=> %s)) AS match_score,
+                        COALESCE(p.raw_similarity, 1 - (je.embedding <=> %s)) AS raw_similarity,
+                        COALESCE(p.final_score, COALESCE(p.match_score, 1 - (je.embedding <=> %s))) AS final_score,
+                        COALESCE(p.ranker_version, '') AS ranker_version,
+                        COALESCE(p.reason_codes, ARRAY[]::text[]) AS reason_codes
                     FROM jobs j
                     JOIN job_embeddings je ON je.job_id = j.id
+                    LEFT JOIN pending_ac_jobs p
+                      ON p.job_id = j.id
+                     AND (%s IS NULL OR p.user_id = %s)
                     WHERE j.id = ANY(%s)
-                    ORDER BY similarity DESC
+                    ORDER BY COALESCE(p.final_score, p.match_score, 1 - (je.embedding <=> %s)) DESC, similarity DESC
                     """,
-                    (Vector(user_embedding), job_ids),
+                    (
+                        Vector(user_embedding),
+                        Vector(user_embedding),
+                        Vector(user_embedding),
+                        Vector(user_embedding),
+                        user_id,
+                        user_id,
+                        job_ids,
+                        Vector(user_embedding),
+                    ),
                 )
                 rows: list[dict[str, Any]] = cur.fetchall()
 
@@ -106,9 +180,20 @@ class PostgresJobRepository(PooledPostgresRepository, JobRepository):
                 (
                     Job(
                         id=row["id"],
+                        source=row["source"] or "kwork",
+                        url=row["url"] or "",
                         title=row["title"] or "",
                         description=row["description"],
+                        budget=row["budget"] or "",
                         raw_html=row["raw_html"] or "",
+                        technologies=list(row["technologies"] or []),
+                        posted_at=row["posted_at"],
+                        created_at=row["created_at"],
+                        match_score=float(row["match_score"]),
+                        raw_similarity=float(row["raw_similarity"]),
+                        final_score=float(row["final_score"]),
+                        ranker_version=row["ranker_version"] or "",
+                        reason_codes=list(row["reason_codes"] or []),
                     ),
                     float(row["similarity"]),
                 )
