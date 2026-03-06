@@ -8,7 +8,7 @@ from sentence_transformers import SentenceTransformer
 
 from ai_service.port.embedding import EmbeddingService
 
-DEFAULT_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+DEFAULT_MODEL = "all-MiniLM-L6-v2"
 EMBEDDING_DIM = 384
 DEFAULT_BUNDLED_MODELS_DIR = "/opt/models"
 MODELS_DIR_ENV = "EMBEDDING_MODELS_DIR"
@@ -23,10 +23,19 @@ class SentenceTransformerEmbedding(EmbeddingService):
     def __init__(self, model_name: str = DEFAULT_MODEL) -> None:
         model_source, local_only = _resolve_model_source(model_name)
         try:
-            self._model = SentenceTransformer(model_source, local_files_only=local_only)
+            # Keep initialization peak memory lower on small containers.
+            self._model = SentenceTransformer(
+                model_source,
+                local_files_only=local_only,
+                model_kwargs={"low_cpu_mem_usage": True},
+            )
         except TypeError:
-            # Backward-compatible fallback for older/newer ST signatures and test fakes.
-            self._model = SentenceTransformer(model_source)
+            try:
+                # Backward-compatible fallback for older/newer ST signatures.
+                self._model = SentenceTransformer(model_source, local_files_only=local_only)
+            except TypeError:
+                # Fallback for test fakes that only accept one positional arg.
+                self._model = SentenceTransformer(model_source)
         self._model_name = model_name
 
     @property

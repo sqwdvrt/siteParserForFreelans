@@ -137,7 +137,7 @@ def main() -> None:
     )
 
     queue_name = os.getenv("AI_QUEUE", "ai-process")
-    model_name = os.getenv("EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")
+    model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     threshold = float(os.getenv("SIMILARITY_THRESHOLD", "0.7"))
     max_matches = int(os.getenv("MAX_MATCHES_PER_JOB", "20"))
     ollama_url = os.getenv("OLLAMA_URL", "http://ollama:11434")

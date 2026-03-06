@@ -125,7 +125,7 @@ def main() -> None:
     init_tracer("site-parser-user-embed")
 
     queue_name = os.getenv("USER_EMBED_QUEUE", "user-embed")
-    model_name = os.getenv("EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2")
+    model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 
     user_repo = PostgresUserRepository(db_url)
     embedding = SentenceTransformerEmbedding(model_name)
