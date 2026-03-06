@@ -135,3 +135,71 @@ def test_safe_redirect_handler_allows_relative_redirect_on_allowed_host(bot):
 
     assert redirected is not None
     assert urllib.parse.urlsplit(redirected.full_url).hostname == "api.example.com"
+
+
+def test_post_feedback_signs_with_telegram_id_not_user_id(bot, monkeypatch):
+    """post_feedback должен подписывать запрос с telegram_id, а не user_id."""
+    captured = {}
+
+    def fake_http_post(url, data, headers=None):
+        captured["headers"] = headers or {}
+        return (204, None)
+
+    monkeypatch.setattr(bot, "_http_post", fake_http_post)
+    bot._register_allowed_host("https://api.example.com")
+
+    user_id = 42          # database user ID
+    telegram_id = 987654  # Telegram user ID — different from user_id
+
+    bot.post_feedback("https://api.example.com", user_id, telegram_id, 1, "good", "tok", "secret")
+
+    assert "X-Telegram-ID" in captured["headers"]
+    assert captured["headers"]["X-Telegram-ID"] == str(telegram_id), (
+        f"X-Telegram-ID must be telegram_id ({telegram_id}), got {captured['headers']['X-Telegram-ID']}"
+    )
+    assert captured["headers"]["X-Telegram-ID"] != str(user_id), (
+        "X-Telegram-ID must NOT be user_id"
+    )
+
+
+def test_post_feedback_url_contains_user_id(bot, monkeypatch):
+    """URL запроса должен содержать user_id (database ID), не telegram_id."""
+    captured = {}
+
+    def fake_http_post(url, data, headers=None):
+        captured["url"] = url
+        return (204, None)
+
+    monkeypatch.setattr(bot, "_http_post", fake_http_post)
+    bot._register_allowed_host("https://api.example.com")
+
+    user_id = 42
+    telegram_id = 987654
+
+    bot.post_feedback("https://api.example.com", user_id, telegram_id, 1, "good", "tok", "secret")
+
+    assert f"/users/{user_id}/feedback" in captured["url"]
+    assert str(telegram_id) not in captured["url"]
+
+
+def test_handle_callback_calls_post_feedback_with_correct_ids(bot, monkeypatch):
+    """handle_callback должен передавать правильные user_id и telegram_id в post_feedback."""
+    calls = []
+
+    monkeypatch.setattr(bot, "_resolve_user_id", lambda *a, **kw: 42)
+    monkeypatch.setattr(bot, "post_feedback", lambda *a, **kw: calls.append(a))
+    monkeypatch.setattr(bot, "answer_callback_query", lambda *a, **kw: None)
+
+    callback = {
+        "id": "cb1",
+        "data": "fb:g:7",
+        "from": {"id": 987654},
+    }
+    bot.handle_callback(callback, "token", "https://api.example.com", "tok", "hmac")
+
+    assert len(calls) == 1
+    _api_url, called_user_id, called_telegram_id, job_id, feedback = calls[0][:5]
+    assert called_user_id == 42, f"user_id должен быть database ID (42), получили {called_user_id}"
+    assert called_telegram_id == 987654, f"telegram_id должен быть Telegram ID (987654), получили {called_telegram_id}"
+    assert job_id == 7
+    assert feedback == "good"

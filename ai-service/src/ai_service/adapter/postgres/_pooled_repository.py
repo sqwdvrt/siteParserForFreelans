@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import threading
 from collections.abc import Generator
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pgvector.psycopg2 import register_vector
 from psycopg2.extensions import connection as PGConnection
@@ -39,7 +40,7 @@ class PooledPostgresRepository:
             raise ValueError("maxconn must be >= minconn")
         if statement_timeout_ms < 0:
             raise ValueError("statement_timeout_ms must be >= 0")
-        self._dsn = dsn
+        self._dsn = _sanitize_dsn_for_psycopg2(dsn)
         self._minconn = minconn
         self._maxconn = maxconn
         self._statement_timeout_ms = statement_timeout_ms
@@ -117,3 +118,18 @@ class PooledPostgresRepository:
     def __del__(self) -> None:
         with contextlib.suppress(Exception):
             self.close()
+
+
+def _sanitize_dsn_for_psycopg2(dsn: str) -> str:
+    """Remove pgx-only URL params that psycopg2 cannot parse."""
+    try:
+        parts = urlsplit(dsn)
+    except Exception:
+        return dsn
+    if not parts.query:
+        return dsn
+    query = parse_qsl(parts.query, keep_blank_values=True)
+    filtered = [(k, v) for (k, v) in query if k != "default_query_exec_mode"]
+    if len(filtered) == len(query):
+        return dsn
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(filtered), parts.fragment))

@@ -40,6 +40,8 @@ READY_FILE_ENV = "AI_READY_FILE"
 DEFAULT_READY_FILE = "/tmp/ai-user-embed-ready"
 WARMUP_TEXT_ENV = "AI_WARMUP_TEXT"
 DEFAULT_WARMUP_TEXT = "Warmup embedding probe"
+WARMUP_ENABLED_ENV = "AI_WARMUP_ENABLED"
+DEFAULT_WARMUP_ENABLED = True
 SHUTDOWN_GRACE_SEC_ENV = "AI_SHUTDOWN_GRACE_SEC"
 DEFAULT_SHUTDOWN_GRACE_SEC = 20.0
 
@@ -66,6 +68,11 @@ def _warmup_embedding(embedding: SentenceTransformerEmbedding) -> None:
     warmup_text = os.getenv(WARMUP_TEXT_ENV, DEFAULT_WARMUP_TEXT)
     vec = embedding.encode(warmup_text)
     logger.info("embedding warmup completed, dim=%d", len(vec))
+
+
+def _warmup_enabled() -> bool:
+    raw = os.getenv(WARMUP_ENABLED_ENV, "1" if DEFAULT_WARMUP_ENABLED else "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
 
 
 def _shutdown_grace_sec() -> float:
@@ -129,7 +136,10 @@ def main() -> None:
 
     user_repo = PostgresUserRepository(db_url)
     embedding = SentenceTransformerEmbedding(model_name)
-    _warmup_embedding(embedding)
+    if _warmup_enabled():
+        _warmup_embedding(embedding)
+    else:
+        logger.info("embedding warmup disabled by %s", WARMUP_ENABLED_ENV)
     process_user_embed = ProcessUserEmbedUseCase(user_repo, embedding)
     queue = RedisUserEmbedQueueConsumer(redis_url, queue_name)
     _mark_ready(ready_file)
