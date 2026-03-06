@@ -24,7 +24,6 @@ from ai_service.adapter.postgres import (
     PostgresJobRepository,
     PostgresMatchRepository,
     PostgresPendingJobsRepository,
-    PostgresUserRepository,
 )
 from ai_service.adapter.redis import RedisQueueConsumer
 from ai_service.adapter.rule_based import RuleBasedClassifier
@@ -162,7 +161,6 @@ def main() -> None:
     repo = PostgresJobRepository(db_url)
     match_repo = PostgresMatchRepository(db_url)
     pending_repo = PostgresPendingJobsRepository(db_url)
-    user_repo = PostgresUserRepository(db_url)
     accumulate_matches = AccumulateMatchesUseCase(pending_repo)
     embedding = SentenceTransformerEmbedding(model_name)
     if _warmup_enabled():
@@ -178,7 +176,6 @@ def main() -> None:
         repo, embedding, classifier, match_repo,
         accumulate_matches=accumulate_matches,
         similarity_threshold=threshold, max_matches_per_job=max_matches,
-        user_repo=user_repo,
     )
     init_tracer("site-parser-ai")
     queue = RedisQueueConsumer(redis_url, queue_name)
