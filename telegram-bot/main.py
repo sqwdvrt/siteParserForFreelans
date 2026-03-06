@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 import json
 import logging
 import math
@@ -24,11 +25,26 @@ try:
 except ImportError:
     pass
 
+
+def _parse_log_level(raw: str | None, default: int = logging.INFO) -> tuple[int, bool]:
+    value = (raw or "").strip()
+    if not value:
+        return default, False
+    level = getattr(logging, value.upper(), None)
+    if isinstance(level, int):
+        return level, True
+    return default, False
+
+
+_LOG_LEVEL_RAW = os.getenv("LOG_LEVEL")
+_LOG_LEVEL, _LOG_LEVEL_OK = _parse_log_level(_LOG_LEVEL_RAW, logging.INFO)
 logging.basicConfig(
-    level=logging.INFO,
+    level=_LOG_LEVEL,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
+if _LOG_LEVEL_RAW and not _LOG_LEVEL_OK:
+    logger.warning("invalid LOG_LEVEL=%r; using INFO", _LOG_LEVEL_RAW)
 
 TELEGRAM_BASE = "https://api.telegram.org/bot"
 FORBIDDEN_SECRET_PREFIXES = (
@@ -68,8 +84,25 @@ def _read_positive_int_env(name: str, default: int) -> int:
     return value
 
 
+class _UserIDCache(OrderedDict[int, tuple[int, float]]):
+    def __init__(self, *, maxsize: int, ttl_sec: int):
+        super().__init__()
+        self.maxsize = maxsize
+        self.ttl_sec = ttl_sec
+
+
+def _build_user_id_cache(*, maxsize: int, ttl_sec: int) -> _UserIDCache:
+    safe_maxsize = max(1, int(maxsize))
+    safe_ttl_sec = max(1, int(ttl_sec))
+    return _UserIDCache(maxsize=safe_maxsize, ttl_sec=safe_ttl_sec)
+
+
 USER_ID_CACHE_TTL_SEC = _read_positive_int_env("USER_ID_CACHE_TTL_SEC", 300)
-_USER_ID_CACHE: dict[int, tuple[int, float]] = {}
+USER_ID_CACHE_MAXSIZE = _read_positive_int_env("USER_ID_CACHE_MAXSIZE", 5000)
+_USER_ID_CACHE: _UserIDCache = _build_user_id_cache(
+    maxsize=USER_ID_CACHE_MAXSIZE,
+    ttl_sec=USER_ID_CACHE_TTL_SEC,
+)
 
 
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -123,9 +156,8 @@ def _poll_retry_delay_sec(attempt: int) -> float:
 
 def _touch_heartbeat(path: str) -> None:
     try:
-        with open(path, "a", encoding="utf-8"):
-            pass
-        os.utime(path, None)
+        import pathlib
+        pathlib.Path(path).touch(exist_ok=True)
     except Exception as e:
         logger.warning("failed to update heartbeat file %s: %s", path, e)
 
@@ -376,7 +408,16 @@ def put_user_notify_hour(
 
 def _cache_user_id(telegram_id: int, user_id: int, *, now_monotonic: float | None = None) -> None:
     now = now_monotonic if now_monotonic is not None else time.monotonic()
-    _USER_ID_CACHE[telegram_id] = (user_id, now + USER_ID_CACHE_TTL_SEC)
+    ttl_sec = getattr(_USER_ID_CACHE, "ttl_sec", USER_ID_CACHE_TTL_SEC)
+    maxsize = getattr(_USER_ID_CACHE, "maxsize", USER_ID_CACHE_MAXSIZE)
+
+    if telegram_id in _USER_ID_CACHE:
+        _USER_ID_CACHE.pop(telegram_id, None)
+    elif maxsize > 0 and len(_USER_ID_CACHE) >= maxsize:
+        oldest_key = next(iter(_USER_ID_CACHE))
+        _USER_ID_CACHE.pop(oldest_key, None)
+
+    _USER_ID_CACHE[telegram_id] = (user_id, now + ttl_sec)
 
 
 def _get_cached_user_id(telegram_id: int, *, now_monotonic: float | None = None) -> int | None:
@@ -485,7 +526,7 @@ def handle_callback(
             elif data.startswith("fb:"):
                 logger.warning("feedback: unknown callback_data format, ignoring: %s", data)
     except Exception as e:
-        logger.error("callback handling failed: %s", e)
+        logger.error("callback handling failed: %s", _exception_name(e))
     finally:
         # Always answer the callback to dismiss loading state in Telegram
         try:
@@ -568,7 +609,7 @@ def run_polling(token: str, api_url: str, api_auth_token: str, api_user_hmac_sec
                 else:
                     send_message(token, chat_id, "Ошибка регистрации. Попробуйте позже.")
 
-            elif text.startswith("/profile"):
+            elif text == "/profile" or text.startswith("/profile "):
                 rest = text[len("/profile"):].strip()
                 if not rest:
                     send_message(
@@ -586,7 +627,7 @@ def run_polling(token: str, api_url: str, api_auth_token: str, api_user_hmac_sec
                 else:
                     send_message(token, chat_id, "Ошибка обновления профиля.")
 
-            elif text in ("/help", "/help@"):
+            elif text == "/help" or text.startswith("/help@"):
                 send_message(
                     token,
                     chat_id,
@@ -601,16 +642,19 @@ def run_polling(token: str, api_url: str, api_auth_token: str, api_user_hmac_sec
                     ),
                 )
 
-            elif text.startswith("/notify_hour"):
+            elif text == "/notify_hour" or text.startswith("/notify_hour "):
                 rest = text[len("/notify_hour"):].strip()
-                if not rest.isdigit() or not (0 <= int(rest) <= 23):
+                try:
+                    hour = int(rest)
+                    if not (0 <= hour <= 23):
+                        raise ValueError("out of range")
+                except (ValueError, TypeError):
                     send_message(
                         token,
                         chat_id,
                         "Укажите час от 0 до 23, например: /notify_hour 9",
                     )
                     continue
-                hour = int(rest)
                 user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
                 if user_id is None:
                     send_message(token, chat_id, "Сначала отправьте /start")

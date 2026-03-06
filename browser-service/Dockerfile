@@ -15,6 +15,6 @@ USER pwuser
 EXPOSE 8090
 
 HEALTHCHECK --interval=10s --timeout=5s --retries=5 --start-period=30s \
-  CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8090/healthz')"
+  CMD python -c "import os, urllib.request; urllib.request.urlopen(f\"http://localhost:{os.getenv('PORT', '8090')}/healthz\")"
 
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8090", "--workers", "1"]
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8090} --workers 1"]
