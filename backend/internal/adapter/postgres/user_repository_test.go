@@ -132,3 +132,34 @@ func TestUserRepository_UpdateProfile(t *testing.T) {
 		t.Errorf("profile_text not updated: %v", u.ProfileText)
 	}
 }
+
+func TestUserRepository_UpdateNotifyHourScoped(t *testing.T) {
+	pool := setupTestDBForUser(t)
+	repo := NewUserRepository(pool)
+	ctx := context.Background()
+
+	telegramID := int64(9000000004 + (os.Getpid() % 100000))
+	id, err := repo.Save(ctx, telegramID)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `UPDATE users SET is_pro = TRUE WHERE id = $1`, id); err != nil {
+		t.Fatalf("set is_pro: %v", err)
+	}
+
+	if err := repo.UpdateNotifyHourScoped(ctx, id, 11); err != nil {
+		t.Fatalf("UpdateNotifyHourScoped: %v", err)
+	}
+
+	u, err := repo.GetByTelegramID(ctx, telegramID)
+	if err != nil {
+		t.Fatalf("GetByTelegramID: %v", err)
+	}
+	if !u.IsPro {
+		t.Fatalf("is_pro = false, want true")
+	}
+	if u.NotifyHour == nil || *u.NotifyHour != int16(11) {
+		t.Fatalf("notify_hour = %v, want 11", u.NotifyHour)
+	}
+}

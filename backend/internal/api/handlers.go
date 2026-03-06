@@ -52,7 +52,7 @@ type RequestRateLimiter interface {
 // Handlers — HTTP handlers для API.
 type Handlers struct {
 	UserRepo          port.UserRepository
-	UserEmbedQueue    port.UserEmbedQueue    // nil — очередь не используется
+	UserEmbedQueue    port.UserEmbedQueue     // nil — очередь не используется
 	FeedbackRepo      port.FeedbackRepository // nil — feedback не сохраняется
 	AuthToken         string                  // обязательный bearer token для API
 	UserHMACSecret    string                  // обязательный секрет подписи user-level запросов
@@ -152,6 +152,11 @@ type PutUserProfileRequest struct {
 	ProfileText string `json:"profile_text"`
 }
 
+// PutUserNotifyHourRequest — тело PUT /users/:id/notify-hour.
+type PutUserNotifyHourRequest struct {
+	Hour int `json:"hour"`
+}
+
 // PutUserProfile обновляет profile_text пользователя.
 func (h *Handlers) PutUserProfile(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(w, r) {
@@ -231,6 +236,71 @@ func (h *Handlers) PutUserProfile(w http.ResponseWriter, r *http.Request) {
 			h.logger().Warn("put user profile rolled back after enqueue error", "user_id", userID)
 		}
 		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// PutUserNotifyHour обновляет notify_hour пользователя (0-23, МСК); доступно только для Pro.
+func (h *Handlers) PutUserNotifyHour(w http.ResponseWriter, r *http.Request) {
+	if !h.authorize(w, r) {
+		return
+	}
+	idStr := chi.URLParam(r, "id")
+	userID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil || userID <= 0 {
+		http.Error(w, "invalid user id", http.StatusBadRequest)
+		return
+	}
+	callerTelegramID, err := parseTelegramIDHeader(r.Header.Get(headerTelegramID))
+	if err != nil {
+		http.Error(w, "invalid x-telegram-id header", http.StatusBadRequest)
+		return
+	}
+	var req PutUserNotifyHourRequest
+	rawBody, err := decodeJSONBody(w, r, &req)
+	if err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if req.Hour < 0 || req.Hour > 23 {
+		http.Error(w, "hour must be between 0 and 23", http.StatusBadRequest)
+		return
+	}
+	if !h.enforceIPRateLimit(w, r) {
+		return
+	}
+	if !h.authorizeUserRequest(w, r, callerTelegramID, rawBody) {
+		return
+	}
+	if !h.enforceTelegramRateLimit(w, r, callerTelegramID) {
+		return
+	}
+	user, err := h.UserRepo.GetByID(r.Context(), userID)
+	if err != nil {
+		h.logger().Error("put user notify hour get user failed", "user_id", userID, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	if user == nil {
+		http.Error(w, "user not found", http.StatusNotFound)
+		return
+	}
+	if user.TelegramID != callerTelegramID {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if !user.IsPro {
+		http.Error(w, "pro subscription required", http.StatusForbidden)
+		return
+	}
+	if err := h.UserRepo.UpdateNotifyHourScoped(r.Context(), userID, req.Hour); err != nil {
+		h.logger().Error("put user notify hour update failed", "user_id", userID, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

@@ -139,6 +139,19 @@
       ]
     }
   },
-  "hotPaths": [],
+  "hotPaths": [
+    {
+      "path": "telegram-bot/main.py",
+      "accessCount": 6,
+      "lastAccessed": 1772819206212,
+      "type": "file"
+    },
+    {
+      "path": "telegram-bot/Dockerfile",
+      "accessCount": 1,
+      "lastAccessed": 1772819063097,
+      "type": "file"
+    }
+  ],
   "userDirectives": []
 }

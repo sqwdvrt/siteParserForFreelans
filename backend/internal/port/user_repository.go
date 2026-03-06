@@ -14,4 +14,6 @@ type UserRepository interface {
 	UpdateProfile(ctx context.Context, userID int64, profileText string) error
 	// UpdateProfileScoped выполняет обновление профиля в транзакции с установкой app.current_user_id для RLS.
 	UpdateProfileScoped(ctx context.Context, userID int64, profileText string) error
+	// UpdateNotifyHourScoped обновляет notify_hour в транзакции с установкой app.current_user_id для RLS.
+	UpdateNotifyHourScoped(ctx context.Context, userID int64, hour int) error
 }

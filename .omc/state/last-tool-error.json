@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"docker ps --format \\\"{{.Names}}\\\" 2>/dev/null | sort\\necho \\\"---\\\"\\n# Есть ли compose проекты с другим именем?\\ndocker compose ls 2>/dev/null\",\"description\":\"List all running containers an...",
+  "error": "Exit code 2\nsort: unrecognized option `---'\nUsage: sort [-bcCdfigMmnrsuz] [-kPOS1[,POS2] ... ] [+POS1 [-POS2]] [-S memsize] [-T tmpdir] [-t separator] [-o outfile] [--batch-size size] [--files0-from file] [--heapsort] [--mergesort] [--radixsort] [--qsort] [--mmap] [--parallel thread_no] [--human-numeric-sort] [--version-sort] [--random-sort [--random-source file]] [--compress-program program] [file ...]\n\nsort: unrecognized option `---'\nUsage: sort [-bcCdfigMmnrsuz] [-kPOS1[,POS2] ... ] [+POS1 [-...",
+  "timestamp": "2026-03-06T17:44:07.346Z",
+  "retry_count": 1
+}

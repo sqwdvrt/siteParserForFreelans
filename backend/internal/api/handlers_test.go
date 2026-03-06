@@ -61,9 +61,10 @@ func (m *mockRateLimiter) Allow(ctx context.Context, key string, limit int, wind
 }
 
 type mockUserRepo struct {
-	saveFunc          func(ctx context.Context, telegramID int64) (int64, error)
-	getByIDFunc       func(ctx context.Context, userID int64) (*domain.User, error)
-	updateProfileFunc func(ctx context.Context, userID int64, profileText string) error
+	saveFunc             func(ctx context.Context, telegramID int64) (int64, error)
+	getByIDFunc          func(ctx context.Context, userID int64) (*domain.User, error)
+	updateProfileFunc    func(ctx context.Context, userID int64, profileText string) error
+	updateNotifyHourFunc func(ctx context.Context, userID int64, hour int) error
 }
 
 func (m *mockUserRepo) Save(ctx context.Context, telegramID int64) (int64, error) {
@@ -93,6 +94,13 @@ func (m *mockUserRepo) UpdateProfile(ctx context.Context, userID int64, profileT
 
 func (m *mockUserRepo) UpdateProfileScoped(ctx context.Context, userID int64, profileText string) error {
 	return m.UpdateProfile(ctx, userID, profileText)
+}
+
+func (m *mockUserRepo) UpdateNotifyHourScoped(ctx context.Context, userID int64, hour int) error {
+	if m.updateNotifyHourFunc != nil {
+		return m.updateNotifyHourFunc(ctx, userID, hour)
+	}
+	return nil
 }
 
 const testAuthToken = "test-api-token"
@@ -493,6 +501,118 @@ func TestHandlers_PutUserProfile_EnqueueError_RollsBackAndReturns503(t *testing.
 	}
 	if profiles[1] != "old profile" {
 		t.Errorf("rollback profile = %q, want %q", profiles[1], "old profile")
+	}
+}
+
+func TestHandlers_PutUserNotifyHour_Success(t *testing.T) {
+	var gotUserID int64
+	var gotHour int
+	repo := &mockUserRepo{
+		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+			return &domain.User{ID: userID, TelegramID: 123456789, IsPro: true}, nil
+		},
+		updateNotifyHourFunc: func(ctx context.Context, userID int64, hour int) error {
+			gotUserID = userID
+			gotHour = hour
+			return nil
+		},
+	}
+	h := &Handlers{UserRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+
+	body := []byte(`{"hour":9}`)
+	req := newJSONRequest(
+		http.MethodPut,
+		"/users/1/notify-hour",
+		body,
+		newAuthHeadersWithUserSign(http.MethodPut, "/users/1/notify-hour", 123456789, body),
+	)
+	req = attachRouteUserID(req, "1")
+	rr := httptest.NewRecorder()
+
+	h.PutUserNotifyHour(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want 204", rr.Code)
+	}
+	if gotUserID != 1 {
+		t.Errorf("user_id = %d, want 1", gotUserID)
+	}
+	if gotHour != 9 {
+		t.Errorf("hour = %d, want 9", gotHour)
+	}
+}
+
+func TestHandlers_PutUserNotifyHour_ForbiddenForNonPro(t *testing.T) {
+	h := &Handlers{UserRepo: &mockUserRepo{}, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+
+	body := []byte(`{"hour":8}`)
+	req := newJSONRequest(
+		http.MethodPut,
+		"/users/1/notify-hour",
+		body,
+		newAuthHeadersWithUserSign(http.MethodPut, "/users/1/notify-hour", 123456789, body),
+	)
+	req = attachRouteUserID(req, "1")
+	rr := httptest.NewRecorder()
+
+	h.PutUserNotifyHour(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", rr.Code)
+	}
+}
+
+func TestHandlers_PutUserNotifyHour_InvalidHour(t *testing.T) {
+	h := &Handlers{UserRepo: &mockUserRepo{}, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+
+	body := []byte(`{"hour":24}`)
+	req := newJSONRequest(
+		http.MethodPut,
+		"/users/1/notify-hour",
+		body,
+		newAuthHeadersWithUserSign(http.MethodPut, "/users/1/notify-hour", 123456789, body),
+	)
+	req = attachRouteUserID(req, "1")
+	rr := httptest.NewRecorder()
+
+	h.PutUserNotifyHour(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rr.Code)
+	}
+}
+
+func TestHandlers_PutUserNotifyHour_UpdateError(t *testing.T) {
+	repo := &mockUserRepo{
+		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+			return &domain.User{ID: userID, TelegramID: 123456789, IsPro: true}, nil
+		},
+		updateNotifyHourFunc: func(ctx context.Context, userID int64, hour int) error {
+			return errors.New("db error")
+		},
+	}
+	h := &Handlers{UserRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+
+	body := []byte(`{"hour":10}`)
+	req := newJSONRequest(
+		http.MethodPut,
+		"/users/1/notify-hour",
+		body,
+		newAuthHeadersWithUserSign(http.MethodPut, "/users/1/notify-hour", 123456789, body),
+	)
+	req = attachRouteUserID(req, "1")
+	rr := httptest.NewRecorder()
+
+	h.PutUserNotifyHour(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), "db error") {
+		t.Errorf("response leaks internal details: %q", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), "internal error") {
+		t.Errorf("response = %q, want generic internal error", rr.Body.String())
 	}
 }
 

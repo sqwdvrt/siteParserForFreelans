@@ -3,69 +3,19 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import logging
 import math
 import os
 import random
-import secrets
 import sys
 import time
+import secrets
+import hashlib
+import hmac
+import urllib.request
 import urllib.error
 import urllib.parse
-import urllib.request
-from collections import OrderedDict
-from contextlib import contextmanager
-from typing import Callable, Generic, TypeVar
-
-try:
-    from cachetools import TTLCache as _TTLCache
-except ImportError:
-    KT = TypeVar("KT")
-    VT = TypeVar("VT")
-
-    class _TTLCache(Generic[KT, VT]):
-        """Minimal TTL+LRU cache fallback used when cachetools isn't installed."""
-
-        def __init__(self, maxsize: int, ttl: float, timer: Callable[[], float]):
-            self.maxsize = maxsize
-            self.ttl = ttl
-            self._timer = timer
-            self._store: OrderedDict[KT, tuple[VT, float]] = OrderedDict()
-
-        def _expire(self, now: float | None = None) -> None:
-            current = self._timer() if now is None else now
-            expired_keys = [k for k, (_, expires_at) in self._store.items() if current >= expires_at]
-            for key in expired_keys:
-                self._store.pop(key, None)
-
-        def clear(self) -> None:
-            self._store.clear()
-
-        def __setitem__(self, key: KT, value: VT) -> None:
-            now = self._timer()
-            self._expire(now)
-            if key in self._store:
-                self._store.pop(key, None)
-            self._store[key] = (value, now + self.ttl)
-            self._store.move_to_end(key)
-            while len(self._store) > self.maxsize:
-                self._store.popitem(last=False)
-
-        def get(self, key: KT, default: VT | None = None) -> VT | None:
-            now = self._timer()
-            self._expire(now)
-            entry = self._store.get(key)
-            if entry is None:
-                return default
-            value, expires_at = entry
-            if now >= expires_at:
-                self._store.pop(key, None)
-                return default
-            self._store.move_to_end(key)
-            return value
 
 try:
     from dotenv import load_dotenv
@@ -74,67 +24,11 @@ try:
 except ImportError:
     pass
 
-try:
-    from opentelemetry import trace as _otel_trace
-    from opentelemetry import propagate as _otel_propagate
-    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-    from opentelemetry.sdk.resources import Resource
-    from opentelemetry.sdk.trace import TracerProvider
-    from opentelemetry.sdk.trace.export import BatchSpanProcessor
-    _OTEL_AVAILABLE = True
-except ImportError:
-    _OTEL_AVAILABLE = False
-
-
-def _init_bot_tracer() -> None:
-    if not _OTEL_AVAILABLE:
-        return
-    endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-    if not endpoint:
-        return
-    try:
-        exporter = OTLPSpanExporter(endpoint=endpoint, insecure=True)
-        provider = TracerProvider(resource=Resource({"service.name": "site-parser-bot"}))
-        provider.add_span_processor(BatchSpanProcessor(exporter))
-        _otel_trace.set_tracer_provider(provider)
-    except Exception:  # noqa: BLE001
-        pass
-
-
-def _get_traceparent_header() -> str:
-    """Возвращает traceparent текущего span или пустую строку."""
-    if not _OTEL_AVAILABLE:
-        return ""
-    try:
-        carrier: dict[str, str] = {}
-        _otel_propagate.inject(carrier)
-        return carrier.get("traceparent", "")
-    except Exception:  # noqa: BLE001
-        return ""
-
-
-def _parse_log_level(raw: str | None, default: int = logging.INFO) -> tuple[int, bool]:
-    if raw is None:
-        return default, True
-    value = raw.strip().upper()
-    if value == "":
-        return default, True
-    level = logging.getLevelName(value)
-    if isinstance(level, int):
-        return level, True
-    return default, False
-
-
-_LOG_LEVEL_RAW = os.getenv("LOG_LEVEL", "INFO")
-_LOG_LEVEL, _LOG_LEVEL_VALID = _parse_log_level(_LOG_LEVEL_RAW, logging.INFO)
-
 logging.basicConfig(
-    level=_LOG_LEVEL,
+    level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 logger = logging.getLogger(__name__)
-if not _LOG_LEVEL_VALID:
-    logger.warning("LOG_LEVEL=%r is invalid; using INFO", _LOG_LEVEL_RAW)
 
 TELEGRAM_BASE = "https://api.telegram.org/bot"
 FORBIDDEN_SECRET_PREFIXES = (
@@ -175,25 +69,7 @@ def _read_positive_int_env(name: str, default: int) -> int:
 
 
 USER_ID_CACHE_TTL_SEC = _read_positive_int_env("USER_ID_CACHE_TTL_SEC", 300)
-USER_ID_CACHE_MAXSIZE = _read_positive_int_env("USER_ID_CACHE_MAXSIZE", 1000)
-_USER_ID_CACHE_NOW_OVERRIDE: float | None = None
-
-
-def _user_id_cache_timer() -> float:
-    if _USER_ID_CACHE_NOW_OVERRIDE is not None:
-        return _USER_ID_CACHE_NOW_OVERRIDE
-    return time.monotonic()
-
-
-def _build_user_id_cache(
-    *,
-    maxsize: int = USER_ID_CACHE_MAXSIZE,
-    ttl_sec: int = USER_ID_CACHE_TTL_SEC,
-) -> _TTLCache[int, int]:
-    return _TTLCache(maxsize=maxsize, ttl=ttl_sec, timer=_user_id_cache_timer)
-
-
-_USER_ID_CACHE = _build_user_id_cache()
+_USER_ID_CACHE: dict[int, tuple[int, float]] = {}
 
 
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -250,7 +126,7 @@ def _touch_heartbeat(path: str) -> None:
         with open(path, "a", encoding="utf-8"):
             pass
         os.utime(path, None)
-    except OSError as e:
+    except Exception as e:
         logger.warning("failed to update heartbeat file %s: %s", path, e)
 
 
@@ -340,7 +216,7 @@ def _http_post(url: str, data: dict, headers: dict[str, str] | None = None) -> t
                 time.sleep(delay)
                 continue
             if e.code >= 500 and err_body:
-                logger.error("API error %s: %s", e.code, err_body[:200])
+                logger.warning("API error %s: %s", e.code, err_body[:200])
             return e.code, None
         except Exception as e:
             if attempt < API_RETRY_ATTEMPTS - 1:
@@ -352,7 +228,7 @@ def _http_post(url: str, data: dict, headers: dict[str, str] | None = None) -> t
                 )
                 time.sleep(delay)
                 continue
-            logger.error("HTTP POST failed: %s", _exception_name(e))
+            logger.debug("HTTP POST failed: %s", _exception_name(e))
             return 0, None
     return 0, None
 
@@ -386,7 +262,7 @@ def _http_put(url: str, data: dict, headers: dict[str, str] | None = None) -> in
                 )
                 time.sleep(delay)
                 continue
-            logger.error("HTTP PUT failed: %s", _exception_name(e))
+            logger.debug("HTTP PUT failed: %s", _exception_name(e))
             return 0
     return 0
 
@@ -430,17 +306,13 @@ def _signed_user_headers(
     timestamp = str(int(time.time()))
     nonce = secrets.token_hex(16)
     signature = _sign_user_request(user_hmac_secret, method, path, telegram_id, timestamp, nonce, body)
-    headers: dict[str, str] = {
+    return {
         "Authorization": f"Bearer {api_auth_token}",
         "X-Telegram-ID": str(telegram_id),
         "X-Request-Timestamp": timestamp,
         "X-Request-Nonce": nonce,
         "X-Request-Signature": signature,
     }
-    traceparent = _get_traceparent_header()
-    if traceparent:
-        headers["traceparent"] = traceparent
-    return headers
 
 
 def post_users(api_url: str, telegram_id: int, api_auth_token: str, api_user_hmac_secret: str) -> int | None:
@@ -455,7 +327,7 @@ def post_users(api_url: str, telegram_id: int, api_auth_token: str, api_user_hma
     )
     if status != 200 or data is None:
         err = "API не отвечает" if status == 0 else f"HTTP {status}"
-        logger.error("POST /users failed: %s (url=%s)", err, url)
+        logger.warning("POST /users failed: %s (url=%s)", err, url)
         return None
     return data.get("user_id")
 
@@ -478,31 +350,45 @@ def put_user_profile(
         headers=_signed_user_headers(api_auth_token, api_user_hmac_secret, "PUT", url, telegram_id, body),
     )
     if status != 204:
-        logger.error("PUT /users/:id/profile failed: status=%s", status)
+        logger.warning("PUT /users/:id/profile failed: status=%s", status)
         return False
     return True
 
 
-@contextmanager
-def _with_cache_time(now_monotonic: float | None):
-    global _USER_ID_CACHE_NOW_OVERRIDE
-    prev = _USER_ID_CACHE_NOW_OVERRIDE
-    if now_monotonic is not None:
-        _USER_ID_CACHE_NOW_OVERRIDE = now_monotonic
-    try:
-        yield
-    finally:
-        _USER_ID_CACHE_NOW_OVERRIDE = prev
+def put_user_notify_hour(
+    api_url: str,
+    user_id: int,
+    telegram_id: int,
+    hour: int,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> int:
+    """PUT /users/:id/notify-hour. Возвращает status_code (204 — успех, 403 — не Pro)."""
+    url = f"{api_url.rstrip('/')}/users/{user_id}/notify-hour"
+    payload = {"hour": hour}
+    body = _json_body(payload)
+    return _http_put(
+        url,
+        payload,
+        headers=_signed_user_headers(api_auth_token, api_user_hmac_secret, "PUT", url, telegram_id, body),
+    )
 
 
 def _cache_user_id(telegram_id: int, user_id: int, *, now_monotonic: float | None = None) -> None:
-    with _with_cache_time(now_monotonic):
-        _USER_ID_CACHE[telegram_id] = user_id
+    now = now_monotonic if now_monotonic is not None else time.monotonic()
+    _USER_ID_CACHE[telegram_id] = (user_id, now + USER_ID_CACHE_TTL_SEC)
 
 
 def _get_cached_user_id(telegram_id: int, *, now_monotonic: float | None = None) -> int | None:
-    with _with_cache_time(now_monotonic):
-        return _USER_ID_CACHE.get(telegram_id)
+    now = now_monotonic if now_monotonic is not None else time.monotonic()
+    cached = _USER_ID_CACHE.get(telegram_id)
+    if cached is None:
+        return None
+    user_id, expires_at = cached
+    if now >= expires_at:
+        _USER_ID_CACHE.pop(telegram_id, None)
+        return None
+    return user_id
 
 
 def _resolve_user_id(api_url: str, telegram_id: int, api_auth_token: str, api_user_hmac_secret: str) -> int | None:
@@ -515,6 +401,33 @@ def _resolve_user_id(api_url: str, telegram_id: int, api_auth_token: str, api_us
     return user_id
 
 
+def set_my_commands(token: str) -> bool:
+    """Зарегистрировать меню команд бота через setMyCommands."""
+    url = f"{TELEGRAM_BASE}{token}/setMyCommands"
+    commands = [
+        {"command": "start",       "description": "Начать работу с ботом"},
+        {"command": "help",        "description": "Список команд"},
+        {"command": "profile",     "description": "Обновить профиль фрилансера"},
+        {"command": "notify_hour", "description": "Установить час дайджеста (Pro, 0–23, МСК)"},
+    ]
+    status, _ = _http_post(url, {"commands": commands})
+    if status != 200:
+        logger.warning("setMyCommands failed: status=%s", status)
+        return False
+    logger.info("bot commands registered")
+    return True
+
+
+def send_message(token: str, chat_id: int, text: str) -> bool:
+    """Отправить сообщение в чат."""
+    url = f"{TELEGRAM_BASE}{token}/sendMessage"
+    status, _ = _http_post(url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
+    if status != 200:
+        logger.warning("sendMessage failed: status=%s", status)
+        return False
+    return True
+
+
 def post_feedback(
     api_url: str,
     user_id: int,
@@ -524,7 +437,7 @@ def post_feedback(
     api_auth_token: str,
     api_user_hmac_secret: str,
 ) -> bool:
-    """POST /users/{user_id}/feedback — записывает 👍/👎 для проекта."""
+    """POST /users/{user_id}/feedback — record 👍/👎 for a job."""
     url = f"{api_url.rstrip('/')}/users/{user_id}/feedback"
     payload = {"job_id": job_id, "feedback": feedback}
     body = _json_body(payload)
@@ -540,12 +453,9 @@ def post_feedback(
 
 
 def answer_callback_query(token: str, callback_query_id: str) -> None:
-    """Отвечает на callback_query, чтобы убрать состояние загрузки в Telegram."""
+    """Send answerCallbackQuery to dismiss loading state in Telegram."""
     url = f"{TELEGRAM_BASE}{token}/answerCallbackQuery"
-    try:
-        _http_post(url, {"callback_query_id": callback_query_id})
-    except Exception as e:
-        logger.warning("answerCallbackQuery failed: %s", _exception_name(e))
+    _http_post(url, {"callback_query_id": callback_query_id})
 
 
 def handle_callback(
@@ -555,9 +465,7 @@ def handle_callback(
     api_auth_token: str,
     api_user_hmac_secret: str,
 ) -> None:
-    """Обрабатывает inline-кнопки (👍/👎 feedback).
-    Формат callback_data: fb:g:<job_id> (good) или fb:b:<job_id> (bad).
-    """
+    """Handle inline keyboard callback (👍/👎 feedback)."""
     data = callback.get("data", "")
     callback_id = callback.get("id", "")
     from_user = callback.get("from", {})
@@ -565,32 +473,25 @@ def handle_callback(
     try:
         if data.startswith("fb:") and telegram_id is not None:
             parts = data.split(":")
-            if len(parts) == 3:
+            if len(parts) == 3 and parts[1] in ("g", "b"):
                 feedback = "good" if parts[1] == "g" else "bad"
                 job_id = int(parts[2])
                 user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
                 if user_id is not None:
-                    post_feedback(
-                        api_url, user_id, telegram_id, job_id, feedback,
-                        api_auth_token, api_user_hmac_secret,
-                    )
+                    post_feedback(api_url, user_id, telegram_id, job_id, feedback, api_auth_token, api_user_hmac_secret)
                     logger.info("feedback sent: job_id=%d feedback=%s", job_id, feedback)
                 else:
                     logger.warning("feedback: could not resolve user_id for telegram_id=%s", telegram_id)
+            elif data.startswith("fb:"):
+                logger.warning("feedback: unknown callback_data format, ignoring: %s", data)
     except Exception as e:
         logger.error("callback handling failed: %s", e)
     finally:
-        answer_callback_query(token, callback_id)
-
-
-def send_message(token: str, chat_id: int, text: str) -> bool:
-    """Отправить сообщение в чат."""
-    url = f"{TELEGRAM_BASE}{token}/sendMessage"
-    status, body = _http_post(url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
-    if status != 200:
-        logger.error("sendMessage failed: status=%s chat_id=%s body=%s", status, chat_id, body)
-        return False
-    return True
+        # Always answer the callback to dismiss loading state in Telegram
+        try:
+            answer_callback_query(token, callback_id)
+        except Exception:
+            pass
 
 
 def get_updates(
@@ -632,14 +533,14 @@ def run_polling(token: str, api_url: str, api_auth_token: str, api_user_hmac_sec
             updates, offset = result  # type: ignore[misc]
         if not poll_ok:
             delay = _poll_retry_delay_sec(poll_error_streak)
-            logger.error("getUpdates failed, retry in %.2fs", delay)
+            logger.warning("getUpdates failed, retry in %.2fs", delay)
             time.sleep(delay)
             poll_error_streak += 1
             continue
         poll_error_streak = 0
         _touch_heartbeat(heartbeat_file)
         for u in updates:
-            # Обработка inline-кнопок (👍/👎 feedback)
+            # Handle inline keyboard callbacks (👍/👎 feedback)
             callback = u.get("callback_query")
             if callback:
                 handle_callback(callback, token, api_url, api_auth_token, api_user_hmac_secret)
@@ -656,14 +557,7 @@ def run_polling(token: str, api_url: str, api_auth_token: str, api_user_hmac_sec
                 continue
 
             if text == "/start":
-                if _OTEL_AVAILABLE:
-                    _tracer = _otel_trace.get_tracer(__name__)
-                    with _tracer.start_as_current_span("bot.user_action") as _span:
-                        _span.set_attribute("bot.command", "/start")
-                        _span.set_attribute("telegram.user_id", telegram_id)
-                        user_id = post_users(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
-                else:
-                    user_id = post_users(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+                user_id = post_users(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
                 if user_id is not None:
                     _cache_user_id(telegram_id, user_id)
                     send_message(
@@ -687,22 +581,50 @@ def run_polling(token: str, api_url: str, api_auth_token: str, api_user_hmac_sec
                 if user_id is None:
                     send_message(token, chat_id, "Сначала отправьте /start")
                     continue
-                if _OTEL_AVAILABLE:
-                    _tracer = _otel_trace.get_tracer(__name__)
-                    with _tracer.start_as_current_span("bot.user_action") as _span:
-                        _span.set_attribute("bot.command", "/profile")
-                        _span.set_attribute("telegram.user_id", telegram_id)
-                        ok = put_user_profile(api_url, user_id, telegram_id, rest, api_auth_token, api_user_hmac_secret)
-                else:
-                    ok = put_user_profile(api_url, user_id, telegram_id, rest, api_auth_token, api_user_hmac_secret)
-                if ok:
+                if put_user_profile(api_url, user_id, telegram_id, rest, api_auth_token, api_user_hmac_secret):
                     send_message(token, chat_id, "Профиль обновлён.")
                 else:
                     send_message(token, chat_id, "Ошибка обновления профиля.")
 
+            elif text in ("/help", "/help@"):
+                send_message(
+                    token,
+                    chat_id,
+                    (
+                        "<b>Команды бота:</b>\n"
+                        "/start — зарегистрироваться\n"
+                        "/profile &lt;текст&gt; — обновить профиль фрилансера\n"
+                        "/notify_hour &lt;0–23&gt; — выбрать час дайджеста по МСК (только Pro)\n"
+                        "/help — эта справка\n\n"
+                        "После обновления профиля ИИ подберёт подходящие заказы и пришлёт уведомления.\n"
+                        "Нажмите 👍 или 👎 под каждым заказом, чтобы обучить алгоритм."
+                    ),
+                )
+
+            elif text.startswith("/notify_hour"):
+                rest = text[len("/notify_hour"):].strip()
+                if not rest.isdigit() or not (0 <= int(rest) <= 23):
+                    send_message(
+                        token,
+                        chat_id,
+                        "Укажите час от 0 до 23, например: /notify_hour 9",
+                    )
+                    continue
+                hour = int(rest)
+                user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+                if user_id is None:
+                    send_message(token, chat_id, "Сначала отправьте /start")
+                    continue
+                status = put_user_notify_hour(api_url, user_id, telegram_id, hour, api_auth_token, api_user_hmac_secret)
+                if status == 204:
+                    send_message(token, chat_id, f"✅ Дайджест будет приходить в {hour:02d}:00 МСК.")
+                elif status == 403:
+                    send_message(token, chat_id, "⛔ Выбор часа доступен только Pro-пользователям.")
+                else:
+                    send_message(token, chat_id, "Ошибка обновления. Попробуйте позже.")
+
 
 def main() -> None:
-    _init_bot_tracer()
     app_env = os.getenv("APP_ENV", "development")
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     api_auth_token = os.getenv("API_AUTH_TOKEN")
@@ -719,6 +641,7 @@ def main() -> None:
         logger.error("%s", e)
         sys.exit(1)
     logger.info("bot started, API=%s", api_url)
+    set_my_commands(token or "")
     run_polling(token or "", api_url, api_auth_token or "", api_user_hmac_secret or "")
 
 

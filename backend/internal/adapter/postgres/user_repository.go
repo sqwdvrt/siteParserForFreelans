@@ -38,8 +38,8 @@ func (r *UserRepository) Save(ctx context.Context, telegramID int64) (int64, err
 func (r *UserRepository) GetByID(ctx context.Context, userID int64) (*domain.User, error) {
 	var u domain.User
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, telegram_id, profile_text FROM users WHERE id = $1
-	`, userID).Scan(&u.ID, &u.TelegramID, &u.ProfileText)
+		SELECT id, telegram_id, profile_text, is_pro, notify_hour FROM users WHERE id = $1
+	`, userID).Scan(&u.ID, &u.TelegramID, &u.ProfileText, &u.IsPro, &u.NotifyHour)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -53,8 +53,8 @@ func (r *UserRepository) GetByID(ctx context.Context, userID int64) (*domain.Use
 func (r *UserRepository) GetByTelegramID(ctx context.Context, telegramID int64) (*domain.User, error) {
 	var u domain.User
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, telegram_id, profile_text FROM users WHERE telegram_id = $1
-	`, telegramID).Scan(&u.ID, &u.TelegramID, &u.ProfileText)
+		SELECT id, telegram_id, profile_text, is_pro, notify_hour FROM users WHERE telegram_id = $1
+	`, telegramID).Scan(&u.ID, &u.TelegramID, &u.ProfileText, &u.IsPro, &u.NotifyHour)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -87,6 +87,25 @@ func (r *UserRepository) UpdateProfileScoped(ctx context.Context, userID int64, 
 	if _, err := tx.Exec(ctx, `
 		UPDATE users SET profile_text = $1, updated_at = NOW() WHERE id = $2
 	`, profileText, userID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
+// UpdateNotifyHourScoped обновляет notify_hour в транзакции с установкой app.current_user_id для RLS.
+func (r *UserRepository) UpdateNotifyHourScoped(ctx context.Context, userID int64, hour int) error {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	if _, err := tx.Exec(ctx, setUserScopeSQL, strconv.FormatInt(userID, 10)); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE users SET notify_hour = $1, updated_at = NOW() WHERE id = $2
+	`, hour, userID); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

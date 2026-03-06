@@ -176,6 +176,12 @@ func (s *stubUserRepo) GetByTelegramID(ctx context.Context, telegramID int64) (*
 func (s *stubUserRepo) UpdateProfile(ctx context.Context, userID int64, text string) error {
 	return nil
 }
+func (s *stubUserRepo) UpdateProfileScoped(ctx context.Context, userID int64, text string) error {
+	return nil
+}
+func (s *stubUserRepo) UpdateNotifyHourScoped(ctx context.Context, userID int64, hour int) error {
+	return nil
+}
 
 type stubJobRepo struct {
 	getByID func(ctx context.Context, jobID int64) (*domain.Job, error)

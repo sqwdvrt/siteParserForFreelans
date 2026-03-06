@@ -72,6 +72,12 @@ func (m *mockUserRepo) GetByTelegramID(ctx context.Context, telegramID int64) (*
 func (m *mockUserRepo) UpdateProfile(ctx context.Context, userID int64, text string) error {
 	return nil
 }
+func (m *mockUserRepo) UpdateProfileScoped(ctx context.Context, userID int64, text string) error {
+	return nil
+}
+func (m *mockUserRepo) UpdateNotifyHourScoped(ctx context.Context, userID int64, hour int) error {
+	return nil
+}
 
 type mockJobRepo struct {
 	getByIDFunc  func(ctx context.Context, id int64) (*domain.Job, error)

@@ -197,7 +197,7 @@ services:
       DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
       REDIS_URL: ${REDIS_URL:?set_REDIS_URL_in_.env.production}
       OLLAMA_URL: ${OLLAMA_URL:?set_OLLAMA_URL_in_.env.production}
-      EMBEDDING_REQUIRE_LOCAL: "1"
+      EMBEDDING_REQUIRE_LOCAL: "${EMBEDDING_REQUIRE_LOCAL:-1}"
       AI_READY_FILE: /tmp/ai-consumer-ready
       AI_METRICS_BIND: ${AI_METRICS_BIND:-0.0.0.0}
       AI_CONSUMER_METRICS_PORT: ${AI_CONSUMER_METRICS_PORT:-9108}
@@ -234,7 +234,7 @@ services:
       APP_ENV: production
       DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
       REDIS_URL: ${REDIS_URL:?set_REDIS_URL_in_.env.production}
-      EMBEDDING_REQUIRE_LOCAL: "1"
+      EMBEDDING_REQUIRE_LOCAL: "${EMBEDDING_REQUIRE_LOCAL:-1}"
       AI_READY_FILE: /tmp/ai-user-embed-ready
     healthcheck:
       test: ["CMD-SHELL", "test -f /tmp/ai-user-embed-ready"]

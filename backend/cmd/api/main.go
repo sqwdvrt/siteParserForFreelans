@@ -19,13 +19,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	redisclient "github.com/redis/go-redis/v9"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/postgres"
 	redisqueue "github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/redis"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/api"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/security"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/telemetry"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 func main() {
@@ -199,6 +199,7 @@ func main() {
 	r.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	r.Post("/users", handlers.PostUsers)
 	r.Put("/users/{id}/profile", handlers.PutUserProfile)
+	r.Put("/users/{id}/notify-hour", handlers.PutUserNotifyHour)
 	r.Post("/users/{id}/feedback", handlers.PostUserFeedback)
 	r.Route("/admin", func(r chi.Router) {
 		r.Get("/stats", adminHandlers.GetStats)
