@@ -14,9 +14,12 @@ import time
 # Add src to path for standalone run
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", "src"))
 
-from dotenv import load_dotenv
-
-load_dotenv()
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+    load_dotenv("../.env")  # when launched from ai-service/
+except ImportError:
+    pass  # python-dotenv is optional in container/runtime envs
 
 from ai_service.adapter.actor import FallbackActorAgent, OllamaActorAgent, RuleBasedActorAgent
 from ai_service.adapter.critic import FallbackCriticAgent, OllamaCriticAgent, RuleBasedCriticAgent
