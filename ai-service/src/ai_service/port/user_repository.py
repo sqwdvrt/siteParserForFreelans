@@ -26,6 +26,11 @@ class UserRepository(ABC):
         ...
 
     @abstractmethod
+    def get_embedding(self, user_id: int) -> list[float] | None:
+        """Получить embedding пользователя по id."""
+        ...
+
+    @abstractmethod
     def update_profile(self, user_id: int, profile_text: str) -> None:
         """Обновить profile_text пользователя."""
         ...

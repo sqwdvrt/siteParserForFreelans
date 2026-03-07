@@ -5,6 +5,7 @@ requires-python = ">=3.11"
 dependencies = [
     "cachetools>=5.3",
     "python-dotenv>=1.0",
+    "redis>=5.0",
 ]
 
 [project.optional-dependencies]

@@ -173,6 +173,33 @@ def test_mark_processed_updates_only_selected_jobs(monkeypatch) -> None:
     assert params == (10, [1, 2, 3])
 
 
+def test_release_claim_skips_when_job_ids_empty(monkeypatch) -> None:
+    repo = PostgresPendingJobsRepository("postgresql://fake/fake")
+    cursor = _FakeCursor()
+    conn = _FakeConn(cursor)
+    monkeypatch.setattr(repo, "_conn", lambda: _fake_conn_ctx(conn))
+
+    repo.release_claim(user_id=10, job_ids=[])
+
+    assert cursor.execute_calls == []
+
+
+def test_release_claim_clears_queue_lease_for_selected_jobs(monkeypatch) -> None:
+    repo = PostgresPendingJobsRepository("postgresql://fake/fake")
+    cursor = _FakeCursor()
+    conn = _FakeConn(cursor)
+    monkeypatch.setattr(repo, "_conn", lambda: _fake_conn_ctx(conn))
+
+    repo.release_claim(user_id=10, job_ids=[1, 2, 3])
+
+    assert len(cursor.execute_calls) == 1
+    sql, params = cursor.execute_calls[0]
+    assert "UPDATE pending_ac_jobs" in sql
+    assert "SET queued_at = NULL" in sql
+    assert "job_id = ANY(%s)" in sql
+    assert params == (10, [1, 2, 3])
+
+
 def test_list_unprocessed_user_ids_returns_ints(monkeypatch) -> None:
     repo = PostgresPendingJobsRepository("postgresql://fake/fake")
     cursor = _FakeCursor(rows=[{"user_id": 1}, {"user_id": 2}])

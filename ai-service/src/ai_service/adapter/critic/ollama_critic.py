@@ -11,6 +11,7 @@ from ai_service.domain.critic_result import CriticResult
 from ai_service.domain.ranked_job import RankedJob
 from ai_service.domain.user import User
 from ai_service.port.critic import CriticAgent
+from ai_service.util.circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
 
@@ -67,10 +68,23 @@ def _strip_markdown_fence(raw: str) -> str:
 class OllamaCriticAgent(CriticAgent):
     """Critic backed by Ollama JSON output."""
 
-    def __init__(self, base_url: str, model: str, timeout_sec: int = DEFAULT_TIMEOUT_SEC) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        timeout_sec: int = DEFAULT_TIMEOUT_SEC,
+        *,
+        breaker_failure_threshold: int = 3,
+        breaker_open_interval_sec: float = 30.0,
+        breaker: CircuitBreaker | None = None,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._timeout = timeout_sec
+        self._breaker = breaker or CircuitBreaker(
+            failure_threshold=breaker_failure_threshold,
+            open_interval_sec=breaker_open_interval_sec,
+        )
 
     @staticmethod
     def _validate_ollama_url(url: str) -> None:
@@ -96,8 +110,20 @@ class OllamaCriticAgent(CriticAgent):
             profile=user.profile_text or "(no profile)",
             selection_block=selection_block,
         )
-        raw = self._call_ollama(prompt)
-        return self._parse_response(raw)
+        if not self._breaker.allow_request():
+            logger.warning("critic: Ollama request skipped, circuit breaker open")
+            return CriticResult(score=0.0, critique="Circuit breaker open.")
+        try:
+            raw = self._call_ollama(prompt)
+        except Exception:
+            self._breaker.record_failure()
+            raise
+        result = self._parse_response(raw)
+        if result.score <= 0.0 and result.critique == "Parse error.":
+            self._breaker.record_failure()
+        else:
+            self._breaker.record_success()
+        return result
 
     def _call_ollama(self, prompt: str) -> str:
         target_url = f"{self._base_url}/api/generate"

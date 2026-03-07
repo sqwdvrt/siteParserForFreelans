@@ -34,6 +34,7 @@ from ai_service.usecase.actor_critic_loop import ActorCriticConfig, ActorCriticL
 from ai_service.usecase.process_ac_batch import ACBatch, ProcessACBatchUseCase
 from ai_service.util.fallback_metrics import start_metrics_server_from_env
 from ai_service.util.ollama_probe import probe_ollama
+from ai_service.util.postgres_pool_config import load_postgres_pool_settings
 from ai_service.util.trace_context import reset_trace_id, set_trace_id
 from ai_service.util.transport_security import (
     is_production_env,
@@ -155,6 +156,11 @@ def main() -> None:
         except ValueError as exc:
             logger.error("%s", exc)
             sys.exit(1)
+    try:
+        pg_pool_kwargs = load_postgres_pool_settings()
+    except ValueError as exc:
+        logger.error("%s", exc)
+        sys.exit(1)
     start_metrics_server_from_env(
         port_env="AI_AC_CONSUMER_METRICS_PORT",
         default_port=0,
@@ -185,9 +191,9 @@ def main() -> None:
 
     init_tracer("site-parser-ac")
 
-    user_repo = PostgresUserRepository(db_url)
-    job_repo = PostgresJobRepository(db_url)
-    pending_repo = PostgresPendingJobsRepository(db_url)
+    user_repo = PostgresUserRepository(db_url, **pg_pool_kwargs)
+    job_repo = PostgresJobRepository(db_url, **pg_pool_kwargs)
+    pending_repo = PostgresPendingJobsRepository(db_url, **pg_pool_kwargs)
     notify_queue = RedisMatchNotifyQueue(redis_url)
     ac_batch_queue = RedisACBatchQueueConsumer(redis_url, queue_name=ac_batch_queue_name)
     ac_batch_queue.reclaim_stuck()

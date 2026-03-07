@@ -103,3 +103,17 @@ def test_fallback_critic_uses_fallback_when_primary_raises() -> None:
     assert result.score == 5.0
     assert "fallback" in result.critique
     fallback.evaluate.assert_called_once()
+
+
+def test_fallback_critic_uses_fallback_when_primary_result_is_unusable() -> None:
+    primary = MagicMock()
+    fallback = MagicMock()
+    primary.evaluate.return_value = CriticResult(score=0.0, critique="Circuit breaker open.")
+    fallback.evaluate.return_value = CriticResult(score=5.0, critique="fallback ok")
+    agent = FallbackCriticAgent(primary=primary, fallback=fallback)
+
+    result = agent.evaluate(user=_user(), selection=_selection())
+
+    assert result.score == 5.0
+    assert result.critique == "fallback ok"
+    fallback.evaluate.assert_called_once()

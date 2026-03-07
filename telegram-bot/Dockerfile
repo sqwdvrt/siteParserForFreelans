@@ -5,7 +5,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends wget && rm -rf /var/lib/apt/lists/*
 
 RUN pip install --no-cache-dir --upgrade "pip>=26.0.1" "setuptools>=80.9.0" "wheel>=0.46.2" && \
-    pip install --no-cache-dir python-dotenv==1.2.1
+    pip install --no-cache-dir python-dotenv==1.2.1 redis==6.4.0
 
 COPY main.py .
 

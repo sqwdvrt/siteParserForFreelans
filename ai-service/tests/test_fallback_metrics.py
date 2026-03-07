@@ -91,3 +91,19 @@ def test_critic_primary_error_records_fallback_metric() -> None:
     snapshot = fallback_metrics.snapshot_counters()
     assert snapshot["primary"][("critic", "error")] == 1
     assert snapshot["fallback"][("critic", "primary_error")] == 1
+
+
+def test_critic_primary_invalid_records_fallback_metric() -> None:
+    fallback_metrics.reset_counters_for_tests()
+    primary = MagicMock()
+    primary.evaluate.return_value = CriticResult(score=0.0, critique="Circuit breaker open.")
+    fallback = MagicMock()
+    fallback.evaluate.return_value = CriticResult(score=5.0, critique="fallback")
+    agent = FallbackCriticAgent(primary=primary, fallback=fallback)
+
+    result = agent.evaluate(user=_user(), selection=_selection())
+
+    assert result.score == 5.0
+    snapshot = fallback_metrics.snapshot_counters()
+    assert snapshot["primary"][("critic", "invalid")] == 1
+    assert snapshot["fallback"][("critic", "primary_invalid")] == 1

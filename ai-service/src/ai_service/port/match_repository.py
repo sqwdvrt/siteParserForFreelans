@@ -13,6 +13,8 @@ class MatchCandidate:
     user_id: int
     job_id: int
     match_score: float
+    raw_similarity: float = 0.0
+    final_score: float = 0.0
     why_it_fits: str = ""
     trace_id: str = ""
 
@@ -34,4 +36,16 @@ class MatchRepository(ABC):
         Исключает пользователей, уже в notifications для этого job_id.
         match_score = similarity (0–1), эвристики можно добавить.
         """
+        ...
+
+    @abstractmethod
+    def find_jobs_for_user(
+        self,
+        embedding: list[float],
+        user_id: int,
+        threshold: float,
+        limit: int = 100,
+        days_back: int = 7,
+    ) -> list[MatchCandidate]:
+        """Найти recent jobs для пользователя по similarity."""
         ...

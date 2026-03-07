@@ -83,3 +83,61 @@ def test_claim_update_id_deduplicates_until_ttl_expires(bot, monkeypatch):
     assert bot._claim_update_id(1, now_monotonic=10.0) is True
     assert bot._claim_update_id(1, now_monotonic=10.1) is False
     assert bot._claim_update_id(1, now_monotonic=15.1) is True
+
+
+def test_get_cached_user_id_restores_from_durable_state_store_after_local_restart(bot, monkeypatch):
+    class FakeStateStore:
+        def __init__(self) -> None:
+            self.user_ids = {200: 321}
+
+        def get_user_id(self, telegram_id: int) -> int | None:
+            return self.user_ids.get(telegram_id)
+
+        def cache_user_id(self, telegram_id: int, user_id: int) -> None:
+            self.user_ids[telegram_id] = user_id
+
+    monkeypatch.setattr(bot, "_STATE_STORE", FakeStateStore())
+    bot._USER_ID_CACHE.clear()
+
+    assert bot._get_cached_user_id(200, now_monotonic=10.0) == 321
+    assert bot._USER_ID_CACHE[200][0] == 321
+
+
+def test_get_conversation_state_restores_from_durable_state_store_after_local_restart(bot, monkeypatch):
+    class FakeStateStore:
+        def __init__(self) -> None:
+            self.states = {200: "await_profile"}
+
+        def get_conversation_state(self, telegram_id: int) -> str | None:
+            return self.states.get(telegram_id)
+
+        def set_conversation_state(self, telegram_id: int, state: str) -> None:
+            self.states[telegram_id] = state
+
+    monkeypatch.setattr(bot, "_STATE_STORE", FakeStateStore())
+    bot._CONVERSATION_STATE_CACHE.clear()
+
+    assert bot._get_conversation_state(200, now_monotonic=10.0) == "await_profile"
+    assert bot._CONVERSATION_STATE_CACHE[200][0] == "await_profile"
+
+
+def test_claim_update_id_deduplicates_via_durable_state_store_after_local_restart(bot, monkeypatch):
+    class FakeStateStore:
+        def __init__(self) -> None:
+            self.claimed: set[int] = set()
+
+        def claim_update_id(self, update_id: int) -> bool:
+            if update_id in self.claimed:
+                return False
+            self.claimed.add(update_id)
+            return True
+
+        def forget_update_id(self, update_id: int) -> None:
+            self.claimed.discard(update_id)
+
+    monkeypatch.setattr(bot, "_STATE_STORE", FakeStateStore())
+    bot._PROCESSED_UPDATE_CACHE.clear()
+
+    assert bot._claim_update_id(1, now_monotonic=10.0) is True
+    bot._PROCESSED_UPDATE_CACHE.clear()
+    assert bot._claim_update_id(1, now_monotonic=10.1) is False

@@ -34,8 +34,8 @@ class PooledPostgresRepository:
         maxconn: int = 10,
         statement_timeout_ms: int = 10_000,
     ) -> None:
-        if minconn < 1:
-            raise ValueError("minconn must be >= 1")
+        if minconn < 0:
+            raise ValueError("minconn must be >= 0")
         if maxconn < minconn:
             raise ValueError("maxconn must be >= minconn")
         if statement_timeout_ms < 0:

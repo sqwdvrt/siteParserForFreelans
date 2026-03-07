@@ -79,3 +79,18 @@ func TestValidateHTTPSURLForProduction(t *testing.T) {
 		t.Fatal("want error for non-https url")
 	}
 }
+
+func TestValidateHTTPOrHTTPSURL(t *testing.T) {
+	if err := ValidateHTTPOrHTTPSURL("BROWSER_SERVICE_URL", "http://browser-service:8090"); err != nil {
+		t.Fatalf("unexpected error for http url: %v", err)
+	}
+	if err := ValidateHTTPOrHTTPSURL("BROWSER_SERVICE_URL", "https://browser.example.com"); err != nil {
+		t.Fatalf("unexpected error for https url: %v", err)
+	}
+	if err := ValidateHTTPOrHTTPSURL("BROWSER_SERVICE_URL", "tcp://browser-service:8090"); err == nil {
+		t.Fatal("want error for non-http scheme")
+	}
+	if err := ValidateHTTPOrHTTPSURL("BROWSER_SERVICE_URL", "http:///render"); err == nil {
+		t.Fatal("want error for missing host")
+	}
+}

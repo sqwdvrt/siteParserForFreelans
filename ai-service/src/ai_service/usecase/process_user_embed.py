@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from ai_service.port.embedding import EmbeddingService
+from ai_service.port.user_rematch_queue import UserRematchQueue
 from ai_service.port.user_repository import UserRepository
 from ai_service.util.trace_context import get_trace_id
 
@@ -18,9 +19,11 @@ class ProcessUserEmbedUseCase:
         self,
         user_repo: UserRepository,
         embedding_service: EmbeddingService,
+        user_rematch_queue: UserRematchQueue | None = None,
     ) -> None:
         self._user_repo = user_repo
         self._embedding = embedding_service
+        self._user_rematch_queue = user_rematch_queue
 
     def execute(self, user_id: int) -> bool:
         """Обработать user_id. Возвращает True если embedding сохранён, False если пропущен."""
@@ -44,6 +47,8 @@ class ProcessUserEmbedUseCase:
 
         embedding = self._embedding.encode(text)
         self._user_repo.save_embedding(user_id, embedding)
+        if self._user_rematch_queue is not None:
+            self._user_rematch_queue.enqueue(user_id)
         if trace_id:
             logger.info("saved embedding for user_id=%s trace_id=%s", user_id, trace_id)
         else:

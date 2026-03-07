@@ -26,6 +26,7 @@ def test_main_starts_polling_when_env_valid(bot, monkeypatch):
 
     monkeypatch.setattr(bot, "set_my_commands", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(bot, "_start_metrics_server", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(bot, "_build_state_store", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(bot, "run_polling", _run_polling)
     bot.main()
 
@@ -44,6 +45,7 @@ def test_main_starts_webhook_when_env_valid(bot, monkeypatch):
     monkeypatch.setenv("WEBHOOK_SECRET_TOKEN", "0123456789abcdef0123456789abcdef")
     monkeypatch.setenv("PORT", "9090")
     monkeypatch.setenv("WEBHOOK_MAX_CONNECTIONS", "55")
+    monkeypatch.setenv("REDIS_URL", "rediss://default:secret@redis.example.com:6380/0")
     monkeypatch.setenv("BOT_METRICS_PORT", "0")
 
     called = {}
@@ -74,6 +76,7 @@ def test_main_starts_webhook_when_env_valid(bot, monkeypatch):
 
     monkeypatch.setattr(bot, "set_my_commands", lambda *_args, **_kwargs: True)
     monkeypatch.setattr(bot, "_start_metrics_server", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(bot, "_build_state_store", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(bot, "run_webhook", _run_webhook)
     bot.main()
 
@@ -108,6 +111,19 @@ def test_main_rejects_http_api_url_in_production(bot, monkeypatch):
     monkeypatch.setenv("API_AUTH_TOKEN", "B7nP3xQ9mR2tV8yL4cD6kF1hJ5sW0zUaX2")
     monkeypatch.setenv("API_USER_HMAC_SECRET", "C9vN4mB7qT2yH8kL1pR5sD3fG6jW0xZaY4")
     monkeypatch.setenv("API_URL", "http://api.example.com")
+    monkeypatch.setenv("BOT_METRICS_PORT", "0")
+
+    with pytest.raises(SystemExit):
+        bot.main()
+
+
+def test_main_rejects_non_tls_redis_url_in_production(bot, monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6")
+    monkeypatch.setenv("API_AUTH_TOKEN", "B7nP3xQ9mR2tV8yL4cD6kF1hJ5sW0zUaX2")
+    monkeypatch.setenv("API_USER_HMAC_SECRET", "C9vN4mB7qT2yH8kL1pR5sD3fG6jW0xZaY4")
+    monkeypatch.setenv("API_URL", "https://api.example.com")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.setenv("BOT_METRICS_PORT", "0")
 
     with pytest.raises(SystemExit):

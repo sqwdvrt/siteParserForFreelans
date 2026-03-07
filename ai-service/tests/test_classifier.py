@@ -105,6 +105,24 @@ def test_ollama_fallback_on_disallowed_host() -> None:
     assert r == {}
 
 
+def test_ollama_circuit_breaker_skips_repeated_failures() -> None:
+    """После порога ошибок новые вызовы не идут в transport до окна recovery."""
+    c = OllamaClassifier(
+        base_url="http://localhost:11434",
+        timeout_sec=1,
+        breaker_failure_threshold=2,
+        breaker_open_interval_sec=60.0,
+    )
+    with patch("ai_service.adapter.ollama.classifier._safe_open") as mock_open:
+        mock_open.side_effect = TimeoutError("timed out")
+
+        assert c.classify("test one") == {}
+        assert c.classify("test two") == {}
+        assert c.classify("test three") == {}
+
+    assert mock_open.call_count == 2
+
+
 # --- FallbackClassifier ---
 
 

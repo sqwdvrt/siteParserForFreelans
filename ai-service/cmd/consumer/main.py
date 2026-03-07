@@ -34,6 +34,7 @@ from ai_service.usecase.consumer_loop import run_consumer
 from ai_service.usecase.process_job import ProcessJobUseCase
 from ai_service.util.fallback_metrics import start_metrics_server_from_env
 from ai_service.util.ollama_probe import probe_ollama
+from ai_service.util.postgres_pool_config import load_postgres_pool_settings
 from ai_service.util.transport_security import (
     is_production_env,
     validate_postgres_tls_for_production,
@@ -138,6 +139,11 @@ def main() -> None:
         except ValueError as e:
             logger.error("%s", e)
             sys.exit(1)
+    try:
+        pg_pool_kwargs = load_postgres_pool_settings()
+    except ValueError as e:
+        logger.error("%s", e)
+        sys.exit(1)
     start_metrics_server_from_env(
         port_env="AI_CONSUMER_METRICS_PORT",
         default_port=0,
@@ -158,9 +164,9 @@ def main() -> None:
     ) and ollama_required:
         sys.exit(1)
 
-    repo = PostgresJobRepository(db_url)
-    match_repo = PostgresMatchRepository(db_url)
-    pending_repo = PostgresPendingJobsRepository(db_url)
+    repo = PostgresJobRepository(db_url, **pg_pool_kwargs)
+    match_repo = PostgresMatchRepository(db_url, **pg_pool_kwargs)
+    pending_repo = PostgresPendingJobsRepository(db_url, **pg_pool_kwargs)
     accumulate_matches = AccumulateMatchesUseCase(pending_repo)
     embedding = SentenceTransformerEmbedding(model_name)
     if _warmup_enabled():

@@ -47,6 +47,11 @@ class PendingJobsRepository(ABC):
         ...
 
     @abstractmethod
+    def release_claim(self, user_id: int, job_ids: list[int]) -> None:
+        """Release queued-but-unprocessed jobs back to pending state."""
+        ...
+
+    @abstractmethod
     def list_unprocessed_user_ids(self) -> list[int]:
         """Return distinct user IDs with unprocessed pending jobs."""
         ...

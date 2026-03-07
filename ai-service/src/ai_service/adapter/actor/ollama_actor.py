@@ -11,6 +11,7 @@ from ai_service.domain.job import Job
 from ai_service.domain.ranked_job import RankedJob
 from ai_service.domain.user import User
 from ai_service.port.actor import ActorAgent
+from ai_service.util.circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
 
@@ -81,10 +82,23 @@ def _to_float(value: object, default: float) -> float:
 class OllamaActorAgent(ActorAgent):
     """Actor backed by Ollama JSON output."""
 
-    def __init__(self, base_url: str, model: str, timeout_sec: int = DEFAULT_TIMEOUT_SEC) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        model: str,
+        timeout_sec: int = DEFAULT_TIMEOUT_SEC,
+        *,
+        breaker_failure_threshold: int = 3,
+        breaker_open_interval_sec: float = 30.0,
+        breaker: CircuitBreaker | None = None,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._timeout = timeout_sec
+        self._breaker = breaker or CircuitBreaker(
+            failure_threshold=breaker_failure_threshold,
+            open_interval_sec=breaker_open_interval_sec,
+        )
 
     @staticmethod
     def _validate_ollama_url(url: str) -> None:
@@ -119,7 +133,15 @@ class OllamaActorAgent(ActorAgent):
             max_jobs=min(max_jobs, len(candidates)),
             critique_block=critique_block,
         )
-        raw = self._call_ollama(prompt)
+        if not self._breaker.allow_request():
+            logger.warning("actor: Ollama request skipped, circuit breaker open")
+            return []
+        try:
+            raw = self._call_ollama(prompt)
+        except Exception:
+            self._breaker.record_failure()
+            raise
+        self._breaker.record_success()
         return self._parse_response(raw, candidates)
 
     def _call_ollama(self, prompt: str) -> str:

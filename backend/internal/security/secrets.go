@@ -170,6 +170,23 @@ func ValidateHTTPSURLForProduction(urlName, rawURL string) error {
 	return nil
 }
 
+// ValidateHTTPOrHTTPSURL проверяет, что URL использует http:// или https://
+// и содержит host. Подходит для внутренних service/proxy URL.
+func ValidateHTTPOrHTTPSURL(urlName, rawURL string) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("%s is invalid: %w", urlName, err)
+	}
+	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("%s must use http:// or https://", urlName)
+	}
+	if strings.TrimSpace(u.Host) == "" {
+		return fmt.Errorf("%s must include host", urlName)
+	}
+	return nil
+}
+
 func shannonEntropyBits(s string) float64 {
 	if s == "" {
 		return 0

@@ -50,7 +50,7 @@ class ProcessACBatchUseCase:
             return
         if not user.embedding or len(user.embedding) == 0:
             logger.warning("skip ac batch: no embedding for user_id=%d", batch.user_id)
-            self._pending_repo.mark_processed(batch.user_id, batch.job_ids)
+            self._release_batch(batch)
             return
 
         jobs_with_scores = self._load_jobs_with_scores(batch.user_id, batch.job_ids, user.embedding)
@@ -81,6 +81,13 @@ class ProcessACBatchUseCase:
             )
 
         self._pending_repo.mark_processed(batch.user_id, batch.job_ids)
+
+    def _release_batch(self, batch: ACBatch) -> None:
+        release_claim = getattr(self._pending_repo, "release_claim", None)
+        if callable(release_claim):
+            release_claim(batch.user_id, batch.job_ids)
+            return
+        logger.warning("pending repo has no release_claim; batch stays leased user_id=%d", batch.user_id)
 
     def _load_user(self, user_id: int) -> User | None:
         get_by_id = getattr(self._user_repo, "get_by_id", None)

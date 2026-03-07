@@ -10,6 +10,7 @@ import urllib.request
 from typing import Any
 
 from ai_service.port.classifier import ClassificationResult, Classifier
+from ai_service.util.circuit_breaker import CircuitBreaker
 from ai_service.util.sanitize import sanitize_for_classifier
 
 logger = logging.getLogger(__name__)
@@ -47,10 +48,18 @@ class OllamaClassifier(Classifier):
         base_url: str = "http://localhost:11434",
         model: str = DEFAULT_OLLAMA_MODEL,
         timeout_sec: int = DEFAULT_TIMEOUT_SEC,
+        *,
+        breaker_failure_threshold: int = 3,
+        breaker_open_interval_sec: float = 30.0,
+        breaker: CircuitBreaker | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
         self._timeout = timeout_sec
+        self._breaker = breaker or CircuitBreaker(
+            failure_threshold=breaker_failure_threshold,
+            open_interval_sec=breaker_open_interval_sec,
+        )
 
     @staticmethod
     def _validate_ollama_url(url: str) -> None:
@@ -68,6 +77,9 @@ class OllamaClassifier(Classifier):
         text = sanitize_for_classifier(text or "")
         if not text:
             return {"is_spam": False}
+        if not self._breaker.allow_request():
+            logger.warning("Ollama classify skipped: circuit breaker open")
+            return {}
 
         try:
             target_url = f"{self._base_url}/api/generate"
@@ -93,12 +105,17 @@ class OllamaClassifier(Classifier):
                     raw = raw.split("```")[1]
                     if raw.startswith("json"):
                         raw = raw[4:]
-                return self._parse_response(raw)
+                result = self._parse_response(raw)
+                self._breaker.record_success()
+                return result
+            self._breaker.record_success()
             return {}
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError) as e:
+            self._breaker.record_failure()
             logger.warning("Ollama classify failed: %s", e)
             return {}
         except (json.JSONDecodeError, KeyError, TypeError) as e:
+            self._breaker.record_failure()
             logger.warning("Ollama classify parse error: %s", e)
             return {}
 

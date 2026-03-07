@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	stdhttp "net/http"
-	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -20,20 +19,20 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	redisclient "github.com/redis/go-redis/v9"
 	"github.com/robfig/cron/v3"
-	"go.opentelemetry.io/otel"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/browser"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/flru"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/freelancehunt"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/http"
-	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/weblancer"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/kwork"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/postgres"
-	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 	redisqueue "github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/redis"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/weblancer"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/observability"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/security"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/telemetry"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/usecase"
+	"go.opentelemetry.io/otel"
 )
 
 func main() {
@@ -68,11 +67,6 @@ func main() {
 		}
 	}
 
-	rateSec, _ := strconv.Atoi(os.Getenv("CRAWL_RATE_SEC"))
-	if rateSec <= 0 {
-		rateSec = 15
-	}
-	rateLimit := time.Duration(rateSec) * time.Second
 	breakerFailureThreshold, err := parsePositiveIntEnv("CRAWL_BREAKER_FAILURE_THRESHOLD", 3)
 	if err != nil {
 		slog.Error("invalid CRAWL_BREAKER_FAILURE_THRESHOLD", "err", err)
@@ -107,6 +101,12 @@ func main() {
 		slog.Error("invalid retry backoff config: CRAWL_RETRY_MAX_BACKOFF must be >= CRAWL_RETRY_BASE_BACKOFF")
 		os.Exit(1)
 	}
+	rateSec, err := parsePositiveIntEnv("CRAWL_RATE_SEC", 15)
+	if err != nil {
+		slog.Error("invalid CRAWL_RATE_SEC", "err", err)
+		os.Exit(1)
+	}
+	rateLimit := time.Duration(rateSec) * time.Second
 
 	// ENABLED_SOURCES — comma-separated список источников: kwork,flru,freelancehunt,weblancer
 	// По умолчанию только kwork (обратная совместимость).
@@ -149,13 +149,9 @@ func main() {
 
 	proxyURL := strings.TrimSpace(os.Getenv("CRAWL_PROXY_URL"))
 	if proxyURL != "" {
-		parsed, err := url.Parse(proxyURL)
-		if err != nil {
-			slog.Warn("invalid CRAWL_PROXY_URL, ignoring", "url", proxyURL, "err", err)
-			proxyURL = ""
-		} else if parsed.Scheme == "" || parsed.Host == "" {
-			slog.Warn("invalid CRAWL_PROXY_URL (missing scheme or host), ignoring", "url", proxyURL)
-			proxyURL = ""
+		if err := security.ValidateHTTPOrHTTPSURL("CRAWL_PROXY_URL", proxyURL); err != nil {
+			slog.Error("invalid CRAWL_PROXY_URL", "err", err)
+			os.Exit(1)
 		}
 	}
 	if proxyURL != "" {
@@ -222,11 +218,20 @@ func main() {
 	// Если задан, Kwork использует headless-браузер для рендера JS-страниц.
 	// Если не задан — используется обычный HTTP-фетчер (без JS-рендера).
 	browserServiceURL := strings.TrimSpace(os.Getenv("BROWSER_SERVICE_URL"))
-	var kworkFetcher port.Fetcher = fetcher
 	if browserServiceURL != "" {
-		kworkFetcher = browser.NewFetcher(browserServiceURL)
+		if err := security.ValidateHTTPOrHTTPSURL("BROWSER_SERVICE_URL", browserServiceURL); err != nil {
+			slog.Error("invalid BROWSER_SERVICE_URL", "err", err)
+			os.Exit(1)
+		}
+	}
+	var kworkFetcher port.Fetcher = fetcher
+	var browserHealth crawlerHTTPPinger
+	if browserServiceURL != "" && enabledSources["kwork"] {
+		browserFetcher := browser.NewFetcher(browserServiceURL)
+		kworkFetcher = browserFetcher
+		browserHealth = browserFetcher
 		slog.Info("kwork using browser render service", "service", browserServiceURL)
-	} else {
+	} else if enabledSources["kwork"] {
 		slog.Warn("BROWSER_SERVICE_URL not set: kwork list will use plain HTTP fetcher (JS-rendered content won't be visible)")
 	}
 
@@ -279,7 +284,7 @@ func main() {
 	}
 	healthMux := stdhttp.NewServeMux()
 	healthMux.HandleFunc("/healthz", crawlerHealthz())
-	healthMux.HandleFunc("/readyz", crawlerReadyz(pool, crawlerRedisClientPinger{client: rdb}))
+	healthMux.HandleFunc("/readyz", crawlerReadyz(pool, crawlerRedisClientPinger{client: rdb}, browserHealth))
 	healthMux.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	healthSrv := &stdhttp.Server{
 		Addr:         healthAddr,
@@ -370,6 +375,10 @@ type crawlerRedisPinger interface {
 	Ping(ctx context.Context) error
 }
 
+type crawlerHTTPPinger interface {
+	Ping(ctx context.Context) error
+}
+
 type crawlerRedisClientPinger struct {
 	client *redisclient.Client
 }
@@ -389,7 +398,7 @@ func crawlerHealthz() stdhttp.HandlerFunc {
 	}
 }
 
-func crawlerReadyz(db crawlerDBPinger, redis crawlerRedisPinger) stdhttp.HandlerFunc {
+func crawlerReadyz(db crawlerDBPinger, redis crawlerRedisPinger, browser crawlerHTTPPinger) stdhttp.HandlerFunc {
 	return func(w stdhttp.ResponseWriter, r *stdhttp.Request) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
@@ -409,6 +418,12 @@ func crawlerReadyz(db crawlerDBPinger, redis crawlerRedisPinger) stdhttp.Handler
 		if err := redis.Ping(ctx); err != nil {
 			stdhttp.Error(w, "redis not ready", stdhttp.StatusServiceUnavailable)
 			return
+		}
+		if browser != nil {
+			if err := browser.Ping(ctx); err != nil {
+				stdhttp.Error(w, "browser service not ready", stdhttp.StatusServiceUnavailable)
+				return
+			}
 		}
 
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")

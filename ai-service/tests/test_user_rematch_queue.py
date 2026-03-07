@@ -1,11 +1,42 @@
-"""Tests for RedisUserRematchQueueConsumer."""
+"""Tests for RedisUserRematchQueue adapters."""
 
 from __future__ import annotations
 
 import json
 from unittest.mock import MagicMock, patch
 
-from ai_service.adapter.redis.user_rematch_queue import RedisUserRematchQueueConsumer
+from ai_service.adapter.redis.user_rematch_queue import RedisUserRematchQueue, RedisUserRematchQueueConsumer
+
+
+@patch("ai_service.adapter.redis.user_rematch_queue.redis.from_url")
+def test_enqueue_pushes_to_user_rematch_queue(mock_from_url: MagicMock) -> None:
+    mock_client = MagicMock()
+    mock_from_url.return_value = mock_client
+
+    queue = RedisUserRematchQueue("redis://localhost:6379/0")
+    queue.enqueue(42)
+
+    mock_client.lpush.assert_called_once()
+    queue_name, payload = mock_client.lpush.call_args.args
+    assert queue_name == "user-rematch"
+    assert '"user_id": 42' in payload
+
+
+@patch("ai_service.adapter.redis.user_rematch_queue.redis.from_url")
+def test_enqueue_rejects_non_positive_user_id(mock_from_url: MagicMock) -> None:
+    mock_client = MagicMock()
+    mock_from_url.return_value = mock_client
+
+    queue = RedisUserRematchQueue("redis://localhost:6379/0")
+
+    try:
+        queue.enqueue(0)
+    except ValueError as exc:
+        assert "user_id must be positive" in str(exc)
+    else:
+        raise AssertionError("expected ValueError for non-positive user_id")
+
+    mock_client.lpush.assert_not_called()
 
 
 @patch("ai_service.adapter.redis.user_embed_queue.redis.from_url")

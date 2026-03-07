@@ -198,6 +198,10 @@ def test_statement_timeout_negative_raises() -> None:
         _DummyRepo("postgresql://fake/fake", statement_timeout_ms=-1)
 
 
+def test_minconn_zero_is_allowed() -> None:
+    _DummyRepo("postgresql://fake/fake", minconn=0, maxconn=1).close()
+
+
 def test_statement_timeout_default_is_10s(monkeypatch: pytest.MonkeyPatch) -> None:
     created = _make_fake_pool_fixture(monkeypatch)
     repo = _DummyRepo("postgresql://fake/fake")

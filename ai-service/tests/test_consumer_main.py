@@ -117,3 +117,38 @@ def test_main_requeues_inflight_messages_on_clean_shutdown(monkeypatch, tmp_path
     module.main()
 
     assert queue_obj.nack_all_inflight_calls == 1
+
+
+def test_main_passes_postgres_pool_settings_to_repositories(monkeypatch, tmp_path: Path) -> None:
+    module = _load_consumer_main_module()
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
+    monkeypatch.setenv("PG_POOL_MIN_CONNS", "0")
+    monkeypatch.setenv("PG_POOL_MAX_CONNS", "1")
+    monkeypatch.setenv("PG_STATEMENT_TIMEOUT_MS", "2500")
+
+    repo_calls: list[tuple[str, dict]] = []
+
+    monkeypatch.setattr(module, "PostgresJobRepository", lambda *_args, **kwargs: repo_calls.append(("job", kwargs)) or object())
+    monkeypatch.setattr(module, "PostgresMatchRepository", lambda *_args, **kwargs: repo_calls.append(("match", kwargs)) or object())
+    monkeypatch.setattr(module, "PostgresPendingJobsRepository", lambda *_args, **kwargs: repo_calls.append(("pending", kwargs)) or object())
+    monkeypatch.setattr(module, "AccumulateMatchesUseCase", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "SentenceTransformerEmbedding", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "_warmup_embedding", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "OllamaClassifier", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RuleBasedClassifier", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "FallbackClassifier", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "ProcessJobUseCase", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RedisQueueConsumer", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module.signal, "signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "run_consumer", lambda *_args, **_kwargs: None)
+
+    module.main()
+
+    assert repo_calls == [
+        ("job", {"minconn": 0, "maxconn": 1, "statement_timeout_ms": 2500}),
+        ("match", {"minconn": 0, "maxconn": 1, "statement_timeout_ms": 2500}),
+        ("pending", {"minconn": 0, "maxconn": 1, "statement_timeout_ms": 2500}),
+    ]

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from psycopg2.errors import UndefinedTable
 from psycopg2.extras import RealDictCursor
 
 from ai_service.adapter.postgres._pooled_repository import PooledPostgresRepository
@@ -59,6 +60,18 @@ class PostgresUserRepository(PooledPostgresRepository, UserRepository):
                 row: dict[str, Any] | None = cur.fetchone()
             return self._row_to_user(conn, row)
 
+    def get_embedding(self, user_id: int) -> list[float] | None:
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT embedding FROM users WHERE id = %s", (user_id,))
+                row = cur.fetchone()
+        if row is None:
+            return None
+        embedding = row[0]
+        if embedding is not None and hasattr(embedding, "tolist"):
+            embedding = embedding.tolist()
+        return embedding
+
     def update_profile(self, user_id: int, profile_text: str) -> None:
         with self._conn() as conn:
             with conn.cursor() as cur:
@@ -98,14 +111,18 @@ class PostgresUserRepository(PooledPostgresRepository, UserRepository):
 
     def _load_preferences(self, conn: Any, user_id: int) -> UserPreferences:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT include_keywords, exclude_keywords, min_budget, max_budget, preferred_sources
-                FROM user_preferences
-                WHERE user_id = %s
-                """,
-                (user_id,),
-            )
+            try:
+                cur.execute(
+                    """
+                    SELECT include_keywords, exclude_keywords, min_budget, max_budget, preferred_sources
+                    FROM user_preferences
+                    WHERE user_id = %s
+                    """,
+                    (user_id,),
+                )
+            except UndefinedTable:
+                conn.rollback()
+                return UserPreferences()
             row: dict[str, Any] | None = cur.fetchone()
         if row is None:
             return UserPreferences()
@@ -119,14 +136,18 @@ class PostgresUserRepository(PooledPostgresRepository, UserRepository):
 
     def _load_tag_affinity(self, conn: Any, user_id: int) -> dict[str, float]:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute(
-                """
-                SELECT tag, weight
-                FROM user_tag_affinity
-                WHERE user_id = %s
-                """,
-                (user_id,),
-            )
+            try:
+                cur.execute(
+                    """
+                    SELECT tag, weight
+                    FROM user_tag_affinity
+                    WHERE user_id = %s
+                    """,
+                    (user_id,),
+                )
+            except UndefinedTable:
+                conn.rollback()
+                return {}
             rows: list[dict[str, Any]] = cur.fetchall()
         affinity: dict[str, float] = {}
         for row in rows:

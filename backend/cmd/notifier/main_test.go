@@ -76,27 +76,27 @@ func TestNextNackRecoverBackoff_GrowthAndCap(t *testing.T) {
 	}
 }
 
-func TestNotifierEnvParsing_FallbacksForInvalidValues(t *testing.T) {
+func TestNotifierEnvParsing_InvalidValuesReturnErrors(t *testing.T) {
 	t.Setenv("NOTIFIER_MAX_RETRIES", "bad")
 	t.Setenv("NOTIFIER_RETRY_BASE_WAIT", "not-duration")
 	t.Setenv("NOTIFIER_BREAKER_FAILURE_THRESHOLD", "-1")
 	t.Setenv("NOTIFIER_BREAKER_OPEN_INTERVAL", "0s")
 	t.Setenv("NOTIFIER_BREAKER_OPEN_JITTER", "1.5")
 
-	if got := getPositiveIntEnv("NOTIFIER_MAX_RETRIES", 3); got != 3 {
-		t.Fatalf("NOTIFIER_MAX_RETRIES fallback = %d, want 3", got)
+	if _, err := parsePositiveIntEnv("NOTIFIER_MAX_RETRIES", 3); err == nil {
+		t.Fatal("expected error for invalid NOTIFIER_MAX_RETRIES")
 	}
-	if got := getDurationEnv("NOTIFIER_RETRY_BASE_WAIT", time.Second); got != time.Second {
-		t.Fatalf("NOTIFIER_RETRY_BASE_WAIT fallback = %v, want 1s", got)
+	if _, err := parsePositiveDurationEnv("NOTIFIER_RETRY_BASE_WAIT", time.Second); err == nil {
+		t.Fatal("expected error for invalid NOTIFIER_RETRY_BASE_WAIT")
 	}
-	if got := getPositiveIntEnv("NOTIFIER_BREAKER_FAILURE_THRESHOLD", 3); got != 3 {
-		t.Fatalf("NOTIFIER_BREAKER_FAILURE_THRESHOLD fallback = %d, want 3", got)
+	if _, err := parsePositiveIntEnv("NOTIFIER_BREAKER_FAILURE_THRESHOLD", 3); err == nil {
+		t.Fatal("expected error for invalid NOTIFIER_BREAKER_FAILURE_THRESHOLD")
 	}
-	if got := getDurationEnv("NOTIFIER_BREAKER_OPEN_INTERVAL", 30*time.Second); got != 30*time.Second {
-		t.Fatalf("NOTIFIER_BREAKER_OPEN_INTERVAL fallback = %v, want 30s", got)
+	if _, err := parsePositiveDurationEnv("NOTIFIER_BREAKER_OPEN_INTERVAL", 30*time.Second); err == nil {
+		t.Fatal("expected error for invalid NOTIFIER_BREAKER_OPEN_INTERVAL")
 	}
-	if got := getFloatEnvInRange("NOTIFIER_BREAKER_OPEN_JITTER", 0.2, 0, 1); got != 0.2 {
-		t.Fatalf("NOTIFIER_BREAKER_OPEN_JITTER fallback = %v, want 0.2", got)
+	if _, err := parseFloatEnvInRange("NOTIFIER_BREAKER_OPEN_JITTER", 0.2, 0, 1); err == nil {
+		t.Fatal("expected error for invalid NOTIFIER_BREAKER_OPEN_JITTER")
 	}
 }
 
@@ -107,19 +107,19 @@ func TestNotifierEnvParsing_UsesValidValues(t *testing.T) {
 	t.Setenv("NOTIFIER_BREAKER_OPEN_INTERVAL", "45s")
 	t.Setenv("NOTIFIER_BREAKER_OPEN_JITTER", "0.35")
 
-	if got := getPositiveIntEnv("NOTIFIER_MAX_RETRIES", 3); got != 8 {
+	if got, err := parsePositiveIntEnv("NOTIFIER_MAX_RETRIES", 3); err != nil || got != 8 {
 		t.Fatalf("NOTIFIER_MAX_RETRIES parsed = %d, want 8", got)
 	}
-	if got := getDurationEnv("NOTIFIER_RETRY_BASE_WAIT", time.Second); got != 750*time.Millisecond {
+	if got, err := parsePositiveDurationEnv("NOTIFIER_RETRY_BASE_WAIT", time.Second); err != nil || got != 750*time.Millisecond {
 		t.Fatalf("NOTIFIER_RETRY_BASE_WAIT parsed = %v, want 750ms", got)
 	}
-	if got := getPositiveIntEnv("NOTIFIER_BREAKER_FAILURE_THRESHOLD", 3); got != 5 {
+	if got, err := parsePositiveIntEnv("NOTIFIER_BREAKER_FAILURE_THRESHOLD", 3); err != nil || got != 5 {
 		t.Fatalf("NOTIFIER_BREAKER_FAILURE_THRESHOLD parsed = %d, want 5", got)
 	}
-	if got := getDurationEnv("NOTIFIER_BREAKER_OPEN_INTERVAL", 30*time.Second); got != 45*time.Second {
+	if got, err := parsePositiveDurationEnv("NOTIFIER_BREAKER_OPEN_INTERVAL", 30*time.Second); err != nil || got != 45*time.Second {
 		t.Fatalf("NOTIFIER_BREAKER_OPEN_INTERVAL parsed = %v, want 45s", got)
 	}
-	if got := getFloatEnvInRange("NOTIFIER_BREAKER_OPEN_JITTER", 0.2, 0, 1); got != 0.35 {
+	if got, err := parseFloatEnvInRange("NOTIFIER_BREAKER_OPEN_JITTER", 0.2, 0, 1); err != nil || got != 0.35 {
 		t.Fatalf("NOTIFIER_BREAKER_OPEN_JITTER parsed = %v, want 0.35", got)
 	}
 }
@@ -127,7 +127,7 @@ func TestNotifierEnvParsing_UsesValidValues(t *testing.T) {
 func TestNotifierEnvParsing_EmptyValueUsesFallback(t *testing.T) {
 	const key = "NOTIFIER_MAX_RETRIES"
 	_ = os.Unsetenv(key)
-	if got := getPositiveIntEnv(key, 4); got != 4 {
+	if got, err := parsePositiveIntEnv(key, 4); err != nil || got != 4 {
 		t.Fatalf("empty env must use fallback, got %d", got)
 	}
 }

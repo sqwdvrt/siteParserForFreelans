@@ -24,6 +24,36 @@ def test_shutdown_grace_sec_invalid_env_fallback(monkeypatch) -> None:
     assert module._shutdown_grace_sec() == module.DEFAULT_SHUTDOWN_GRACE_SEC
 
 
+def test_main_starts_metrics_server_from_env(monkeypatch, tmp_path: Path) -> None:
+    module = _load_user_embed_consumer_main_module()
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
+    monkeypatch.setenv("AI_USER_EMBED_METRICS_PORT", "18080")
+
+    queue_obj = object()
+    metrics_calls: list[tuple[str, int]] = []
+
+    monkeypatch.setattr(module, "PostgresUserRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "SentenceTransformerEmbedding", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RedisUserRematchQueue", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "_warmup_embedding", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "ProcessUserEmbedUseCase", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RedisUserEmbedQueueConsumer", lambda *_args, **_kwargs: queue_obj)
+    monkeypatch.setattr(
+        module,
+        "start_metrics_server_from_env",
+        lambda *, port_env, default_port=0, **_kwargs: metrics_calls.append((port_env, default_port)),
+    )
+    monkeypatch.setattr(module.signal, "signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "run_user_embed_consumer", lambda *_args, **_kwargs: None)
+
+    module.main()
+
+    assert metrics_calls == [("AI_USER_EMBED_METRICS_PORT", 0)]
+
+
 def test_main_forces_requeue_on_shutdown_timeout(monkeypatch, tmp_path: Path) -> None:
     module = _load_user_embed_consumer_main_module()
 
@@ -43,6 +73,7 @@ def test_main_forces_requeue_on_shutdown_timeout(monkeypatch, tmp_path: Path) ->
     queue_obj = FakeQueue()
     monkeypatch.setattr(module, "PostgresUserRepository", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "SentenceTransformerEmbedding", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RedisUserRematchQueue", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "_warmup_embedding", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "ProcessUserEmbedUseCase", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "RedisUserEmbedQueueConsumer", lambda *_args, **_kwargs: queue_obj)
@@ -97,6 +128,7 @@ def test_main_requeues_inflight_messages_on_clean_shutdown(monkeypatch, tmp_path
     queue_obj = FakeQueue()
     monkeypatch.setattr(module, "PostgresUserRepository", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "SentenceTransformerEmbedding", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RedisUserRematchQueue", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "_warmup_embedding", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "ProcessUserEmbedUseCase", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "RedisUserEmbedQueueConsumer", lambda *_args, **_kwargs: queue_obj)
@@ -128,6 +160,7 @@ def test_main_drains_inflight_message_on_sigterm(monkeypatch, tmp_path: Path) ->
     queue_obj = FakeQueue()
     monkeypatch.setattr(module, "PostgresUserRepository", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "SentenceTransformerEmbedding", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RedisUserRematchQueue", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "_warmup_embedding", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(module, "RedisUserEmbedQueueConsumer", lambda *_args, **_kwargs: queue_obj)
 

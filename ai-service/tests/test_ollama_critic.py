@@ -87,3 +87,25 @@ def test_timeout_propagates(mock_open) -> None:
 
     with pytest.raises(TimeoutError):
         critic.evaluate(_user(), _selection())
+
+
+@patch("ai_service.adapter.critic.ollama_critic._safe_open")
+def test_circuit_breaker_skips_repeated_timeouts(mock_open) -> None:
+    mock_open.side_effect = TimeoutError("timed out")
+    critic = OllamaCriticAgent(
+        base_url="http://ollama:11434",
+        model="llama3.2:3b",
+        breaker_failure_threshold=2,
+        breaker_open_interval_sec=60.0,
+    )
+
+    with pytest.raises(TimeoutError):
+        critic.evaluate(_user(), _selection())
+    with pytest.raises(TimeoutError):
+        critic.evaluate(_user(), _selection())
+
+    result = critic.evaluate(_user(), _selection())
+
+    assert result.score == 0.0
+    assert result.critique == "Circuit breaker open."
+    assert mock_open.call_count == 2

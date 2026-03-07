@@ -22,6 +22,11 @@ import urllib.error
 import urllib.parse
 
 try:
+    import redis
+except ImportError:
+    redis = None  # type: ignore[assignment]
+
+try:
     from dotenv import load_dotenv
     load_dotenv()
     load_dotenv("../.env")  # при запуске из telegram-bot/
@@ -202,6 +207,7 @@ _PROMETHEUS_META: dict[str, tuple[str, str]] = {
     "telegram_bot_http_requests_total": ("counter", "Outbound HTTP requests by method, target and status class."),
     "telegram_bot_http_retries_total": ("counter", "Outbound HTTP retries by method, target and reason."),
     "telegram_bot_cache_operations_total": ("counter", "Bot cache and state operations by cache and result."),
+    "telegram_bot_state_store_operations_total": ("counter", "Telegram bot Redis state store operations by operation and result."),
     "telegram_bot_ready": ("gauge", "Telegram bot readiness state."),
 }
 
@@ -313,6 +319,131 @@ def _observe_http_retry(method: str, url: str, reason: str) -> None:
 
 def _record_command(command: str, result: str) -> None:
     _METRICS.inc("telegram_bot_commands_total", command=command, result=result)
+
+
+class _RedisStateStore:
+    def __init__(
+        self,
+        client,
+        *,
+        prefix: str,
+        user_id_ttl_sec: int,
+        conversation_state_ttl_sec: int,
+        processed_update_ttl_sec: int,
+    ) -> None:
+        self._client = client
+        self._prefix = prefix.strip() or "telegram-bot"
+        self._user_id_ttl_sec = max(1, int(user_id_ttl_sec))
+        self._conversation_state_ttl_sec = max(1, int(conversation_state_ttl_sec))
+        self._processed_update_ttl_sec = max(1, int(processed_update_ttl_sec))
+
+    def cache_user_id(self, telegram_id: int, user_id: int) -> None:
+        self._client.set(self._key("user-id", telegram_id), str(user_id), ex=self._user_id_ttl_sec)
+        _METRICS.inc("telegram_bot_state_store_operations_total", operation="cache_user_id", result="ok")
+
+    def get_user_id(self, telegram_id: int) -> int | None:
+        raw = self._client.get(self._key("user-id", telegram_id))
+        if raw is None:
+            _METRICS.inc("telegram_bot_state_store_operations_total", operation="get_user_id", result="miss")
+            return None
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            self._client.delete(self._key("user-id", telegram_id))
+            _METRICS.inc("telegram_bot_state_store_operations_total", operation="get_user_id", result="invalid")
+            return None
+        if value <= 0:
+            self._client.delete(self._key("user-id", telegram_id))
+            _METRICS.inc("telegram_bot_state_store_operations_total", operation="get_user_id", result="invalid")
+            return None
+        _METRICS.inc("telegram_bot_state_store_operations_total", operation="get_user_id", result="hit")
+        return value
+
+    def set_conversation_state(self, telegram_id: int, state: str) -> None:
+        self._client.set(self._key("conversation", telegram_id), state, ex=self._conversation_state_ttl_sec)
+        _METRICS.inc("telegram_bot_state_store_operations_total", operation="set_conversation_state", result="ok")
+
+    def get_conversation_state(self, telegram_id: int) -> str | None:
+        raw = self._client.get(self._key("conversation", telegram_id))
+        if raw is None:
+            _METRICS.inc("telegram_bot_state_store_operations_total", operation="get_conversation_state", result="miss")
+            return None
+        value = str(raw).strip()
+        if not value:
+            self._client.delete(self._key("conversation", telegram_id))
+            _METRICS.inc("telegram_bot_state_store_operations_total", operation="get_conversation_state", result="invalid")
+            return None
+        _METRICS.inc("telegram_bot_state_store_operations_total", operation="get_conversation_state", result="hit")
+        return value
+
+    def clear_conversation_state(self, telegram_id: int) -> None:
+        self._client.delete(self._key("conversation", telegram_id))
+        _METRICS.inc("telegram_bot_state_store_operations_total", operation="clear_conversation_state", result="ok")
+
+    def claim_update_id(self, update_id: int) -> bool:
+        claimed = bool(
+            self._client.set(
+                self._key("processed-update", update_id),
+                "1",
+                ex=self._processed_update_ttl_sec,
+                nx=True,
+            )
+        )
+        _METRICS.inc(
+            "telegram_bot_state_store_operations_total",
+            operation="claim_update_id",
+            result="claim" if claimed else "duplicate",
+        )
+        return claimed
+
+    def forget_update_id(self, update_id: int) -> None:
+        self._client.delete(self._key("processed-update", update_id))
+        _METRICS.inc("telegram_bot_state_store_operations_total", operation="forget_update_id", result="ok")
+
+    def _key(self, kind: str, entity_id: int) -> str:
+        return f"{self._prefix}:{kind}:{entity_id}"
+
+
+_STATE_STORE: _RedisStateStore | None = None
+
+
+def _validate_redis_url_for_production(redis_url: str) -> None:
+    parsed = urllib.parse.urlsplit((redis_url or "").strip())
+    if parsed.scheme.lower() != "rediss":
+        raise ValueError("REDIS_URL must use rediss:// in production")
+    if not parsed.hostname:
+        raise ValueError("REDIS_URL must include host in production")
+
+
+def _build_state_store(app_env: str | None) -> _RedisStateStore | None:
+    redis_url = (os.getenv("REDIS_URL") or "").strip()
+    if not redis_url:
+        logger.warning("REDIS_URL not set; durable Telegram bot state disabled")
+        return None
+    if _is_production_env(app_env):
+        _validate_redis_url_for_production(redis_url)
+    if redis is None:
+        if _is_production_env(app_env):
+            raise ValueError("python redis package is required for durable Telegram bot state")
+        logger.warning("redis package not installed; durable Telegram bot state disabled")
+        return None
+    try:
+        client = redis.from_url(redis_url, decode_responses=True)
+        client.ping()
+    except Exception as e:
+        if _is_production_env(app_env):
+            raise ValueError(f"REDIS_URL unavailable for durable Telegram bot state: {_exception_name(e)}") from e
+        logger.warning("redis unavailable; durable Telegram bot state disabled: %s", _exception_name(e))
+        return None
+    prefix = (os.getenv("BOT_REDIS_PREFIX") or "telegram-bot").strip() or "telegram-bot"
+    logger.info("durable Telegram bot state enabled via Redis prefix=%s", prefix)
+    return _RedisStateStore(
+        client,
+        prefix=prefix,
+        user_id_ttl_sec=USER_ID_CACHE_TTL_SEC,
+        conversation_state_ttl_sec=CONVERSATION_STATE_TTL_SEC,
+        processed_update_ttl_sec=PROCESSED_UPDATE_TTL_SEC,
+    )
 
 
 class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -675,6 +806,12 @@ def put_user_notify_hour(
 
 def _cache_user_id(telegram_id: int, user_id: int, *, now_monotonic: float | None = None) -> None:
     now = now_monotonic if now_monotonic is not None else time.monotonic()
+    if _STATE_STORE is not None:
+        try:
+            _STATE_STORE.cache_user_id(telegram_id, user_id)
+        except Exception as e:
+            logger.warning("redis state store cache_user_id failed: %s", _exception_name(e))
+            _METRICS.inc("telegram_bot_state_store_operations_total", operation="cache_user_id", result="error")
     with _CACHE_LOCK:
         _prune_expired_entries(_USER_ID_CACHE, now)
         ttl_sec = getattr(_USER_ID_CACHE, "ttl_sec", USER_ID_CACHE_TTL_SEC)
@@ -695,20 +832,40 @@ def _get_cached_user_id(telegram_id: int, *, now_monotonic: float | None = None)
     with _CACHE_LOCK:
         _prune_expired_entries(_USER_ID_CACHE, now)
         cached = _USER_ID_CACHE.get(telegram_id)
-        if cached is None:
+        if cached is not None:
+            user_id, expires_at = cached
+            if now >= expires_at:
+                _USER_ID_CACHE.pop(telegram_id, None)
+                _METRICS.inc("telegram_bot_cache_operations_total", cache="user_id", result="expired")
+            else:
+                _METRICS.inc("telegram_bot_cache_operations_total", cache="user_id", result="hit")
+                return user_id
+        else:
             _METRICS.inc("telegram_bot_cache_operations_total", cache="user_id", result="miss")
+    if _STATE_STORE is not None:
+        try:
+            stored_user_id = _STATE_STORE.get_user_id(telegram_id)
+        except Exception as e:
+            logger.warning("redis state store get_user_id failed: %s", _exception_name(e))
+            _METRICS.inc("telegram_bot_state_store_operations_total", operation="get_user_id", result="error")
+        else:
+            if stored_user_id is not None:
+                _cache_user_id(telegram_id, stored_user_id, now_monotonic=now)
+                _METRICS.inc("telegram_bot_cache_operations_total", cache="user_id", result="redis_hit")
+                return stored_user_id
+            _METRICS.inc("telegram_bot_cache_operations_total", cache="user_id", result="redis_miss")
             return None
-        user_id, expires_at = cached
-        if now >= expires_at:
-            _USER_ID_CACHE.pop(telegram_id, None)
-            _METRICS.inc("telegram_bot_cache_operations_total", cache="user_id", result="expired")
-            return None
-        _METRICS.inc("telegram_bot_cache_operations_total", cache="user_id", result="hit")
-        return user_id
+    return None
 
 
 def _set_conversation_state(telegram_id: int, state: str, *, now_monotonic: float | None = None) -> None:
     now = now_monotonic if now_monotonic is not None else time.monotonic()
+    if _STATE_STORE is not None:
+        try:
+            _STATE_STORE.set_conversation_state(telegram_id, state)
+        except Exception as e:
+            logger.warning("redis state store set_conversation_state failed: %s", _exception_name(e))
+            _METRICS.inc("telegram_bot_state_store_operations_total", operation="set_conversation_state", result="error")
     with _CACHE_LOCK:
         _prune_expired_entries(_CONVERSATION_STATE_CACHE, now)
         ttl_sec = getattr(_CONVERSATION_STATE_CACHE, "ttl_sec", CONVERSATION_STATE_TTL_SEC)
@@ -727,27 +884,69 @@ def _get_conversation_state(telegram_id: int, *, now_monotonic: float | None = N
     with _CACHE_LOCK:
         _prune_expired_entries(_CONVERSATION_STATE_CACHE, now)
         cached = _CONVERSATION_STATE_CACHE.get(telegram_id)
-        if cached is None:
+        if cached is not None:
+            state, expires_at = cached
+            if now >= expires_at:
+                _CONVERSATION_STATE_CACHE.pop(telegram_id, None)
+                _METRICS.inc("telegram_bot_cache_operations_total", cache="conversation_state", result="expired")
+            else:
+                _METRICS.inc("telegram_bot_cache_operations_total", cache="conversation_state", result="hit")
+                return state
+        else:
             _METRICS.inc("telegram_bot_cache_operations_total", cache="conversation_state", result="miss")
+    if _STATE_STORE is not None:
+        try:
+            stored_state = _STATE_STORE.get_conversation_state(telegram_id)
+        except Exception as e:
+            logger.warning("redis state store get_conversation_state failed: %s", _exception_name(e))
+            _METRICS.inc("telegram_bot_state_store_operations_total", operation="get_conversation_state", result="error")
+        else:
+            if stored_state is not None:
+                _set_conversation_state(telegram_id, stored_state, now_monotonic=now)
+                _METRICS.inc("telegram_bot_cache_operations_total", cache="conversation_state", result="redis_hit")
+                return stored_state
+            _METRICS.inc("telegram_bot_cache_operations_total", cache="conversation_state", result="redis_miss")
             return None
-        state, expires_at = cached
-        if now >= expires_at:
-            _CONVERSATION_STATE_CACHE.pop(telegram_id, None)
-            _METRICS.inc("telegram_bot_cache_operations_total", cache="conversation_state", result="expired")
-            return None
-        _METRICS.inc("telegram_bot_cache_operations_total", cache="conversation_state", result="hit")
-        return state
+    return None
 
 
 def _clear_conversation_state(telegram_id: int) -> None:
     with _CACHE_LOCK:
         removed = _CONVERSATION_STATE_CACHE.pop(telegram_id, None)
+    if _STATE_STORE is not None:
+        try:
+            _STATE_STORE.clear_conversation_state(telegram_id)
+        except Exception as e:
+            logger.warning("redis state store clear_conversation_state failed: %s", _exception_name(e))
+            _METRICS.inc("telegram_bot_state_store_operations_total", operation="clear_conversation_state", result="error")
     if removed is not None:
         _METRICS.inc("telegram_bot_cache_operations_total", cache="conversation_state", result="clear")
 
 
 def _claim_update_id(update_id: int, *, now_monotonic: float | None = None) -> bool:
     now = now_monotonic if now_monotonic is not None else time.monotonic()
+    if _STATE_STORE is not None:
+        try:
+            claimed = _STATE_STORE.claim_update_id(update_id)
+        except Exception as e:
+            logger.warning("redis state store claim_update_id failed: %s", _exception_name(e))
+            _METRICS.inc("telegram_bot_state_store_operations_total", operation="claim_update_id", result="error")
+        else:
+            if not claimed:
+                _METRICS.inc("telegram_bot_cache_operations_total", cache="processed_update", result="redis_duplicate")
+                return False
+            with _CACHE_LOCK:
+                _prune_expired_entries(_PROCESSED_UPDATE_CACHE, now)
+                maxsize = getattr(_PROCESSED_UPDATE_CACHE, "maxsize", PROCESSED_UPDATE_MAXSIZE)
+                ttl_sec = getattr(_PROCESSED_UPDATE_CACHE, "ttl_sec", PROCESSED_UPDATE_TTL_SEC)
+                if update_id in _PROCESSED_UPDATE_CACHE:
+                    _PROCESSED_UPDATE_CACHE.pop(update_id, None)
+                elif maxsize > 0 and len(_PROCESSED_UPDATE_CACHE) >= maxsize:
+                    oldest_key = next(iter(_PROCESSED_UPDATE_CACHE))
+                    _PROCESSED_UPDATE_CACHE.pop(oldest_key, None)
+                _PROCESSED_UPDATE_CACHE[update_id] = now + ttl_sec
+            _METRICS.inc("telegram_bot_cache_operations_total", cache="processed_update", result="redis_claim")
+            return True
     with _CACHE_LOCK:
         _prune_expired_entries(_PROCESSED_UPDATE_CACHE, now)
         expires_at = _PROCESSED_UPDATE_CACHE.get(update_id)
@@ -769,6 +968,12 @@ def _claim_update_id(update_id: int, *, now_monotonic: float | None = None) -> b
 def _forget_update_id(update_id: int) -> None:
     with _CACHE_LOCK:
         removed = _PROCESSED_UPDATE_CACHE.pop(update_id, None)
+    if _STATE_STORE is not None:
+        try:
+            _STATE_STORE.forget_update_id(update_id)
+        except Exception as e:
+            logger.warning("redis state store forget_update_id failed: %s", _exception_name(e))
+            _METRICS.inc("telegram_bot_state_store_operations_total", operation="forget_update_id", result="error")
     if removed is not None:
         _METRICS.inc("telegram_bot_cache_operations_total", cache="processed_update", result="forget")
 
@@ -1302,6 +1507,7 @@ def run_webhook(
 
 
 def main() -> None:
+    global _STATE_STORE
     _METRICS.set_ready(False)
     app_env = os.getenv("APP_ENV", "development")
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -1315,6 +1521,7 @@ def main() -> None:
         if _is_production_env(app_env):
             _validate_api_url_for_production(api_url)
         _register_allowed_host(api_url)
+        _STATE_STORE = _build_state_store(app_env)
     except ValueError as e:
         logger.error("%s", e)
         sys.exit(1)

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -95,19 +96,44 @@ func main() {
 	)
 	notifierMetrics := telemetry.NewNotifierMetrics(registry, queueName)
 
-	rateSec, _ := strconv.Atoi(os.Getenv("NOTIFY_RATE_LIMIT_SEC"))
-	rateLimit := time.Duration(rateSec) * time.Second
-	if rateLimit <= 0 {
-		rateLimit = 5 * time.Minute
+	rateSec, err := parsePositiveIntEnv("NOTIFY_RATE_LIMIT_SEC", 300)
+	if err != nil {
+		slog.Error("invalid NOTIFY_RATE_LIMIT_SEC", "err", err)
+		os.Exit(1)
 	}
+	rateLimit := time.Duration(rateSec) * time.Second
 
 	maxPerDay := getNotifierMaxPerDay()
-	notifierMaxRetries := getPositiveIntEnv("NOTIFIER_MAX_RETRIES", defaultNotifierMaxRetries)
-	notifierRetryBaseWait := getDurationEnv("NOTIFIER_RETRY_BASE_WAIT", defaultNotifierRetryBaseWait)
-	breakerFailureThreshold := getPositiveIntEnv("NOTIFIER_BREAKER_FAILURE_THRESHOLD", defaultBreakerFailureThreshold)
-	breakerOpenInterval := getDurationEnv("NOTIFIER_BREAKER_OPEN_INTERVAL", defaultBreakerOpenInterval)
-	breakerOpenJitter := getFloatEnvInRange("NOTIFIER_BREAKER_OPEN_JITTER", defaultBreakerOpenJitter, 0, 1)
-	queueDepthSamplePeriod := getDurationEnv("NOTIFIER_QUEUE_DEPTH_SAMPLE_PERIOD", defaultQueueDepthSamplePeriod)
+	notifierMaxRetries, err := parsePositiveIntEnv("NOTIFIER_MAX_RETRIES", defaultNotifierMaxRetries)
+	if err != nil {
+		slog.Error("invalid NOTIFIER_MAX_RETRIES", "err", err)
+		os.Exit(1)
+	}
+	notifierRetryBaseWait, err := parsePositiveDurationEnv("NOTIFIER_RETRY_BASE_WAIT", defaultNotifierRetryBaseWait)
+	if err != nil {
+		slog.Error("invalid NOTIFIER_RETRY_BASE_WAIT", "err", err)
+		os.Exit(1)
+	}
+	breakerFailureThreshold, err := parsePositiveIntEnv("NOTIFIER_BREAKER_FAILURE_THRESHOLD", defaultBreakerFailureThreshold)
+	if err != nil {
+		slog.Error("invalid NOTIFIER_BREAKER_FAILURE_THRESHOLD", "err", err)
+		os.Exit(1)
+	}
+	breakerOpenInterval, err := parsePositiveDurationEnv("NOTIFIER_BREAKER_OPEN_INTERVAL", defaultBreakerOpenInterval)
+	if err != nil {
+		slog.Error("invalid NOTIFIER_BREAKER_OPEN_INTERVAL", "err", err)
+		os.Exit(1)
+	}
+	breakerOpenJitter, err := parseFloatEnvInRange("NOTIFIER_BREAKER_OPEN_JITTER", defaultBreakerOpenJitter, 0, 1)
+	if err != nil {
+		slog.Error("invalid NOTIFIER_BREAKER_OPEN_JITTER", "err", err)
+		os.Exit(1)
+	}
+	queueDepthSamplePeriod, err := parsePositiveDurationEnv("NOTIFIER_QUEUE_DEPTH_SAMPLE_PERIOD", defaultQueueDepthSamplePeriod)
+	if err != nil {
+		slog.Error("invalid NOTIFIER_QUEUE_DEPTH_SAMPLE_PERIOD", "err", err)
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 	shutdownTracer, err := telemetry.InitTracerProvider(ctx, "site-parser-notifier", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
@@ -402,6 +428,51 @@ func waitForBackoff(ctx context.Context, d time.Duration) bool {
 func getNotifierMaxPerDay() int {
 	// Preferred key for notifier per-day cap; falls back to legacy key for compatibility.
 	return getPositiveIntEnvWithFallback("NOTIFY_PRO_MAX_PER_DAY", "NOTIFY_MAX_PER_DAY", 5)
+}
+
+func parsePositiveIntEnv(key string, fallback int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be positive integer: %w", key, err)
+	}
+	if v <= 0 {
+		return 0, fmt.Errorf("%s must be > 0", key)
+	}
+	return v, nil
+}
+
+func parsePositiveDurationEnv(key string, fallback time.Duration) (time.Duration, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	v, err := time.ParseDuration(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be valid duration: %w", key, err)
+	}
+	if v <= 0 {
+		return 0, fmt.Errorf("%s must be > 0", key)
+	}
+	return v, nil
+}
+
+func parseFloatEnvInRange(key string, fallback float64, min, max float64) (float64, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	v, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be number: %w", key, err)
+	}
+	if v < min || v > max {
+		return 0, fmt.Errorf("%s must be within [%.2f, %.2f]", key, min, max)
+	}
+	return v, nil
 }
 
 func getPositiveIntEnvWithFallback(primaryKey, secondaryKey string, fallback int) int {

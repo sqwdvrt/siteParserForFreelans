@@ -171,6 +171,22 @@ class PostgresPendingJobsRepository(PooledPostgresRepository, PendingJobsReposit
                     (user_id, job_ids),
                 )
 
+    def release_claim(self, user_id: int, job_ids: list[int]) -> None:
+        if not job_ids:
+            return
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE pending_ac_jobs
+                    SET queued_at = NULL
+                    WHERE user_id = %s
+                      AND job_id = ANY(%s)
+                      AND processed_at IS NULL
+                    """,
+                    (user_id, job_ids),
+                )
+
     def list_unprocessed_user_ids(self, lease_timeout_sec: int = 600) -> list[int]:
         with self._conn() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:

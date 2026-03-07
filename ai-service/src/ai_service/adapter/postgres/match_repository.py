@@ -74,3 +74,53 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
             )
             for row in rows
         ]
+
+    def find_jobs_for_user(
+        self,
+        embedding: list[float],
+        user_id: int,
+        threshold: float,
+        limit: int = 100,
+        days_back: int = 7,
+    ) -> list[MatchCandidate]:
+        """Find recent jobs for user by similarity, excluding already notified jobs."""
+        if embedding is None or len(embedding) == 0 or len(embedding) != 384:
+            return []
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                vec = Vector(embedding)
+                cur.execute(
+                    """
+                    WITH scored_jobs AS (
+                      SELECT
+                        j.id AS job_id,
+                        1 - (je.embedding <=> %s) AS similarity
+                      FROM jobs j
+                      JOIN job_embeddings je ON je.job_id = j.id
+                      WHERE COALESCE(j.posted_at, j.created_at) >= NOW() - make_interval(days => %s)
+                    )
+                    SELECT s.job_id, s.similarity
+                    FROM scored_jobs s
+                    WHERE s.similarity >= %s
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM notifications n
+                          WHERE n.user_id = %s
+                            AND n.job_id = s.job_id
+                      )
+                    ORDER BY s.similarity DESC
+                    LIMIT %s
+                    """,
+                    (vec, days_back, threshold, user_id, limit),
+                )
+                rows = cur.fetchall()
+        return [
+            MatchCandidate(
+                user_id=user_id,
+                job_id=row["job_id"],
+                match_score=float(row["similarity"]),
+                raw_similarity=float(row["similarity"]),
+                final_score=float(row["similarity"]),
+            )
+            for row in rows
+        ]

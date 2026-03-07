@@ -68,7 +68,8 @@ def test_execute_skips_when_user_has_no_embedding() -> None:
 
     uc.execute(ACBatch(user_id=1, job_ids=[10]))
 
-    pending_repo.mark_processed.assert_called_once_with(1, [10])
+    pending_repo.release_claim.assert_called_once_with(1, [10])
+    pending_repo.mark_processed.assert_not_called()
     ac_loop.run.assert_not_called()
 
 

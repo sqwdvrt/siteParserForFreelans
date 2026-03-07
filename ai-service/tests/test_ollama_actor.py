@@ -85,3 +85,24 @@ def test_timeout_propagates(mock_open) -> None:
 
     with pytest.raises(TimeoutError):
         actor.select(_user(), _jobs()[:1])
+
+
+@patch("ai_service.adapter.actor.ollama_actor._safe_open")
+def test_circuit_breaker_skips_repeated_timeouts(mock_open) -> None:
+    mock_open.side_effect = TimeoutError("timed out")
+    actor = OllamaActorAgent(
+        base_url="http://ollama:11434",
+        model="llama3.2:3b",
+        breaker_failure_threshold=2,
+        breaker_open_interval_sec=60.0,
+    )
+
+    with pytest.raises(TimeoutError):
+        actor.select(_user(), _jobs()[:1])
+    with pytest.raises(TimeoutError):
+        actor.select(_user(), _jobs()[:1])
+
+    result = actor.select(_user(), _jobs()[:1])
+
+    assert result == []
+    assert mock_open.call_count == 2

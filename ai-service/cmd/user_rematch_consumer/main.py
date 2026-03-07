@@ -21,6 +21,7 @@ except ImportError:
 from ai_service.adapter.postgres import PostgresFeedbackRepository, PostgresMatchRepository, PostgresUserRepository
 from ai_service.adapter.redis import RedisMatchNotifyQueue
 from ai_service.adapter.redis.user_rematch_queue import RedisUserRematchQueueConsumer
+from ai_service.util.postgres_pool_config import load_postgres_pool_settings
 from ai_service.util.transport_security import (
     is_production_env,
     validate_postgres_tls_for_production,
@@ -165,14 +166,19 @@ def main() -> None:
         except ValueError as e:
             logger.error("%s", e)
             sys.exit(1)
+    try:
+        pg_pool_kwargs = load_postgres_pool_settings()
+    except ValueError as e:
+        logger.error("%s", e)
+        sys.exit(1)
 
     days_back = int(os.getenv("REMATCH_JOBS_DAYS_BACK", "7"))
     max_jobs = int(os.getenv("REMATCH_MAX_JOBS", "5"))
     threshold = float(os.getenv("SIMILARITY_THRESHOLD", "0.7"))
 
-    user_repo = PostgresUserRepository(db_url)
-    match_repo = PostgresMatchRepository(db_url)
-    feedback_repo = PostgresFeedbackRepository(db_url)
+    user_repo = PostgresUserRepository(db_url, **pg_pool_kwargs)
+    match_repo = PostgresMatchRepository(db_url, **pg_pool_kwargs)
+    feedback_repo = PostgresFeedbackRepository(db_url, **pg_pool_kwargs)
     match_notify_queue = RedisMatchNotifyQueue(redis_url)
     process_user_rematch = ProcessUserRematchUseCase(
         user_repo,

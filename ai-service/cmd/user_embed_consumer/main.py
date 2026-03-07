@@ -19,11 +19,13 @@ except ImportError:
     pass  # python-dotenv не установлен — используй переменные из окружения
 
 from ai_service.adapter.postgres import PostgresUserRepository
-from ai_service.adapter.redis import RedisUserEmbedQueueConsumer
+from ai_service.adapter.redis import RedisUserEmbedQueueConsumer, RedisUserRematchQueue
 from ai_service.adapter.sentence_transformers import SentenceTransformerEmbedding
 from ai_service.tracing.setup import init_tracer
 from ai_service.usecase.process_user_embed import ProcessUserEmbedUseCase
 from ai_service.usecase.user_embed_consumer_loop import run_user_embed_consumer
+from ai_service.util.fallback_metrics import start_metrics_server_from_env
+from ai_service.util.postgres_pool_config import load_postgres_pool_settings
 from ai_service.util.transport_security import (
     is_production_env,
     validate_postgres_tls_for_production,
@@ -143,19 +145,30 @@ def main() -> None:
         except ValueError as e:
             logger.error("%s", e)
             sys.exit(1)
+    try:
+        pg_pool_kwargs = load_postgres_pool_settings()
+    except ValueError as e:
+        logger.error("%s", e)
+        sys.exit(1)
+    start_metrics_server_from_env(
+        port_env="AI_USER_EMBED_METRICS_PORT",
+        default_port=0,
+    )
 
     init_tracer("site-parser-user-embed")
 
     queue_name = os.getenv("USER_EMBED_QUEUE", "user-embed")
+    rematch_queue_name = os.getenv("USER_REMATCH_QUEUE", "user-rematch")
     model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
 
-    user_repo = PostgresUserRepository(db_url)
+    user_repo = PostgresUserRepository(db_url, **pg_pool_kwargs)
     embedding = SentenceTransformerEmbedding(model_name)
+    user_rematch_queue = RedisUserRematchQueue(redis_url, rematch_queue_name)
     if _warmup_enabled():
         _warmup_embedding(embedding)
     else:
         logger.info("embedding warmup disabled by %s", WARMUP_ENABLED_ENV)
-    process_user_embed = ProcessUserEmbedUseCase(user_repo, embedding)
+    process_user_embed = ProcessUserEmbedUseCase(user_repo, embedding, user_rematch_queue)
     queue = RedisUserEmbedQueueConsumer(redis_url, queue_name)
     _mark_ready(ready_file)
 

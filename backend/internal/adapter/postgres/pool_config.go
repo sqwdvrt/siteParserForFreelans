@@ -20,8 +20,8 @@ const (
 )
 
 const (
-	defaultPoolMaxConns       int32 = 20
-	defaultPoolMinConns       int32 = 2
+	defaultPoolMaxConns       int32 = 8
+	defaultPoolMinConns       int32 = 0
 	defaultPoolAcquireTimeout       = 5 * time.Second
 	defaultQueryTimeout             = 30 * time.Second
 	defaultConnectTimeout           = 5 * time.Second

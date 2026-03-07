@@ -40,7 +40,7 @@ func TestCrawlerReadyz_AllReady(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rr := httptest.NewRecorder()
 
-	crawlerReadyz(db, redis).ServeHTTP(rr, req)
+	crawlerReadyz(db, redis, nil).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rr.Code)
@@ -62,7 +62,7 @@ func TestCrawlerReadyz_DBNotReady(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rr := httptest.NewRecorder()
 
-	crawlerReadyz(db, redis).ServeHTTP(rr, req)
+	crawlerReadyz(db, redis, nil).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d", rr.Code)
@@ -81,7 +81,7 @@ func TestCrawlerReadyz_RedisNotReady(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rr := httptest.NewRecorder()
 
-	crawlerReadyz(db, redis).ServeHTTP(rr, req)
+	crawlerReadyz(db, redis, nil).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusServiceUnavailable {
 		t.Fatalf("expected 503, got %d", rr.Code)
@@ -94,6 +94,26 @@ func TestCrawlerReadyz_RedisNotReady(t *testing.T) {
 	}
 	if redis.calls != 1 {
 		t.Fatalf("expected 1 redis ping, got %d", redis.calls)
+	}
+}
+
+func TestCrawlerReadyz_BrowserServiceNotReady(t *testing.T) {
+	db := &stubCrawlerPinger{}
+	redis := &stubCrawlerPinger{}
+	browser := &stubCrawlerPinger{err: errors.New("browser down")}
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
+	rr := httptest.NewRecorder()
+
+	crawlerReadyz(db, redis, browser).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503, got %d", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "browser service not ready") {
+		t.Fatalf("expected browser error body, got %q", rr.Body.String())
+	}
+	if browser.calls != 1 {
+		t.Fatalf("expected 1 browser ping, got %d", browser.calls)
 	}
 }
 
