@@ -22,6 +22,10 @@ class AccumulateMatchesUseCase:
                 candidate.user_id,
                 candidate.job_id,
                 candidate.match_score,
+                candidate.raw_similarity if candidate.raw_similarity > 0 else candidate.match_score,
+                candidate.final_score if candidate.final_score > 0 else candidate.match_score,
+                getattr(candidate, "ranker_version", ""),
+                list(getattr(candidate, "reason_codes", []) or []),
                 candidate.trace_id,
             )
             for candidate in matches
