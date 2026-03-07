@@ -66,6 +66,11 @@ def test_put_user_profile_failure(bot, monkeypatch):
     assert not bot.put_user_profile("https://api.example.com", 1, 123, "python", "tok", "hmac")
 
 
+def test_put_user_profile_status_returns_status_code(bot, monkeypatch):
+    monkeypatch.setattr(bot, "_http_put", lambda *args, **kwargs: 400)
+    assert bot.put_user_profile_status("https://api.example.com", 1, 123, "python", "tok", "hmac") == 400
+
+
 def test_get_updates_returns_next_offset(bot, monkeypatch):
     monkeypatch.setattr(
         bot,

@@ -66,7 +66,7 @@ def test_run_polling_handles_profile(bot, monkeypatch):
 
     monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
     monkeypatch.setattr(bot, "post_users", MagicMock(return_value=123))
-    monkeypatch.setattr(bot, "put_user_profile", MagicMock(return_value=True))
+    monkeypatch.setattr(bot, "put_user_profile_status", MagicMock(return_value=204))
     send_message = MagicMock(return_value=True)
     monkeypatch.setattr(bot, "send_message", send_message)
 
@@ -102,19 +102,19 @@ def test_run_polling_profile_uses_cached_user_id(bot, monkeypatch):
     ]
 
     post_users = MagicMock(return_value=123)
-    put_user_profile = MagicMock(return_value=True)
+    put_user_profile_status = MagicMock(return_value=204)
     send_message = MagicMock(return_value=True)
 
     monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
     monkeypatch.setattr(bot, "post_users", post_users)
-    monkeypatch.setattr(bot, "put_user_profile", put_user_profile)
+    monkeypatch.setattr(bot, "put_user_profile_status", put_user_profile_status)
     monkeypatch.setattr(bot, "send_message", send_message)
 
     with pytest.raises(KeyboardInterrupt):
         bot.run_polling("token", "https://api.example.com", "tok", "hmac")
 
     assert post_users.call_count == 1
-    assert put_user_profile.call_count == 2
+    assert put_user_profile_status.call_count == 2
 
 
 def test_run_polling_backs_off_after_failed_get_updates(bot, monkeypatch):
@@ -258,7 +258,7 @@ def test_run_polling_profile_update_error(bot, monkeypatch):
 
     monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
     monkeypatch.setattr(bot, "post_users", MagicMock(return_value=1))
-    monkeypatch.setattr(bot, "put_user_profile", MagicMock(return_value=False))
+    monkeypatch.setattr(bot, "put_user_profile_status", MagicMock(return_value=500))
     send_message = MagicMock(return_value=True)
     monkeypatch.setattr(bot, "send_message", send_message)
 
@@ -266,6 +266,26 @@ def test_run_polling_profile_update_error(bot, monkeypatch):
         bot.run_polling("token", "https://api.example.com", "tok", "hmac")
 
     assert "Ошибка обновления профиля." in send_message.call_args.args[2]
+
+
+def test_run_polling_profile_invalid_message(bot, monkeypatch):
+    updates = [
+        (
+            [{"update_id": 1, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "/profile smoke profile"}}],
+            2,
+        )
+    ]
+
+    monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
+    monkeypatch.setattr(bot, "post_users", MagicMock(return_value=1))
+    monkeypatch.setattr(bot, "put_user_profile_status", MagicMock(return_value=400))
+    send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(bot, "send_message", send_message)
+
+    with pytest.raises(KeyboardInterrupt):
+        bot.run_polling("token", "https://api.example.com", "tok", "hmac")
+
+    assert "Профиль слишком короткий или похож на тестовую заглушку." in send_message.call_args.args[2]
 
 
 def test_run_polling_profile_two_step_state_flow(bot, monkeypatch):
@@ -281,16 +301,16 @@ def test_run_polling_profile_two_step_state_flow(bot, monkeypatch):
     ]
 
     send_message = MagicMock(return_value=True)
-    put_user_profile = MagicMock(return_value=True)
+    put_user_profile_status = MagicMock(return_value=204)
     monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
     monkeypatch.setattr(bot, "post_users", MagicMock(return_value=123))
-    monkeypatch.setattr(bot, "put_user_profile", put_user_profile)
+    monkeypatch.setattr(bot, "put_user_profile_status", put_user_profile_status)
     monkeypatch.setattr(bot, "send_message", send_message)
 
     with pytest.raises(KeyboardInterrupt):
         bot.run_polling("token", "https://api.example.com", "tok", "hmac")
 
-    put_user_profile.assert_called_once()
+    put_user_profile_status.assert_called_once()
     assert send_message.call_count == 2
     assert "Отправьте следующим сообщением текст профиля" in send_message.call_args_list[0].args[2]
     assert send_message.call_args_list[1].args[2] == "Профиль обновлён."

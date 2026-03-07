@@ -829,6 +829,25 @@ def put_user_profile(
     api_user_hmac_secret: str,
 ) -> bool:
     """PUT /users/:id/profile. True при успехе."""
+    return put_user_profile_status(
+        api_url,
+        user_id,
+        telegram_id,
+        profile_text,
+        api_auth_token,
+        api_user_hmac_secret,
+    ) == 204
+
+
+def put_user_profile_status(
+    api_url: str,
+    user_id: int,
+    telegram_id: int,
+    profile_text: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> int:
+    """PUT /users/:id/profile. Returns status code (204 on success)."""
     url = f"{api_url.rstrip('/')}/users/{user_id}/profile"
     payload = {"profile_text": profile_text}
     body = _json_body(payload)
@@ -839,8 +858,7 @@ def put_user_profile(
     )
     if status != 204:
         logger.warning("PUT /users/:id/profile failed: status=%s", status)
-        return False
-    return True
+    return status
 
 
 def put_user_notify_hour(
@@ -1384,15 +1402,32 @@ def _onboarding_handle_callback(
         if user_id is None:
             send_message(token, chat_id, "Сначала отправьте /start")
             return
-        if put_user_profile(api_url, user_id, telegram_id, profile_text, api_auth_token, api_user_hmac_secret):
+        status = put_user_profile_status(
+            api_url,
+            user_id,
+            telegram_id,
+            profile_text,
+            api_auth_token,
+            api_user_hmac_secret,
+        )
+        if status == 204:
             _clear_conversation_state(telegram_id)
             _record_command("onboarding", "ok")
             edit_message_text(token, chat_id, message_id, f"✅ Профиль сохранён:\n\n<i>{profile_text}</i>")
             send_message(token, chat_id, "Как только появятся подходящие заказы — уведомлю вас.\nНажимайте 👍/👎 под заказами, чтобы обучить алгоритм.")
             _maybe_send_profile_quality_hint(token, chat_id, profile_text)
         else:
-            _record_command("onboarding", "error")
-            send_message(token, chat_id, "Ошибка сохранения профиля. Попробуйте позже.")
+            if status == 400:
+                _record_command("onboarding", "invalid_profile")
+                send_message(
+                    token,
+                    chat_id,
+                    "Профиль получился слишком коротким или похож на тестовую заглушку. "
+                    "Добавьте стек, опыт и тип задач, которые вам интересны.",
+                )
+            else:
+                _record_command("onboarding", "error")
+                send_message(token, chat_id, "Ошибка сохранения профиля. Попробуйте позже.")
 
     elif data == "ob:edit":
         ob["step"] = "edit"
@@ -1567,14 +1602,24 @@ def _handle_profile_submission(
         _record_command("profile", "missing_start")
         send_message(token, chat_id, "Сначала отправьте /start")
         return True
-    if put_user_profile(api_url, user_id, telegram_id, profile_text, api_auth_token, api_user_hmac_secret):
+    status = put_user_profile_status(api_url, user_id, telegram_id, profile_text, api_auth_token, api_user_hmac_secret)
+    if status == 204:
         _clear_conversation_state(telegram_id)
         _record_command("profile", "ok")
         send_message(token, chat_id, "Профиль обновлён.")
         _maybe_send_profile_quality_hint(token, chat_id, profile_text)
     else:
-        _record_command("profile", "error")
-        send_message(token, chat_id, "Ошибка обновления профиля.")
+        if status == 400:
+            _record_command("profile", "invalid")
+            send_message(
+                token,
+                chat_id,
+                "Профиль слишком короткий или похож на тестовую заглушку. "
+                "Опишите навыки, стек, опыт и типы задач, которые вам интересны.",
+            )
+        else:
+            _record_command("profile", "error")
+            send_message(token, chat_id, "Ошибка обновления профиля.")
     return True
 
 

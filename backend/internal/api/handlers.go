@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
@@ -24,6 +25,7 @@ import (
 )
 
 const maxProfileTextLen = 5000
+const minProfileTextLen = 50
 const maxJSONBodyBytes int64 = 16 << 10 // 16 KiB
 const authHeaderPrefix = "Bearer "
 const headerTelegramID = "X-Telegram-ID"
@@ -41,6 +43,39 @@ const maxPreferenceSources = 16
 const maxPreferenceValueLen = 64
 
 var errTelegramIDInvalid = errors.New("telegram_id must be positive integer")
+var errProfileTextTooShort = errors.New("profile_text too short")
+var errProfileTextLooksPlaceholder = errors.New("profile_text looks like placeholder")
+
+var profilePlaceholderMarkers = []string{
+	"smoke",
+	"staging",
+	"dummy",
+	"profile check",
+	"example profile",
+}
+
+func validateProfileText(profileText string) error {
+	trimmed := strings.TrimSpace(profileText)
+	if utf8.RuneCountInString(trimmed) < minProfileTextLen {
+		return errProfileTextTooShort
+	}
+	wordCount := 0
+	for _, part := range strings.Fields(trimmed) {
+		if utf8.RuneCountInString(part) >= 2 {
+			wordCount++
+		}
+	}
+	if wordCount < 5 {
+		return errProfileTextTooShort
+	}
+	lower := strings.ToLower(trimmed)
+	for _, marker := range profilePlaceholderMarkers {
+		if strings.Contains(lower, marker) {
+			return errProfileTextLooksPlaceholder
+		}
+	}
+	return nil
+}
 
 // NonceStore — хранилище одноразовых nonce для anti-replay.
 type NonceStore interface {
@@ -206,6 +241,17 @@ func (h *Handlers) PutUserProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(req.ProfileText) > maxProfileTextLen {
 		http.Error(w, "profile_text too long", http.StatusBadRequest)
+		return
+	}
+	if err := validateProfileText(req.ProfileText); err != nil {
+		switch {
+		case errors.Is(err, errProfileTextTooShort):
+			http.Error(w, "profile_text too short; include skills, stack, experience and target tasks", http.StatusBadRequest)
+		case errors.Is(err, errProfileTextLooksPlaceholder):
+			http.Error(w, "profile_text looks like test placeholder; send a real freelancer profile", http.StatusBadRequest)
+		default:
+			http.Error(w, "invalid profile_text", http.StatusBadRequest)
+		}
 		return
 	}
 	if !h.enforceIPRateLimit(w, r) {

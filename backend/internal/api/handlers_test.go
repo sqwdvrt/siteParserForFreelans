@@ -125,6 +125,7 @@ func (m *mockUserRepo) GetProUsersWithNotifyHour(ctx context.Context, hour int) 
 const testAuthToken = "test-api-token"
 const testTelegramIDHeader = "123456789"
 const testUserHMACSecret = "test-hmac-secret"
+const validProfileText = "Python backend разработчик, 4 года опыта. Делаю API, PostgreSQL, Redis, Docker, интеграции и автоматизацию."
 
 func newAuthHeaders() map[string]string {
 	return map[string]string{
@@ -301,7 +302,7 @@ func TestHandlers_PutUserProfile_Success(t *testing.T) {
 	}
 	h := &Handlers{UserRepo: repo, UserEmbedQueue: queue, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
 
-	body := []byte(`{"profile_text":"I am a developer"}`)
+	body := []byte(`{"profile_text":"` + validProfileText + `"}`)
 	req := newJSONRequest(http.MethodPut, "/users/1/profile", body, newAuthHeadersWithUserSign(http.MethodPut, "/users/1/profile", 123456789, body))
 	req = attachRouteUserID(req, "1")
 	rr := httptest.NewRecorder()
@@ -314,8 +315,8 @@ func TestHandlers_PutUserProfile_Success(t *testing.T) {
 	if gotUserID != 1 {
 		t.Errorf("user_id = %d, want 1", gotUserID)
 	}
-	if gotProfile != "I am a developer" {
-		t.Errorf("profile_text = %q, want %q", gotProfile, "I am a developer")
+	if gotProfile != validProfileText {
+		t.Errorf("profile_text = %q, want %q", gotProfile, validProfileText)
 	}
 	if enqueuedUserID != 1 {
 		t.Errorf("enqueued user_id = %d, want 1", enqueuedUserID)
@@ -394,7 +395,7 @@ func TestHandlers_PutUserProfile_RepoError(t *testing.T) {
 	}
 	h := &Handlers{UserRepo: repo, UserEmbedQueue: queue, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
 
-	body := []byte(`{"profile_text":"x"}`)
+	body := []byte(`{"profile_text":"` + validProfileText + `"}`)
 	req := newJSONRequest(http.MethodPut, "/users/1/profile", body, newAuthHeadersWithUserSign(http.MethodPut, "/users/1/profile", 123456789, body))
 	req = attachRouteUserID(req, "1")
 	rr := httptest.NewRecorder()
@@ -428,6 +429,42 @@ func TestHandlers_PutUserProfile_ProfileTooLong(t *testing.T) {
 	}
 }
 
+func TestHandlers_PutUserProfile_ProfileTooShort(t *testing.T) {
+	h := &Handlers{UserRepo: &mockUserRepo{}, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+
+	body := []byte(`{"profile_text":"short profile"}`)
+	req := newJSONRequest(http.MethodPut, "/users/1/profile", body, newAuthHeadersWithUserSign(http.MethodPut, "/users/1/profile", 123456789, body))
+	req = attachRouteUserID(req, "1")
+	rr := httptest.NewRecorder()
+
+	h.PutUserProfile(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "profile_text too short") {
+		t.Fatalf("response = %q, want too short hint", rr.Body.String())
+	}
+}
+
+func TestHandlers_PutUserProfile_ProfilePlaceholderRejected(t *testing.T) {
+	h := &Handlers{UserRepo: &mockUserRepo{}, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+
+	body := []byte(`{"profile_text":"staging-user-embed-gate-d1ef4b90 with smoke placeholder words inside profile text"}`)
+	req := newJSONRequest(http.MethodPut, "/users/1/profile", body, newAuthHeadersWithUserSign(http.MethodPut, "/users/1/profile", 123456789, body))
+	req = attachRouteUserID(req, "1")
+	rr := httptest.NewRecorder()
+
+	h.PutUserProfile(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "placeholder") {
+		t.Fatalf("response = %q, want placeholder hint", rr.Body.String())
+	}
+}
+
 func TestHandlers_PutUserProfile_EnqueuesUserEmbed(t *testing.T) {
 	var enqueuedUserID int64
 	queue := &mockUserEmbedQueue{
@@ -443,7 +480,7 @@ func TestHandlers_PutUserProfile_EnqueuesUserEmbed(t *testing.T) {
 	}
 	h := &Handlers{UserRepo: repo, UserEmbedQueue: queue, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
 
-	body := []byte(`{"profile_text":"hello"}`)
+	body := []byte(`{"profile_text":"` + validProfileText + `"}`)
 	req := newJSONRequest(http.MethodPut, "/users/42/profile", body, newAuthHeadersWithUserSign(http.MethodPut, "/users/42/profile", 123456789, body))
 	req = attachRouteUserID(req, "42")
 	rr := httptest.NewRecorder()
@@ -468,7 +505,7 @@ func TestHandlers_PutUserProfile_QueueUnavailable(t *testing.T) {
 	}
 	h := &Handlers{UserRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
 
-	body := []byte(`{"profile_text":"hello"}`)
+	body := []byte(`{"profile_text":"` + validProfileText + `"}`)
 	req := newJSONRequest(http.MethodPut, "/users/42/profile", body, newAuthHeadersWithUserSign(http.MethodPut, "/users/42/profile", 123456789, body))
 	req = attachRouteUserID(req, "42")
 	rr := httptest.NewRecorder()
@@ -485,7 +522,7 @@ func TestHandlers_PutUserProfile_QueueUnavailable(t *testing.T) {
 
 func TestHandlers_PutUserProfile_EnqueueError_RollsBackAndReturns503(t *testing.T) {
 	profiles := make([]string, 0, 2)
-	oldProfileText := "old profile"
+	oldProfileText := validProfileText
 	queue := &mockUserEmbedQueue{
 		enqueueFunc: func(ctx context.Context, userID int64) error {
 			return errors.New("redis down")
@@ -502,7 +539,8 @@ func TestHandlers_PutUserProfile_EnqueueError_RollsBackAndReturns503(t *testing.
 	}
 	h := &Handlers{UserRepo: repo, UserEmbedQueue: queue, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
 
-	body := []byte(`{"profile_text":"new profile"}`)
+	newProfile := "Go backend разработчик, 5 лет опыта. Делаю REST API, очереди, Redis, PostgreSQL, Docker и интеграции."
+	body := []byte(`{"profile_text":"` + newProfile + `"}`)
 	req := newJSONRequest(http.MethodPut, "/users/1/profile", body, newAuthHeadersWithUserSign(http.MethodPut, "/users/1/profile", 123456789, body))
 	req = attachRouteUserID(req, "1")
 	rr := httptest.NewRecorder()
@@ -515,11 +553,11 @@ func TestHandlers_PutUserProfile_EnqueueError_RollsBackAndReturns503(t *testing.
 	if len(profiles) != 2 {
 		t.Fatalf("update profile calls = %d, want 2 (update + rollback)", len(profiles))
 	}
-	if profiles[0] != "new profile" {
-		t.Errorf("first update profile = %q, want %q", profiles[0], "new profile")
+	if profiles[0] != newProfile {
+		t.Errorf("first update profile = %q, want %q", profiles[0], newProfile)
 	}
-	if profiles[1] != "old profile" {
-		t.Errorf("rollback profile = %q, want %q", profiles[1], "old profile")
+	if profiles[1] != validProfileText {
+		t.Errorf("rollback profile = %q, want %q", profiles[1], validProfileText)
 	}
 }
 
@@ -802,7 +840,7 @@ func TestHandlers_PutUserProfile_OwnerMismatch(t *testing.T) {
 	}
 	h := &Handlers{UserRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
 
-	body := []byte(`{"profile_text":"x"}`)
+	body := []byte(`{"profile_text":"` + validProfileText + `"}`)
 	req := newJSONRequest(
 		http.MethodPut,
 		"/users/1/profile",
@@ -827,7 +865,7 @@ func TestHandlers_PutUserProfile_InvalidTelegramHeader(t *testing.T) {
 	req := newJSONRequest(
 		http.MethodPut,
 		"/users/1/profile",
-		[]byte(`{"profile_text":"x"}`),
+		[]byte(`{"profile_text":"` + validProfileText + `"}`),
 		headers,
 	)
 	req = attachRouteUserID(req, "1")
@@ -848,7 +886,7 @@ func TestHandlers_PutUserProfile_GetByIDError_DoesNotLeak(t *testing.T) {
 	}
 	h := &Handlers{UserRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
 
-	body := []byte(`{"profile_text":"x"}`)
+	body := []byte(`{"profile_text":"` + validProfileText + `"}`)
 	req := newJSONRequest(
 		http.MethodPut,
 		"/users/1/profile",
@@ -873,7 +911,7 @@ func TestHandlers_PutUserProfile_GetByIDError_DoesNotLeak(t *testing.T) {
 
 func TestHandlers_PutUserProfile_ExpiredTimestamp(t *testing.T) {
 	h := &Handlers{UserRepo: &mockUserRepo{}, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
-	body := []byte(`{"profile_text":"x"}`)
+	body := []byte(`{"profile_text":"` + validProfileText + `"}`)
 	nonce := "nonce1234567890abcd"
 	oldTS := strconv.FormatInt(time.Now().Add(-maxRequestSkew-time.Second).Unix(), 10)
 	req := newJSONRequest(
