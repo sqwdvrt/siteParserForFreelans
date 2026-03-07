@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -14,6 +15,7 @@ func TestLoadPoolRuntimeSettings_Defaults(t *testing.T) {
 	t.Setenv(envPoolAcquireTimeout, "")
 	t.Setenv(envQueryTimeout, "")
 	t.Setenv(envConnectTimeout, "")
+	t.Setenv(envQueryExecMode, "")
 
 	settings, err := loadPoolRuntimeSettings(os.Getenv)
 	if err != nil {
@@ -43,6 +45,7 @@ func TestLoadPoolRuntimeSettings_ParsesExplicitValues(t *testing.T) {
 	t.Setenv(envPoolAcquireTimeout, "750ms")
 	t.Setenv(envQueryTimeout, "9s")
 	t.Setenv(envConnectTimeout, "2s")
+	t.Setenv(envQueryExecMode, "exec")
 
 	settings, err := loadPoolRuntimeSettings(os.Getenv)
 	if err != nil {
@@ -63,6 +66,9 @@ func TestLoadPoolRuntimeSettings_ParsesExplicitValues(t *testing.T) {
 	}
 	if settings.connectTimeout != 2*time.Second {
 		t.Fatalf("connectTimeout=%v want=2s", settings.connectTimeout)
+	}
+	if settings.queryExecMode == nil || *settings.queryExecMode != pgx.QueryExecModeExec {
+		t.Fatalf("queryExecMode=%v want=%v", settings.queryExecMode, pgx.QueryExecModeExec)
 	}
 }
 
@@ -102,6 +108,30 @@ func TestApplyPoolRuntimeSettings_AssignsPoolAndTimeouts(t *testing.T) {
 	}
 	if got := cfg.ConnConfig.RuntimeParams["statement_timeout"]; got != "17000" {
 		t.Fatalf("statement_timeout=%q want=17000", got)
+	}
+}
+
+func TestApplyPoolRuntimeSettings_AssignsQueryExecMode(t *testing.T) {
+	cfg, err := pgxpool.ParseConfig("postgres://user:pass@localhost:6543/app")
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+
+	mode := pgx.QueryExecModeExec
+	settings := poolRuntimeSettings{
+		maxConns:       2,
+		minConns:       0,
+		acquireTimeout: time.Second,
+		queryTimeout:   5 * time.Second,
+		connectTimeout: time.Second,
+		queryExecMode:  &mode,
+	}
+	if err := applyPoolRuntimeSettings(cfg, settings); err != nil {
+		t.Fatalf("apply settings: %v", err)
+	}
+
+	if cfg.ConnConfig.DefaultQueryExecMode != pgx.QueryExecModeExec {
+		t.Fatalf("cfg.ConnConfig.DefaultQueryExecMode=%v want=%v", cfg.ConnConfig.DefaultQueryExecMode, pgx.QueryExecModeExec)
 	}
 }
 

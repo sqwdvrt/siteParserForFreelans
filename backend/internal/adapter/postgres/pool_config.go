@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -17,6 +18,7 @@ const (
 	envPoolAcquireTimeout = "PG_POOL_ACQUIRE_TIMEOUT"
 	envQueryTimeout       = "PG_QUERY_TIMEOUT"
 	envConnectTimeout     = "PG_CONNECT_TIMEOUT"
+	envQueryExecMode      = "PG_DEFAULT_QUERY_EXEC_MODE"
 )
 
 const (
@@ -33,6 +35,7 @@ type poolRuntimeSettings struct {
 	acquireTimeout time.Duration
 	queryTimeout   time.Duration
 	connectTimeout time.Duration
+	queryExecMode  *pgx.QueryExecMode
 }
 
 // NewConfiguredPool создает pgxpool с явными лимитами и таймаутами.
@@ -77,6 +80,9 @@ func applyPoolRuntimeSettings(cfg *pgxpool.Config, settings poolRuntimeSettings)
 	cfg.MaxConns = settings.maxConns
 	cfg.MinConns = settings.minConns
 	cfg.ConnConfig.ConnectTimeout = settings.connectTimeout
+	if settings.queryExecMode != nil {
+		cfg.ConnConfig.DefaultQueryExecMode = *settings.queryExecMode
+	}
 
 	if cfg.ConnConfig.RuntimeParams == nil {
 		cfg.ConnConfig.RuntimeParams = map[string]string{}
@@ -107,6 +113,10 @@ func loadPoolRuntimeSettings(getenv func(string) string) (poolRuntimeSettings, e
 	if err != nil {
 		return poolRuntimeSettings{}, err
 	}
+	queryExecMode, err := parseOptionalQueryExecMode(getenv(envQueryExecMode))
+	if err != nil {
+		return poolRuntimeSettings{}, err
+	}
 
 	return poolRuntimeSettings{
 		maxConns:       maxConns,
@@ -114,6 +124,7 @@ func loadPoolRuntimeSettings(getenv func(string) string) (poolRuntimeSettings, e
 		acquireTimeout: acquireTimeout,
 		queryTimeout:   queryTimeout,
 		connectTimeout: connectTimeout,
+		queryExecMode:  queryExecMode,
 	}, nil
 }
 
@@ -160,4 +171,28 @@ func parsePositiveDurationEnv(getenv func(string) string, key string, fallback t
 		return 0, fmt.Errorf("invalid %s=%q: must be > 0", key, raw)
 	}
 	return v, nil
+}
+
+func parseOptionalQueryExecMode(raw string) (*pgx.QueryExecMode, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "":
+		return nil, nil
+	case "cache_statement":
+		mode := pgx.QueryExecModeCacheStatement
+		return &mode, nil
+	case "cache_describe":
+		mode := pgx.QueryExecModeCacheDescribe
+		return &mode, nil
+	case "describe_exec":
+		mode := pgx.QueryExecModeDescribeExec
+		return &mode, nil
+	case "exec":
+		mode := pgx.QueryExecModeExec
+		return &mode, nil
+	case "simple_protocol":
+		mode := pgx.QueryExecModeSimpleProtocol
+		return &mode, nil
+	default:
+		return nil, fmt.Errorf("invalid %s=%q: expected one of cache_statement, cache_describe, describe_exec, exec, simple_protocol", envQueryExecMode, strings.TrimSpace(raw))
+	}
 }
