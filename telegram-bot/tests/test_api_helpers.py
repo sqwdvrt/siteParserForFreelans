@@ -203,3 +203,15 @@ def test_handle_callback_calls_post_feedback_with_correct_ids(bot, monkeypatch):
     assert called_telegram_id == 987654, f"telegram_id должен быть Telegram ID (987654), получили {called_telegram_id}"
     assert job_id == 7
     assert feedback == "good"
+
+
+def test_render_metrics_contains_counters_and_ready_gauge(bot):
+    bot._METRICS.inc("telegram_bot_updates_total", transport="polling", result="handled")
+    bot._METRICS.inc("telegram_bot_commands_total", command="start", result="ok")
+    bot._METRICS.set_ready(True)
+
+    payload = bot._render_metrics()
+
+    assert "telegram_bot_updates_total{result=\"handled\",transport=\"polling\"} 1" in payload
+    assert "telegram_bot_commands_total{command=\"start\",result=\"ok\"} 1" in payload
+    assert "telegram_bot_ready 1" in payload

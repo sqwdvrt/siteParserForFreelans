@@ -81,4 +81,39 @@ def test_main_forces_requeue_on_shutdown_timeout(monkeypatch, tmp_path: Path) ->
     module.main()
 
     assert forced_exit_codes == [1]
+    assert queue_obj.nack_all_inflight_calls == 2
+
+
+def test_main_requeues_inflight_messages_on_clean_shutdown(monkeypatch, tmp_path: Path) -> None:
+    module = _load_consumer_main_module()
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
+
+    class FakeQueue:
+        def __init__(self) -> None:
+            self.nack_all_inflight_calls = 0
+
+        def nack_all_inflight(self) -> int:
+            self.nack_all_inflight_calls += 1
+            return 1
+
+    queue_obj = FakeQueue()
+    monkeypatch.setattr(module, "PostgresJobRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresMatchRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresPendingJobsRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "AccumulateMatchesUseCase", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "SentenceTransformerEmbedding", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "_warmup_embedding", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "OllamaClassifier", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RuleBasedClassifier", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "FallbackClassifier", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "ProcessJobUseCase", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RedisQueueConsumer", lambda *_args, **_kwargs: queue_obj)
+    monkeypatch.setattr(module.signal, "signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "run_consumer", lambda *_args, **_kwargs: None)
+
+    module.main()
+
     assert queue_obj.nack_all_inflight_calls == 1

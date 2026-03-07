@@ -30,6 +30,16 @@ def _maybe_nack(queue: UserEmbedQueueConsumer, user_id: int) -> None:
         nack(user_id)
 
 
+def _maybe_shutdown_requeue(queue: UserEmbedQueueConsumer, user_id: int, stop: threading.Event) -> bool:
+    if not stop.is_set():
+        return False
+    try:
+        _maybe_nack(queue, user_id)
+    except Exception as nack_err:
+        logger.exception("shutdown nack user_id=%s failed: %s", user_id, nack_err)
+    return True
+
+
 def _maybe_trace_id(queue: UserEmbedQueueConsumer, user_id: int) -> str:
     trace_id = getattr(queue, "trace_id", None)
     if callable(trace_id):
@@ -56,6 +66,8 @@ def run_user_embed_consumer(
             logger.exception("user-embed queue pop failed: %s", e)
             continue
         if user_id is not None:
+            if _maybe_shutdown_requeue(queue, user_id, stop):
+                break
             trace_id = _maybe_trace_id(queue, user_id)
             token = set_trace_id(trace_id)
             try:

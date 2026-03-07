@@ -68,6 +68,18 @@ class ReclaimQueueConsumer(ReliableFakeQueueConsumer):
         self.reclaimed = True
 
 
+class ShutdownAfterPopQueueConsumer(ReliableFakeQueueConsumer):
+    def __init__(self, job_ids: list[int], stop_event: threading.Event) -> None:
+        super().__init__(job_ids)
+        self._stop_event = stop_event
+
+    def pop_blocking(self, timeout_sec: int = 5) -> int | None:
+        job_id = super().pop_blocking(timeout_sec=timeout_sec)
+        if job_id is not None:
+            self._stop_event.set()
+        return job_id
+
+
 def test_run_consumer_calls_process_job() -> None:
     import time
 
@@ -194,3 +206,15 @@ def test_run_consumer_continues_when_nack_raises() -> None:
     t.join(timeout=3)
 
     process_job.execute.assert_called_once_with(42)
+
+
+def test_run_consumer_requeues_job_if_shutdown_happens_after_pop() -> None:
+    process_job = MagicMock(spec=ProcessJobUseCase)
+    stop = threading.Event()
+    queue = ShutdownAfterPopQueueConsumer([42], stop_event=stop)
+
+    run_consumer(queue, process_job, timeout_sec=1, stop_event=stop)
+
+    process_job.execute.assert_not_called()
+    assert queue.acked == []
+    assert queue.nacked == [42]

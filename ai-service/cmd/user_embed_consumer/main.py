@@ -46,6 +46,21 @@ SHUTDOWN_GRACE_SEC_ENV = "AI_SHUTDOWN_GRACE_SEC"
 DEFAULT_SHUTDOWN_GRACE_SEC = 20.0
 
 
+class _TrackedProcessUserEmbed:
+    """Single-threaded wrapper that tracks whether current user-embed work is drained."""
+
+    def __init__(self, process_user_embed: ProcessUserEmbedUseCase, inflight_drained: threading.Event) -> None:
+        self._process_user_embed = process_user_embed
+        self._inflight_drained = inflight_drained
+
+    def execute(self, user_id: int) -> bool:
+        self._inflight_drained.clear()
+        try:
+            return self._process_user_embed.execute(user_id)
+        finally:
+            self._inflight_drained.set()
+
+
 def _cleanup_ready_file(ready_file: str) -> None:
     try:
         os.remove(ready_file)
@@ -146,9 +161,12 @@ def main() -> None:
 
     stop_event = threading.Event()
     consumer_stopped = threading.Event()
+    inflight_drained = threading.Event()
+    inflight_drained.set()
     grace_sec = _shutdown_grace_sec()
     force_exit_lock = threading.Lock()
     force_exit_started = False
+    tracked_process_user_embed = _TrackedProcessUserEmbed(process_user_embed, inflight_drained)
 
     def on_signal(signum: int, frame: object) -> None:
         nonlocal force_exit_started
@@ -158,6 +176,9 @@ def main() -> None:
         except ValueError:
             signal_name = str(signum)
         logger.info("shutdown signal received: %s", signal_name)
+        _cleanup_ready_file(ready_file)
+        if not inflight_drained.is_set():
+            logger.info("draining in-flight user-embed work for up to %.1fs", grace_sec)
         stop_event.set()
 
         def force_exit(exit_code: int) -> None:
@@ -193,8 +214,11 @@ def main() -> None:
 
     logger.info("user-embed consumer started, queue=%s", queue_name)
     try:
-        run_user_embed_consumer(queue, process_user_embed, timeout_sec=5, stop_event=stop_event)
+        run_user_embed_consumer(queue, tracked_process_user_embed, timeout_sec=5, stop_event=stop_event)
     finally:
+        requeued = _nack_inflight_messages(queue)
+        if requeued > 0:
+            logger.warning("requeued %d in-flight user-embed messages during shutdown", requeued)
         consumer_stopped.set()
     logger.info("user-embed consumer stopped")
 

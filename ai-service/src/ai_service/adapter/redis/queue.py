@@ -62,11 +62,12 @@ class RedisQueueConsumer(JobQueueConsumer):
         return jid
 
     def ack(self, job_id: int) -> None:
-        inflight = self._take_inflight(job_id)
+        inflight = self._peek_inflight(job_id)
         if inflight is None:
             return
         raw, _trace_id, _traceparent = inflight
         self._ack_raw(raw)
+        self._drop_inflight(job_id, raw)
 
     def trace_id(self, job_id: int) -> str:
         with self._inflight_lock:
@@ -85,7 +86,7 @@ class RedisQueueConsumer(JobQueueConsumer):
             return traceparent
 
     def nack(self, job_id: int) -> None:
-        inflight = self._take_inflight(job_id)
+        inflight = self._peek_inflight(job_id)
         if inflight is None:
             return
         raw, _trace_id, _traceparent = inflight
@@ -97,6 +98,7 @@ class RedisQueueConsumer(JobQueueConsumer):
         pipe.lrem(self._processing_queue, 1, raw)
         pipe.rpush(target_queue, out_raw)
         pipe.execute()
+        self._drop_inflight(job_id, raw)
 
     def reclaim_stuck(self) -> None:
         while True:
@@ -106,17 +108,23 @@ class RedisQueueConsumer(JobQueueConsumer):
 
     def nack_all_inflight(self) -> int:
         with self._inflight_lock:
-            raws: list[str] = [raw for values in self._inflight_by_job_id.values() for raw, _trace_id, _tp in values]
-            self._inflight_by_job_id.clear()
+            inflight: list[tuple[int, str]] = [
+                (job_id, raw)
+                for job_id, values in self._inflight_by_job_id.items()
+                for raw, _trace_id, _tp in values
+            ]
 
-        for raw in raws:
+        requeued = 0
+        for job_id, raw in inflight:
             out_raw, to_dlq = self._prepare_nack_payload(raw)
             target_queue = self._dlq_queue if to_dlq else self._queue
             pipe = self._client.pipeline(transaction=True)
             pipe.lrem(self._processing_queue, 1, raw)
             pipe.rpush(target_queue, out_raw)
             pipe.execute()
-        return len(raws)
+            self._drop_inflight(job_id, raw)
+            requeued += 1
+        return requeued
 
     def _ack_raw(self, raw: str) -> None:
         self._client.lrem(self._processing_queue, 1, raw)
@@ -139,15 +147,27 @@ class RedisQueueConsumer(JobQueueConsumer):
             retries > self._max_nack_retries,
         )
 
-    def _take_inflight(self, job_id: int) -> tuple[str, str] | None:
+    def _peek_inflight(self, job_id: int) -> tuple[str, str, str] | None:
         with self._inflight_lock:
             inflight = self._inflight_by_job_id.get(job_id)
             if not inflight:
                 return None
-            raw = inflight.popleft()
+            return inflight[0]
+
+    def _drop_inflight(self, job_id: int, raw: str) -> None:
+        with self._inflight_lock:
+            inflight = self._inflight_by_job_id.get(job_id)
+            if not inflight:
+                return
+            if inflight and inflight[0][0] == raw:
+                inflight.popleft()
+            else:
+                for idx, (candidate_raw, _trace_id, _traceparent) in enumerate(inflight):
+                    if candidate_raw == raw:
+                        del inflight[idx]
+                        break
             if not inflight:
                 self._inflight_by_job_id.pop(job_id, None)
-            return raw
 
     @staticmethod
     def _normalize_trace_id(raw: object) -> str:

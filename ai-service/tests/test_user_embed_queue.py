@@ -79,6 +79,29 @@ def test_ack_removes_from_processing(mock_from_url: MagicMock) -> None:
 
 
 @patch("ai_service.adapter.redis.user_embed_queue.redis.from_url")
+def test_ack_failure_keeps_message_inflight_for_shutdown_requeue(mock_from_url: MagicMock) -> None:
+    mock_client = MagicMock()
+    mock_from_url.return_value = mock_client
+    raw = json.dumps({"user_id": 42})
+    mock_client.brpoplpush.return_value = raw
+    pipe = MagicMock()
+    mock_client.pipeline.return_value = pipe
+    mock_client.lrem.side_effect = RuntimeError("redis down")
+    c = RedisUserEmbedQueueConsumer("redis://localhost:6379/0")
+    assert c.pop_blocking(timeout_sec=1) == 42
+
+    try:
+        c.ack(42)
+    except RuntimeError:
+        pass
+
+    assert c.nack_all_inflight() == 1
+    pipe.lrem.assert_called_once_with("user-embed:processing", 1, raw)
+    pipe.rpush.assert_called_once_with("user-embed", '{"user_id":42,"_retry_count":1}')
+    pipe.execute.assert_called_once()
+
+
+@patch("ai_service.adapter.redis.user_embed_queue.redis.from_url")
 def test_nack_requeues_payload(mock_from_url: MagicMock) -> None:
     mock_client = MagicMock()
     mock_from_url.return_value = mock_client

@@ -49,6 +49,18 @@ class ReliableFakeUserEmbedQueueConsumer(FakeUserEmbedQueueConsumer):
         self.nacked.append(user_id)
 
 
+class ShutdownAfterPopUserEmbedQueueConsumer(ReliableFakeUserEmbedQueueConsumer):
+    def __init__(self, user_ids: list[int], stop_event: threading.Event) -> None:
+        super().__init__(user_ids)
+        self._stop_event = stop_event
+
+    def pop_blocking(self, timeout_sec: int = 5) -> int | None:
+        user_id = super().pop_blocking(timeout_sec=timeout_sec)
+        if user_id is not None:
+            self._stop_event.set()
+        return user_id
+
+
 def test_run_user_embed_consumer_calls_process() -> None:
     import time
 
@@ -131,5 +143,17 @@ def test_run_user_embed_consumer_nacks_on_process_error() -> None:
     stop.set()
     t.join(timeout=3)
 
+    assert queue.acked == []
+    assert queue.nacked == [42]
+
+
+def test_run_user_embed_consumer_requeues_message_if_shutdown_happens_after_pop() -> None:
+    process = MagicMock(spec=ProcessUserEmbedUseCase)
+    stop = threading.Event()
+    queue = ShutdownAfterPopUserEmbedQueueConsumer([42], stop_event=stop)
+
+    run_user_embed_consumer(queue, process, timeout_sec=1, stop_event=stop)
+
+    process.execute.assert_not_called()
     assert queue.acked == []
     assert queue.nacked == [42]

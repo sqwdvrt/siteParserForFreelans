@@ -226,6 +226,9 @@ def main() -> None:
     try:
         run_consumer(queue, process_job, timeout_sec=5, stop_event=stop_event)
     finally:
+        requeued = _nack_inflight_messages(queue)
+        if requeued > 0:
+            logger.warning("requeued %d in-flight jobs during shutdown", requeued)
         consumer_stopped.set()
     logger.info("consumer stopped")
 

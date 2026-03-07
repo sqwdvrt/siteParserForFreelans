@@ -57,3 +57,29 @@ def test_user_id_cache_evicts_oldest_entry_when_maxsize_reached(bot, monkeypatch
     assert bot._get_cached_user_id(telegram_id=1, now_monotonic=10.3) is None
     assert bot._get_cached_user_id(telegram_id=2, now_monotonic=10.3) == 102
     assert bot._get_cached_user_id(telegram_id=3, now_monotonic=10.3) == 103
+
+
+def test_conversation_state_cache_set_get_clear(bot, monkeypatch):
+    monkeypatch.setattr(
+        bot,
+        "_CONVERSATION_STATE_CACHE",
+        bot._build_conversation_state_cache(maxsize=2, ttl_sec=bot.CONVERSATION_STATE_TTL_SEC),
+    )
+
+    bot._set_conversation_state(telegram_id=200, state="await_profile", now_monotonic=10.0)
+    assert bot._get_conversation_state(telegram_id=200, now_monotonic=10.1) == "await_profile"
+
+    bot._clear_conversation_state(200)
+    assert bot._get_conversation_state(telegram_id=200, now_monotonic=10.2) is None
+
+
+def test_claim_update_id_deduplicates_until_ttl_expires(bot, monkeypatch):
+    monkeypatch.setattr(
+        bot,
+        "_PROCESSED_UPDATE_CACHE",
+        bot._build_processed_update_cache(maxsize=10, ttl_sec=5),
+    )
+
+    assert bot._claim_update_id(1, now_monotonic=10.0) is True
+    assert bot._claim_update_id(1, now_monotonic=10.1) is False
+    assert bot._claim_update_id(1, now_monotonic=15.1) is True

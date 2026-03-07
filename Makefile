@@ -24,17 +24,24 @@ endef
 .PHONY: help
 help: ## Показать все доступные команды
 	@echo ""
-	@echo "$(_BOLD)Порядок полного локального запуска$(_RESET)"
+	@echo "$(_BOLD)Быстрый старт для человека$(_RESET)"
 	@echo "  1. make init-env"
-	@echo "  2. Отредактировать .env"
-	@echo "  3. make up-core"
-	@echo "  4. make up-workers"
-	@echo "  5. make up-monitoring"
-	@echo "  6. make health"
-	@echo "  7. make logs SERVICE=backend-api"
+	@echo "  2. открой .env и заполни переменные"
+	@echo "  3. make start"
+	@echo "  4. make doctor"
+	@echo "  5. make status"
+	@echo "  6. make urls"
 	@echo ""
 	@echo "$(_BOLD)Если нужен локальный Telegram-бот$(_RESET)"
-	@echo "  make up-bot"
+	@echo "  make start-bot"
+	@echo ""
+	@echo "$(_BOLD)Самые нужные команды$(_RESET)"
+	@echo "  make start           # запустить проект"
+	@echo "  make stop            # остановить проект"
+	@echo "  make doctor          # проверить, что все живо"
+	@echo "  make status          # посмотреть контейнеры"
+	@echo "  make logs SERVICE=backend-api"
+	@echo "  make queues          # посмотреть очереди"
 	@echo ""
 	@awk 'BEGIN {FS = ":.*##"; printf "\n"} \
 		/^[a-zA-Z0-9_.-]+:.*##/ { printf "  $(_GREEN)%-24s$(_RESET) %s\n", $$1, $$2 }' \
@@ -61,13 +68,33 @@ init-env: ## Создать .env из .env.example, если его еще не�
 order: ## Показать рекомендуемый порядок запуска
 	@echo "make init-env"
 	@echo "# отредактировать .env"
-	@echo "make up-core"
-	@echo "make up-workers"
-	@echo "make up-monitoring"
-	@echo "make health"
-	@echo "make logs SERVICE=backend-api"
+	@echo "make start"
+	@echo "make doctor"
+	@echo "make status"
+	@echo "make urls"
 	@echo "# если нужен локальный bot:"
-	@echo "make up-bot"
+	@echo "make start-bot"
+
+.PHONY: start
+start: up-full ## Самая простая команда: запустить проект целиком без локального telegram-bot
+
+.PHONY: start-all
+start-all: up-full-with-bot ## Запустить проект целиком вместе с локальным telegram-bot
+
+.PHONY: start-bot
+start-bot: up-bot ## Поднять только локальный telegram-bot
+
+.PHONY: stop
+stop: down ## Самая простая команда: остановить проект
+
+.PHONY: status
+status: ps ## Самая простая команда: показать состояние контейнеров
+
+.PHONY: doctor
+doctor: health ## Самая простая команда: проверить, что проект здоров
+
+.PHONY: queues
+queues: queue-status ## Самая простая команда: показать очереди Redis
 
 .PHONY: up-core
 up-core: check-deps check-env ## Поднять core: postgres, redis, backend-api (+ backend-migrate one-shot)

@@ -37,6 +37,16 @@ def _maybe_nack(queue: JobQueueConsumer, job_id: int) -> None:
         nack(job_id)
 
 
+def _maybe_shutdown_requeue(queue: JobQueueConsumer, job_id: int, stop: threading.Event) -> bool:
+    if not stop.is_set():
+        return False
+    try:
+        _maybe_nack(queue, job_id)
+    except Exception as nack_err:
+        logger.exception("shutdown nack job_id=%s failed: %s", job_id, nack_err)
+    return True
+
+
 def _maybe_trace_id(queue: JobQueueConsumer, job_id: int) -> str:
     trace_id = getattr(queue, "trace_id", None)
     if callable(trace_id):
@@ -118,6 +128,8 @@ def run_consumer(
             logger.exception("queue pop failed: %s", e)
             continue
         if job_id is not None:
+            if _maybe_shutdown_requeue(queue, job_id, stop):
+                break
             trace_id = _maybe_trace_id(queue, job_id)
             traceparent = _maybe_traceparent(queue, job_id)
             token = set_trace_id(trace_id)

@@ -289,6 +289,12 @@ def main() -> None:
                 continue
             if message is None:
                 continue
+            if stop_event.is_set():
+                try:
+                    ac_batch_queue.nack(message.user_id)
+                except Exception as nack_exc:  # noqa: BLE001
+                    logger.exception("shutdown ac batch nack failed user_id=%d: %s", message.user_id, nack_exc)
+                break
             token = set_trace_id(message.trace_id)
             trace_ctx = extract_context(message.traceparent)
             try:
@@ -314,6 +320,9 @@ def main() -> None:
             finally:
                 reset_trace_id(token)
     finally:
+        requeued = _nack_inflight_messages(ac_batch_queue)
+        if requeued > 0:
+            logger.warning("requeued %d in-flight ac batches during shutdown", requeued)
         consumer_stopped.set()
     logger.info("ac consumer stopped")
 

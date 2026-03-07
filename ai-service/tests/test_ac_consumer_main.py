@@ -214,4 +214,76 @@ def test_main_forces_requeue_on_shutdown_timeout(monkeypatch, tmp_path: Path) ->
     module.main()
 
     assert forced_exit_codes == [1]
+    assert queue_obj.nack_all_inflight_calls == 2
+
+
+def test_main_requeues_batch_if_shutdown_happens_after_pop(monkeypatch, tmp_path: Path) -> None:
+    module = _load_ac_consumer_main_module()
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
+    monkeypatch.setenv("AC_BATCH_INTERVAL_SEC", "3600")
+
+    handlers: dict[int, object] = {}
+
+    def fake_signal(sig, handler):
+        handlers[sig] = handler
+
+    class FakeQueue:
+        def __init__(self) -> None:
+            self.pop_calls = 0
+            self.nacked: list[int] = []
+            self.nack_all_inflight_calls = 0
+
+        def reclaim_stuck(self) -> None:
+            return None
+
+        def pop_blocking(self, timeout_sec: int = 1):
+            _ = timeout_sec
+            if self.pop_calls > 0:
+                return None
+            self.pop_calls += 1
+            handlers[module.signal.SIGTERM](module.signal.SIGTERM, None)
+            return module.ACBatchMessage(user_id=10, job_ids=[1, 2], trace_id="trace-ac-1")
+
+        def ack(self, user_id: int) -> None:
+            raise AssertionError(f"unexpected ack for user_id={user_id}")
+
+        def nack(self, user_id: int) -> None:
+            self.nacked.append(user_id)
+
+        def nack_all_inflight(self) -> int:
+            self.nack_all_inflight_calls += 1
+            return 0
+
+    queue_obj = FakeQueue()
+    process_calls: list[object] = []
+
+    class FakeProcessBatch:
+        def execute(self, batch) -> None:
+            process_calls.append(batch)
+
+    monkeypatch.setattr(module, "start_metrics_server_from_env", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "probe_ollama", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(module, "PostgresUserRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresJobRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresPendingJobsRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RedisMatchNotifyQueue", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RedisACBatchQueueConsumer", lambda *_args, **_kwargs: queue_obj)
+    monkeypatch.setattr(module, "OllamaActorAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RuleBasedActorAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "FallbackActorAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "OllamaCriticAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RuleBasedCriticAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "FallbackCriticAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "ActorCriticLoop", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "_schedule_pending_batches", lambda **_kwargs: 0)
+    monkeypatch.setattr(module, "ProcessACBatchUseCase", lambda *_args, **_kwargs: FakeProcessBatch())
+    monkeypatch.setattr(module.signal, "signal", fake_signal)
+
+    module.main()
+
+    assert queue_obj.nacked == [10]
+    assert process_calls == []
     assert queue_obj.nack_all_inflight_calls == 1
