@@ -162,15 +162,9 @@ func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayl
 		"parse_mode":               "HTML",
 		"disable_web_page_preview": true,
 	}
-	// Кнопки 👍/👎 только для одиночных уведомлений (batch-сообщения содержат несколько проектов)
-	if len(p.Batch) == 0 && p.Job != nil {
+	if keyboard := buildFeedbackKeyboard(p); len(keyboard) > 0 {
 		body["reply_markup"] = map[string]interface{}{
-			"inline_keyboard": [][]map[string]interface{}{
-				{
-					{"text": "👍", "callback_data": fmt.Sprintf("fb:g:%d", p.Job.ID)},
-					{"text": "👎", "callback_data": fmt.Sprintf("fb:b:%d", p.Job.ID)},
-				},
-			},
+			"inline_keyboard": keyboard,
 		}
 	}
 	raw, err := json.Marshal(body)
@@ -609,6 +603,32 @@ func formatBatchMessage(p port.NotifyPayload) string {
 		b.WriteString(strings.Join(links, " | "))
 	}
 	return b.String()
+}
+
+func buildFeedbackKeyboard(p port.NotifyPayload) [][]map[string]interface{} {
+	if len(p.Batch) > 0 {
+		items := sortedBatchItems(p.Batch)
+		rows := make([][]map[string]interface{}, 0, len(items))
+		for idx, item := range items {
+			if item.Job == nil || item.Job.ID <= 0 {
+				continue
+			}
+			rows = append(rows, []map[string]interface{}{
+				{"text": fmt.Sprintf("👍 #%d", idx+1), "callback_data": fmt.Sprintf("fb:g:%d", item.Job.ID)},
+				{"text": fmt.Sprintf("👎 #%d", idx+1), "callback_data": fmt.Sprintf("fb:b:%d", item.Job.ID)},
+			})
+		}
+		return rows
+	}
+	if p.Job == nil || p.Job.ID <= 0 {
+		return nil
+	}
+	return [][]map[string]interface{}{
+		{
+			{"text": "👍", "callback_data": fmt.Sprintf("fb:g:%d", p.Job.ID)},
+			{"text": "👎", "callback_data": fmt.Sprintf("fb:b:%d", p.Job.ID)},
+		},
+	}
 }
 
 func sortedBatchItems(items []port.BatchNotifyItem) []port.BatchNotifyItem {

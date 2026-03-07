@@ -51,7 +51,8 @@ def test_execute_enqueues_all_candidates_without_feedback_repo() -> None:
     uc, _, _, queue = _make_use_case(candidates=candidates, feedback_repo=None)
     result = uc.execute(1)
     assert result == 2
-    assert queue.enqueue.call_count == 2
+    queue.enqueue_batch.assert_called_once()
+    queue.enqueue.assert_not_called()
 
 
 def test_execute_applies_feedback_adjustment() -> None:
@@ -72,10 +73,10 @@ def test_execute_applies_feedback_adjustment() -> None:
     result = uc.execute(1)
     # Both have net=0.8 → boost → both above threshold, both enqueued
     assert result == 2
-    assert queue.enqueue.call_count == 2
-    # Scores should be boosted (×1.12)
-    enqueued = [call.args[0] for call in queue.enqueue.call_args_list]
-    assert all(c.match_score > 0.75 for c in enqueued)
+    queue.enqueue_batch.assert_called_once()
+    ranked_jobs = queue.enqueue_batch.call_args.kwargs["ranked_jobs"]
+    assert len(ranked_jobs) == 2
+    assert all(item.final_score > 0.75 for item in ranked_jobs)
 
 
 def test_execute_filters_candidate_below_threshold_after_feedback() -> None:
@@ -104,3 +105,14 @@ def test_execute_uses_empty_skills_for_global_signal() -> None:
     uc, _, _, queue = _make_use_case(candidates=candidates, feedback_repo=feedback_repo)
     uc.execute(1)
     feedback_repo.get_feedback_signal.assert_called_once_with(1, [])
+
+
+def test_execute_uses_single_enqueue_for_one_candidate() -> None:
+    candidates = [MatchCandidate(user_id=1, job_id=10, match_score=0.80)]
+    uc, _, _, queue = _make_use_case(candidates=candidates, feedback_repo=None)
+
+    result = uc.execute(1)
+
+    assert result == 1
+    queue.enqueue.assert_called_once_with(candidates[0])
+    queue.enqueue_batch.assert_not_called()

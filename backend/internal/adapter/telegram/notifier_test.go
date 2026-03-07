@@ -161,6 +161,26 @@ func TestNotifier_Send_BatchPayload_Success(t *testing.T) {
 	if previewDisabled, ok := body["disable_web_page_preview"].(bool); !ok || !previewDisabled {
 		t.Fatalf("disable_web_page_preview must be true, got: %#v", body["disable_web_page_preview"])
 	}
+	replyMarkup, ok := body["reply_markup"].(map[string]any)
+	if !ok {
+		t.Fatalf("batch reply_markup missing: %#v", body["reply_markup"])
+	}
+	inlineKeyboard, ok := replyMarkup["inline_keyboard"].([]any)
+	if !ok || len(inlineKeyboard) != 2 {
+		t.Fatalf("batch inline_keyboard invalid: %#v", replyMarkup["inline_keyboard"])
+	}
+	firstRow, ok := inlineKeyboard[0].([]any)
+	if !ok || len(firstRow) != 2 {
+		t.Fatalf("first feedback row invalid: %#v", inlineKeyboard[0])
+	}
+	firstUp, ok := firstRow[0].(map[string]any)
+	if !ok || firstUp["callback_data"] != "fb:g:1" {
+		t.Fatalf("first feedback button invalid: %#v", firstRow[0])
+	}
+	firstDown, ok := firstRow[1].(map[string]any)
+	if !ok || firstDown["callback_data"] != "fb:b:1" {
+		t.Fatalf("second feedback button invalid: %#v", firstRow[1])
+	}
 }
 
 func TestNotifier_Send_DisablesWebPagePreview(t *testing.T) {
@@ -186,6 +206,18 @@ func TestNotifier_Send_DisablesWebPagePreview(t *testing.T) {
 	}
 	if previewDisabled, ok := body["disable_web_page_preview"].(bool); !ok || !previewDisabled {
 		t.Fatalf("disable_web_page_preview must be true, got: %#v", body["disable_web_page_preview"])
+	}
+}
+
+func TestBuildFeedbackKeyboard_ForSingleJob(t *testing.T) {
+	keyboard := buildFeedbackKeyboard(port.NotifyPayload{
+		Job: &domain.Job{ID: 7},
+	})
+	if len(keyboard) != 1 || len(keyboard[0]) != 2 {
+		t.Fatalf("single keyboard shape invalid: %#v", keyboard)
+	}
+	if keyboard[0][0]["callback_data"] != "fb:g:7" || keyboard[0][1]["callback_data"] != "fb:b:7" {
+		t.Fatalf("single keyboard callback data invalid: %#v", keyboard)
 	}
 }
 
