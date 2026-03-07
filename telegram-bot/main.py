@@ -140,6 +140,35 @@ def _exception_name(err: Exception) -> str:
     return type(err).__name__
 
 
+def _compact_log_text(value: str, limit: int = 200) -> str:
+    text = " ".join((value or "").split())
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3] + "..."
+
+
+def _http_error_log_detail(err: urllib.error.HTTPError) -> str:
+    body = ""
+    if err.fp is not None:
+        try:
+            body = err.read().decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+    if body:
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError:
+            parsed = None
+        if isinstance(parsed, dict):
+            description = parsed.get("description")
+            if isinstance(description, str) and description.strip():
+                return _compact_log_text(description)
+    reason = getattr(err, "reason", "") or ""
+    if isinstance(reason, str) and reason.strip():
+        return _compact_log_text(reason)
+    return _exception_name(err)
+
+
 def _should_retry_status(status: int) -> bool:
     return status in API_RETRYABLE_STATUS_CODES
 
@@ -307,6 +336,9 @@ def _http_get(url: str, params: dict) -> dict | None:
         _validate_outbound_url(full_url)
         with _safe_open(full_url, timeout=35) as r:
             return json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        logger.warning("HTTP GET failed: status=%s detail=%s", e.code, _http_error_log_detail(e))
+        return None
     except Exception as e:
         logger.warning("HTTP GET failed: %s", _exception_name(e))
         return None

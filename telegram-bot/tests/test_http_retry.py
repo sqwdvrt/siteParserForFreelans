@@ -195,6 +195,32 @@ def test_http_get_returns_none_on_error(bot, monkeypatch):
     assert bot._http_get("https://api.telegram.org/bot/x/getUpdates", {"offset": 1}) is None
 
 
+def test_http_get_logs_status_and_safe_description_for_http_error(bot, monkeypatch, caplog):
+    err = urllib.error.HTTPError(
+        url="https://api.telegram.org/bot/secret-token/getUpdates",
+        code=409,
+        msg="conflict",
+        hdrs=None,
+        fp=io.BytesIO(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error_code": 409,
+                    "description": "Conflict: terminated by other getUpdates request",
+                }
+            ).encode("utf-8")
+        ),
+    )
+    monkeypatch.setattr(bot, "_safe_open", MagicMock(side_effect=err))
+
+    with caplog.at_level("WARNING"):
+        assert bot._http_get("https://api.telegram.org/bot/secret-token/getUpdates", {"offset": 1}) is None
+
+    assert "status=409" in caplog.text
+    assert "terminated by other getUpdates request" in caplog.text
+    assert "secret-token" not in caplog.text
+
+
 def test_http_get_success_path(bot, monkeypatch):
     response = MagicMock()
     response.read.return_value = json.dumps({"ok": True, "result": []}).encode("utf-8")
