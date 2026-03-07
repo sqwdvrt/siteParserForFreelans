@@ -71,6 +71,16 @@ def test_put_user_profile_status_returns_status_code(bot, monkeypatch):
     assert bot.put_user_profile_status("https://api.example.com", 1, 123, "python", "tok", "hmac") == 400
 
 
+def test_get_user_is_pro_reads_flag_from_preferences(bot, monkeypatch):
+    monkeypatch.setattr(bot, "get_user_preferences", lambda *args, **kwargs: {"is_pro": True})
+    assert bot.get_user_is_pro("https://api.example.com", 1, 123, "tok", "hmac") is True
+
+
+def test_get_user_is_pro_returns_none_when_flag_missing(bot, monkeypatch):
+    monkeypatch.setattr(bot, "get_user_preferences", lambda *args, **kwargs: {"preferred_sources": []})
+    assert bot.get_user_is_pro("https://api.example.com", 1, 123, "tok", "hmac") is None
+
+
 def test_get_updates_returns_next_offset(bot, monkeypatch):
     monkeypatch.setattr(
         bot,

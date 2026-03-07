@@ -749,13 +749,16 @@ def _http_put(url: str, data: dict, headers: dict[str, str] | None = None) -> in
     return 0
 
 
-def _http_get(url: str, params: dict) -> dict | None:
+def _http_get(url: str, params: dict, headers: dict[str, str] | None = None) -> dict | None:
     """GET с query params. Возвращает json или None."""
     qs = urllib.parse.urlencode(params)
     full_url = f"{url}?{qs}" if qs else url
     try:
         _validate_outbound_url(full_url)
-        with _safe_open(full_url, timeout=35) as r:
+        req = urllib.request.Request(full_url, method="GET")
+        for k, v in (headers or {}).items():
+            req.add_header(k, v)
+        with _safe_open(req, timeout=35) as r:
             _observe_http_request("GET", full_url, _response_status(r, 200))
             return json.loads(r.read().decode())
     except urllib.error.HTTPError as e:
@@ -878,6 +881,37 @@ def put_user_notify_hour(
         payload,
         headers=_signed_user_headers(api_auth_token, api_user_hmac_secret, "PUT", url, telegram_id, body),
     )
+
+
+def get_user_preferences(
+    api_url: str,
+    user_id: int,
+    telegram_id: int,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> dict | None:
+    """GET /users/:id/preferences. Возвращает json или None."""
+    url = f"{api_url.rstrip('/')}/users/{user_id}/preferences"
+    body = b""
+    return _http_get(
+        url,
+        {},
+        headers=_signed_user_headers(api_auth_token, api_user_hmac_secret, "GET", url, telegram_id, body),
+    )
+
+
+def get_user_is_pro(
+    api_url: str,
+    user_id: int,
+    telegram_id: int,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> bool | None:
+    """Return True/False when backend reports is_pro, else None."""
+    prefs = get_user_preferences(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
+    if not isinstance(prefs, dict) or "is_pro" not in prefs:
+        return None
+    return bool(prefs.get("is_pro"))
 
 
 def _cache_user_id(telegram_id: int, user_id: int, *, now_monotonic: float | None = None) -> None:
@@ -1268,6 +1302,12 @@ def _parse_onboarding_state(raw: str | None) -> dict | None:
 
 
 def _build_onboarding_profile_text(state: dict) -> str:
+    """Build profile text from onboarding answers.
+
+    Must produce >= 50 runes to pass backend minProfileTextLen validation.
+    Uses verbose format ("Специализация: ..., Уровень: ..., Навыки: ..., Ставка: ...")
+    so even the minimal selection (category + exp only) clears the 50-rune threshold.
+    """
     cat = state.get("cat", "other")
     cat_label = ONBOARDING_CATEGORIES.get(cat, cat)
     skills: list[str] = state.get("skills") or []
@@ -1276,13 +1316,14 @@ def _build_onboarding_profile_text(state: dict) -> str:
     exp_label = ONBOARDING_EXPERIENCE.get(exp, "") if exp else ""
     rate_label = ONBOARDING_RATE.get(rate, "") if rate and rate != "skip" else ""
 
-    header = cat_label + (f" ({exp_label})" if exp_label else "")
-    text = header + "."
+    parts: list[str] = [f"Специализация: {cat_label}."]
+    if exp_label:
+        parts.append(f"Уровень опыта: {exp_label}.")
     if skills:
-        text += f" Навыки: {', '.join(skills)}."
+        parts.append(f"Навыки: {', '.join(skills)}.")
     if rate_label:
-        text += f" Ставка: {rate_label}."
-    return text
+        parts.append(f"Желаемая ставка: {rate_label}.")
+    return " ".join(parts)
 
 
 def _onboarding_start(token: str, chat_id: int, telegram_id: int) -> None:
@@ -1654,6 +1695,7 @@ def _handle_notify_hour_submission(
         _record_command("notify_hour", "ok")
         send_message(token, chat_id, f"✅ Дайджест будет приходить в {hour:02d}:00 МСК.")
     elif status == 403:
+        _clear_conversation_state(telegram_id)
         _record_command("notify_hour", "forbidden")
         send_message(token, chat_id, "⛔ Выбор часа доступен только Pro-пользователям.")
     else:
@@ -1755,6 +1797,17 @@ def _handle_update(
     if text == "/notify_hour" or text.startswith("/notify_hour "):
         rest = text[len("/notify_hour"):].strip()
         if not rest:
+            user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+            if user_id is None:
+                _record_command("notify_hour", "missing_start")
+                send_message(token, chat_id, "Сначала отправьте /start")
+                return True
+            is_pro = get_user_is_pro(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
+            if is_pro is False:
+                _clear_conversation_state(telegram_id)
+                _record_command("notify_hour", "forbidden")
+                send_message(token, chat_id, "⛔ Выбор часа доступен только Pro-пользователям.")
+                return True
             _set_conversation_state(telegram_id, "await_notify_hour")
             _record_command("notify_hour", "prompt")
             send_message(

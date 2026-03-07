@@ -211,6 +211,7 @@ type UserPreferencesResponse struct {
 	MinBudget        *float64 `json:"min_budget,omitempty"`
 	MaxBudget        *float64 `json:"max_budget,omitempty"`
 	PreferredSources []string `json:"preferred_sources"`
+	IsPro            bool     `json:"is_pro"`
 }
 
 // PutUserProfile обновляет profile_text пользователя.
@@ -411,6 +412,7 @@ func (h *Handlers) GetUserPreferences(w http.ResponseWriter, r *http.Request) {
 		MinBudget:        prefs.MinBudget,
 		MaxBudget:        prefs.MaxBudget,
 		PreferredSources: cloneAndNormalizePreferenceValues(prefs.PreferredSources, maxPreferenceSources),
+		IsPro:            user.IsPro,
 	})
 }
 

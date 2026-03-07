@@ -723,6 +723,9 @@ func TestHandlers_GetUserPreferences_Success(t *testing.T) {
 	if resp.MaxBudget == nil || *resp.MaxBudget != 5000 {
 		t.Fatalf("max_budget = %#v, want 5000", resp.MaxBudget)
 	}
+	if !resp.IsPro {
+		t.Fatal("is_pro = false, want true")
+	}
 }
 
 func TestHandlers_PutUserPreferences_Success(t *testing.T) {

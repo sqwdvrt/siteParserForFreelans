@@ -344,6 +344,78 @@ def test_run_polling_notify_hour_two_step_state_flow(bot, monkeypatch):
     assert "09:00 МСК" in send_message.call_args_list[1].args[2]
 
 
+def test_run_polling_notify_hour_prompt_blocked_for_non_pro(bot, monkeypatch):
+    updates = [
+        (
+            [
+                {"update_id": 1, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "/notify_hour"}},
+            ],
+            2,
+            True,
+        )
+    ]
+
+    send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
+    monkeypatch.setattr(bot, "post_users", MagicMock(return_value=123))
+    monkeypatch.setattr(bot, "get_user_is_pro", MagicMock(return_value=False))
+    monkeypatch.setattr(bot, "send_message", send_message)
+
+    with pytest.raises(KeyboardInterrupt):
+        bot.run_polling("token", "https://api.example.com", "tok", "hmac")
+
+    assert send_message.call_count == 1
+    assert "только Pro-пользователям" in send_message.call_args.args[2]
+    assert bot._get_conversation_state(200) is None
+
+
+def test_run_polling_notify_hour_prompt_allowed_when_pro_flag_unknown(bot, monkeypatch):
+    updates = [
+        (
+            [
+                {"update_id": 1, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "/notify_hour"}},
+            ],
+            2,
+            True,
+        )
+    ]
+
+    send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
+    monkeypatch.setattr(bot, "post_users", MagicMock(return_value=123))
+    monkeypatch.setattr(bot, "get_user_is_pro", MagicMock(return_value=None))
+    monkeypatch.setattr(bot, "send_message", send_message)
+
+    with pytest.raises(KeyboardInterrupt):
+        bot.run_polling("token", "https://api.example.com", "tok", "hmac")
+
+    assert send_message.call_count == 1
+    assert "Отправьте следующим сообщением час" in send_message.call_args.args[2]
+    assert bot._get_conversation_state(200) == "await_notify_hour"
+
+
+def test_handle_notify_hour_submission_clears_state_on_forbidden(bot, monkeypatch):
+    send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(bot, "post_users", MagicMock(return_value=123))
+    monkeypatch.setattr(bot, "put_user_notify_hour", MagicMock(return_value=403))
+    monkeypatch.setattr(bot, "send_message", send_message)
+
+    bot._set_conversation_state(200, "await_notify_hour")
+    handled = bot._handle_notify_hour_submission(
+        "token",
+        100,
+        200,
+        "9",
+        "https://api.example.com",
+        "tok",
+        "hmac",
+    )
+
+    assert handled is True
+    assert bot._get_conversation_state(200) is None
+    assert "только Pro-пользователям" in send_message.call_args.args[2]
+
+
 def test_run_polling_skips_duplicate_update_id(bot, monkeypatch):
     updates = [
         (
