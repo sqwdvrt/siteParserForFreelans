@@ -35,16 +35,16 @@ def test_run_polling_handles_start(bot, monkeypatch):
     ]
 
     post_users = MagicMock(return_value=1)
-    send_message = MagicMock(return_value=True)
+    send_keyboard = MagicMock(return_value=42)
     monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
     monkeypatch.setattr(bot, "post_users", post_users)
-    monkeypatch.setattr(bot, "send_message", send_message)
+    monkeypatch.setattr(bot, "send_keyboard", send_keyboard)
 
     with pytest.raises(KeyboardInterrupt):
         bot.run_polling("token", "https://api.example.com", "tok", "hmac")
 
     post_users.assert_called_once()
-    send_message.assert_called_once()
+    send_keyboard.assert_called_once()  # onboarding wizard starts
 
 
 def test_run_polling_handles_profile(bot, monkeypatch):
@@ -159,7 +159,7 @@ def test_run_polling_touches_heartbeat_file(bot, monkeypatch):
     monkeypatch.setattr(bot, "_touch_heartbeat", lambda path: heartbeat_calls.append(path))
     monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
     monkeypatch.setattr(bot, "post_users", MagicMock(return_value=1))
-    monkeypatch.setattr(bot, "send_message", MagicMock(return_value=True))
+    monkeypatch.setattr(bot, "send_keyboard", MagicMock(return_value=42))
 
     with pytest.raises(KeyboardInterrupt):
         bot.run_polling("token", "https://api.example.com", "tok", "hmac")
@@ -337,16 +337,16 @@ def test_run_polling_skips_duplicate_update_id(bot, monkeypatch):
     ]
 
     post_users = MagicMock(return_value=1)
-    send_message = MagicMock(return_value=True)
+    send_keyboard = MagicMock(return_value=42)
     monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
     monkeypatch.setattr(bot, "post_users", post_users)
-    monkeypatch.setattr(bot, "send_message", send_message)
+    monkeypatch.setattr(bot, "send_keyboard", send_keyboard)
 
     with pytest.raises(KeyboardInterrupt):
         bot.run_polling("token", "https://api.example.com", "tok", "hmac")
 
     post_users.assert_called_once()
-    send_message.assert_called_once()
+    send_keyboard.assert_called_once()  # onboarding wizard, no duplicate
 
 
 def test_run_polling_preserves_offset_after_failed_update_and_retries(bot, monkeypatch):

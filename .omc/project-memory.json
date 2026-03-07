@@ -142,8 +142,8 @@
   "hotPaths": [
     {
       "path": "telegram-bot/main.py",
-      "accessCount": 17,
-      "lastAccessed": 1772831500445,
+      "accessCount": 37,
+      "lastAccessed": 1772881176056,
       "type": "file"
     },
     {
@@ -229,6 +229,12 @@
       "accessCount": 1,
       "lastAccessed": 1772832099007,
       "type": "file"
+    },
+    {
+      "path": "",
+      "accessCount": 1,
+      "lastAccessed": 1772879679544,
+      "type": "directory"
     }
   ],
   "userDirectives": []

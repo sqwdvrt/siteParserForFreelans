@@ -79,6 +79,50 @@ WEBHOOK_PATH = "/webhook"
 DEFAULT_METRICS_BIND = "0.0.0.0"
 DEFAULT_METRICS_PORT = 9107
 
+# ---------------------------------------------------------------------------
+# Onboarding wizard data
+# ---------------------------------------------------------------------------
+ONBOARDING_CATEGORIES: dict[str, str] = {
+    "backend": "Backend-разработка",
+    "frontend": "Frontend-разработка",
+    "mobile": "Мобильная разработка",
+    "data_ai": "Data / AI / ML",
+    "devops": "DevOps / Инфраструктура",
+    "design": "Дизайн",
+    "qa": "QA / Тестирование",
+    "pm": "PM / BA",
+    "other": "Другое",
+}
+
+ONBOARDING_SKILLS: dict[str, list[str]] = {
+    "backend":  ["Python", "Go", "Node.js", "Java", "C#", "PHP", "Rust", "PostgreSQL", "MySQL", "Redis", "Docker", "REST API"],
+    "frontend": ["React", "Vue", "Angular", "TypeScript", "JavaScript", "HTML/CSS", "Next.js", "Webpack"],
+    "mobile":   ["iOS/Swift", "Android/Kotlin", "React Native", "Flutter"],
+    "data_ai":  ["Python", "ML/AI", "TensorFlow", "PyTorch", "pandas", "SQL", "Spark", "Data Engineering"],
+    "devops":   ["Docker", "Kubernetes", "CI/CD", "AWS", "GCP", "Azure", "Terraform", "Linux"],
+    "design":   ["UI/UX", "Figma", "Adobe XD", "Sketch", "Illustrator", "Photoshop"],
+    "qa":       ["Manual QA", "Selenium", "Pytest", "Postman", "Cypress", "JMeter", "Appium"],
+    "pm":       ["Agile/Scrum", "JIRA", "Confluence", "Product Management", "Business Analysis"],
+    "other":    [],
+}
+
+ONBOARDING_EXPERIENCE: dict[str, str] = {
+    "junior": "Junior (до 2 лет)",
+    "middle": "Middle (2–5 лет)",
+    "senior": "Senior (5+ лет)",
+    "lead":   "Lead / Architect",
+}
+
+ONBOARDING_RATE: dict[str, str] = {
+    "low":  "до 1 000 ₽/ч",
+    "mid":  "1 000–2 500 ₽/ч",
+    "high": "2 500–5 000 ₽/ч",
+    "top":  "5 000+ ₽/ч",
+    "skip": "Не указывать",
+}
+
+_ONBOARDING_MIN_PROFILE_LEN = 80
+
 
 def _read_positive_int_env(name: str, default: int) -> int:
     raw = os.getenv(name)
@@ -399,6 +443,20 @@ class _RedisStateStore:
     def forget_update_id(self, update_id: int) -> None:
         self._client.delete(self._key("processed-update", update_id))
         _METRICS.inc("telegram_bot_state_store_operations_total", operation="forget_update_id", result="ok")
+
+    def set_first_seen_if_absent(self, telegram_id: int) -> bool:
+        """SET NX first-seen timestamp. Returns True if this is the first call (new user)."""
+        key = self._key("first-seen", telegram_id)
+        return bool(self._client.set(key, str(int(time.time())), nx=True))
+
+    def get_first_seen(self, telegram_id: int) -> int | None:
+        raw = self._client.get(self._key("first-seen", telegram_id))
+        if raw is None:
+            return None
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            return None
 
     def _key(self, kind: str, entity_id: int) -> str:
         return f"{self._prefix}:{kind}:{entity_id}"
@@ -923,6 +981,27 @@ def _clear_conversation_state(telegram_id: int) -> None:
         _METRICS.inc("telegram_bot_cache_operations_total", cache="conversation_state", result="clear")
 
 
+def _mark_first_seen(telegram_id: int) -> bool:
+    """Returns True if user is new (first /start ever)."""
+    if _STATE_STORE is None:
+        return True
+    try:
+        return _STATE_STORE.set_first_seen_if_absent(telegram_id)
+    except Exception as e:
+        logger.warning("redis mark_first_seen failed: %s", _exception_name(e))
+        return True
+
+
+def _get_first_seen_ts(telegram_id: int) -> int | None:
+    if _STATE_STORE is None:
+        return None
+    try:
+        return _STATE_STORE.get_first_seen(telegram_id)
+    except Exception as e:
+        logger.warning("redis get_first_seen failed: %s", _exception_name(e))
+        return None
+
+
 def _claim_update_id(update_id: int, *, now_monotonic: float | None = None) -> bool:
     now = now_monotonic if now_monotonic is not None else time.monotonic()
     if _STATE_STORE is not None:
@@ -992,10 +1071,10 @@ def set_my_commands(token: str) -> bool:
     """Зарегистрировать меню команд бота через setMyCommands."""
     url = f"{TELEGRAM_BASE}{token}/setMyCommands"
     commands = [
-        {"command": "start",       "description": "Начать работу с ботом"},
-        {"command": "help",        "description": "Список команд"},
-        {"command": "profile",     "description": "Обновить профиль фрилансера"},
+        {"command": "start",       "description": "Начать / перезапустить настройку профиля"},
+        {"command": "profile",     "description": "Обновить профиль фрилансера вручную"},
         {"command": "notify_hour", "description": "Установить час дайджеста (Pro, 0–23, МСК)"},
+        {"command": "help",        "description": "Список команд"},
     ]
     status, _ = _http_post(url, {"commands": commands})
     if status != 200:
@@ -1075,6 +1154,261 @@ def answer_callback_query(token: str, callback_query_id: str) -> None:
     _http_post(url, {"callback_query_id": callback_query_id})
 
 
+# ---------------------------------------------------------------------------
+# Onboarding wizard — keyboard helpers and handlers
+# ---------------------------------------------------------------------------
+
+def send_keyboard(token: str, chat_id: int, text: str, keyboard: list[list[dict]]) -> int | None:
+    """sendMessage with inline_keyboard. Returns message_id or None on failure."""
+    url = f"{TELEGRAM_BASE}{token}/sendMessage"
+    status, data = _http_post(url, {
+        "chat_id": chat_id,
+        "text": text,
+        "parse_mode": "HTML",
+        "reply_markup": {"inline_keyboard": keyboard},
+    })
+    if status != 200 or data is None:
+        logger.warning("sendMessage(keyboard) failed: status=%s", status)
+        return None
+    return (data.get("result") or {}).get("message_id")
+
+
+def edit_message_text(
+    token: str,
+    chat_id: int,
+    message_id: int,
+    text: str,
+    keyboard: list[list[dict]] | None = None,
+) -> None:
+    """editMessageText — replace text (and optionally keyboard) of an existing message."""
+    url = f"{TELEGRAM_BASE}{token}/editMessageText"
+    payload: dict = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
+    if keyboard is not None:
+        payload["reply_markup"] = {"inline_keyboard": keyboard}
+    status, _ = _http_post(url, payload)
+    if status != 200:
+        logger.warning("editMessageText failed: status=%s", status)
+
+
+def _build_category_keyboard() -> list[list[dict]]:
+    cats = list(ONBOARDING_CATEGORIES.items())
+    rows: list[list[dict]] = []
+    for i in range(0, len(cats), 2):
+        rows.append([{"text": label, "callback_data": f"ob:cat:{key}"} for key, label in cats[i:i + 2]])
+    return rows
+
+
+def _build_skills_keyboard(cat: str, selected: list[str]) -> list[list[dict]]:
+    skills = ONBOARDING_SKILLS.get(cat, [])
+    sel = set(selected)
+    rows: list[list[dict]] = []
+    for i in range(0, len(skills), 2):
+        rows.append([
+            {"text": ("✅ " if s in sel else "◻️ ") + s, "callback_data": f"ob:skl:{s}"}
+            for s in skills[i:i + 2]
+        ])
+    rows.append([{"text": "✓ Готово", "callback_data": "ob:skldone"}])
+    return rows
+
+
+def _build_experience_keyboard() -> list[list[dict]]:
+    exps = list(ONBOARDING_EXPERIENCE.items())
+    rows: list[list[dict]] = []
+    for i in range(0, len(exps), 2):
+        rows.append([{"text": label, "callback_data": f"ob:exp:{key}"} for key, label in exps[i:i + 2]])
+    return rows
+
+
+def _build_rate_keyboard() -> list[list[dict]]:
+    return [
+        [
+            {"text": ONBOARDING_RATE["low"],  "callback_data": "ob:rate:low"},
+            {"text": ONBOARDING_RATE["mid"],  "callback_data": "ob:rate:mid"},
+        ],
+        [
+            {"text": ONBOARDING_RATE["high"], "callback_data": "ob:rate:high"},
+            {"text": ONBOARDING_RATE["top"],  "callback_data": "ob:rate:top"},
+        ],
+        [{"text": ONBOARDING_RATE["skip"], "callback_data": "ob:rate:skip"}],
+    ]
+
+
+def _parse_onboarding_state(raw: str | None) -> dict | None:
+    """Return decoded onboarding state dict, or None if raw is not onboarding JSON."""
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        if isinstance(data, dict) and "step" in data:
+            return data
+    except (json.JSONDecodeError, ValueError):
+        pass
+    return None
+
+
+def _build_onboarding_profile_text(state: dict) -> str:
+    cat = state.get("cat", "other")
+    cat_label = ONBOARDING_CATEGORIES.get(cat, cat)
+    skills: list[str] = state.get("skills") or []
+    exp = state.get("exp")
+    rate = state.get("rate")
+    exp_label = ONBOARDING_EXPERIENCE.get(exp, "") if exp else ""
+    rate_label = ONBOARDING_RATE.get(rate, "") if rate and rate != "skip" else ""
+
+    header = cat_label + (f" ({exp_label})" if exp_label else "")
+    text = header + "."
+    if skills:
+        text += f" Навыки: {', '.join(skills)}."
+    if rate_label:
+        text += f" Ставка: {rate_label}."
+    return text
+
+
+def _onboarding_start(token: str, chat_id: int, telegram_id: int) -> None:
+    """Send the first step of the onboarding wizard (category selection)."""
+    _set_conversation_state(telegram_id, json.dumps({"step": "category"}))
+    send_keyboard(
+        token, chat_id,
+        "Добро пожаловать! Давайте настроим ваш профиль.\n\n<b>Шаг 1 из 4.</b> Выберите специализацию:",
+        _build_category_keyboard(),
+    )
+
+
+def _maybe_send_profile_quality_hint(token: str, chat_id: int, profile_text: str) -> None:
+    if len(profile_text) < _ONBOARDING_MIN_PROFILE_LEN:
+        send_keyboard(
+            token, chat_id,
+            "💡 Профиль получился коротким — это снижает точность подбора заказов. "
+            "Хотите пройти анкету и добавить детали?",
+            [[{"text": "🔄 Обновить через анкету", "callback_data": "ob:restart"}]],
+        )
+
+
+def _onboarding_handle_callback(
+    data: str,
+    token: str,
+    chat_id: int,
+    message_id: int,
+    telegram_id: int,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> None:
+    """Dispatch ob:* callback_data through the onboarding state machine."""
+    raw_state = _get_conversation_state(telegram_id)
+    ob = _parse_onboarding_state(raw_state) or {}
+
+    if data.startswith("ob:cat:"):
+        cat = data[len("ob:cat:"):]
+        if cat not in ONBOARDING_CATEGORIES:
+            return
+        if ONBOARDING_SKILLS.get(cat):
+            new_ob: dict = {"step": "skills", "cat": cat, "skills": []}
+            _set_conversation_state(telegram_id, json.dumps(new_ob))
+            edit_message_text(
+                token, chat_id, message_id,
+                "<b>Шаг 2 из 4.</b> Выберите навыки (можно несколько):",
+                _build_skills_keyboard(cat, []),
+            )
+        else:
+            new_ob = {"step": "experience", "cat": cat, "skills": []}
+            _set_conversation_state(telegram_id, json.dumps(new_ob))
+            edit_message_text(
+                token, chat_id, message_id,
+                "<b>Шаг 3 из 4.</b> Выберите уровень опыта:",
+                _build_experience_keyboard(),
+            )
+
+    elif data.startswith("ob:skl:"):
+        skill = data[len("ob:skl:"):]
+        if ob.get("step") != "skills":
+            return
+        skills: list[str] = list(ob.get("skills") or [])
+        if skill in skills:
+            skills.remove(skill)
+        else:
+            skills.append(skill)
+        ob["skills"] = skills
+        _set_conversation_state(telegram_id, json.dumps(ob))
+        edit_message_text(
+            token, chat_id, message_id,
+            "<b>Шаг 2 из 4.</b> Выберите навыки (можно несколько):",
+            _build_skills_keyboard(ob.get("cat", ""), skills),
+        )
+
+    elif data == "ob:skldone":
+        if ob.get("step") != "skills":
+            return
+        ob["step"] = "experience"
+        _set_conversation_state(telegram_id, json.dumps(ob))
+        edit_message_text(
+            token, chat_id, message_id,
+            "<b>Шаг 3 из 4.</b> Выберите уровень опыта:",
+            _build_experience_keyboard(),
+        )
+
+    elif data.startswith("ob:exp:"):
+        exp = data[len("ob:exp:"):]
+        if exp not in ONBOARDING_EXPERIENCE:
+            return
+        ob["step"] = "rate"
+        ob["exp"] = exp
+        _set_conversation_state(telegram_id, json.dumps(ob))
+        edit_message_text(
+            token, chat_id, message_id,
+            "<b>Шаг 4 из 4.</b> Укажите желаемую ставку:",
+            _build_rate_keyboard(),
+        )
+
+    elif data.startswith("ob:rate:"):
+        rate = data[len("ob:rate:"):]
+        if rate not in ONBOARDING_RATE:
+            return
+        ob["step"] = "confirm"
+        ob["rate"] = rate
+        _set_conversation_state(telegram_id, json.dumps(ob))
+        profile_text = _build_onboarding_profile_text(ob)
+        edit_message_text(
+            token, chat_id, message_id,
+            f"Ваш профиль:\n\n<i>{profile_text}</i>\n\nСохранить или написать свой текст?",
+            [
+                [{"text": "✅ Сохранить", "callback_data": "ob:confirm"}],
+                [{"text": "✏️ Написать вручную", "callback_data": "ob:edit"}],
+            ],
+        )
+
+    elif data == "ob:confirm":
+        ob = _parse_onboarding_state(_get_conversation_state(telegram_id)) or ob
+        profile_text = _build_onboarding_profile_text(ob)
+        user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+        if user_id is None:
+            send_message(token, chat_id, "Сначала отправьте /start")
+            return
+        if put_user_profile(api_url, user_id, telegram_id, profile_text, api_auth_token, api_user_hmac_secret):
+            _clear_conversation_state(telegram_id)
+            _record_command("onboarding", "ok")
+            edit_message_text(token, chat_id, message_id, f"✅ Профиль сохранён:\n\n<i>{profile_text}</i>")
+            send_message(token, chat_id, "Как только появятся подходящие заказы — уведомлю вас.\nНажимайте 👍/👎 под заказами, чтобы обучить алгоритм.")
+            _maybe_send_profile_quality_hint(token, chat_id, profile_text)
+        else:
+            _record_command("onboarding", "error")
+            send_message(token, chat_id, "Ошибка сохранения профиля. Попробуйте позже.")
+
+    elif data == "ob:edit":
+        ob["step"] = "edit"
+        _set_conversation_state(telegram_id, json.dumps(ob))
+        edit_message_text(token, chat_id, message_id, "✏️ Отправьте текст профиля следующим сообщением:")
+
+    elif data == "ob:restart":
+        _clear_conversation_state(telegram_id)
+        edit_message_text(token, chat_id, message_id, "🔄 Начинаем заново!")
+        _onboarding_start(token, chat_id, telegram_id)
+
+    elif data == "ob:keep":
+        _clear_conversation_state(telegram_id)
+        edit_message_text(token, chat_id, message_id, "Профиль не изменён.")
+
+
 class _WebhookHandler(BaseHTTPRequestHandler):
     secret_token = ""
     bot_token = ""
@@ -1146,13 +1480,22 @@ def handle_callback(
     api_auth_token: str,
     api_user_hmac_secret: str,
 ) -> None:
-    """Handle inline keyboard callback (👍/👎 feedback)."""
+    """Handle inline keyboard callback (onboarding wizard + 👍/👎 feedback)."""
     data = callback.get("data", "")
     callback_id = callback.get("id", "")
     from_user = callback.get("from", {})
     telegram_id = from_user.get("id")
     try:
-        if data.startswith("fb:") and telegram_id is not None:
+        if data.startswith("ob:") and telegram_id is not None:
+            msg = callback.get("message") or {}
+            cb_chat_id = msg.get("chat", {}).get("id") or from_user.get("id")
+            message_id = msg.get("message_id")
+            if cb_chat_id and message_id:
+                _onboarding_handle_callback(
+                    data, token, cb_chat_id, message_id, telegram_id,
+                    api_url, api_auth_token, api_user_hmac_secret,
+                )
+        elif data.startswith("fb:") and telegram_id is not None:
             parts = data.split(":")
             if len(parts) == 3 and parts[1] in ("g", "b"):
                 feedback = "good" if parts[1] == "g" else "bad"
@@ -1228,6 +1571,7 @@ def _handle_profile_submission(
         _clear_conversation_state(telegram_id)
         _record_command("profile", "ok")
         send_message(token, chat_id, "Профиль обновлён.")
+        _maybe_send_profile_quality_hint(token, chat_id, profile_text)
     else:
         _record_command("profile", "error")
         send_message(token, chat_id, "Ошибка обновления профиля.")
@@ -1297,12 +1641,25 @@ def _handle_update(
         user_id = post_users(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
         if user_id is not None:
             _cache_user_id(telegram_id, user_id)
-            _record_command("start", "ok")
-            send_message(
-                token,
-                chat_id,
-                "Добро пожаловать! Отправьте /profile и текст профиля для настройки.",
-            )
+            is_new = _mark_first_seen(telegram_id)
+            if is_new:
+                _record_command("start", "ok")
+                _onboarding_start(token, chat_id, telegram_id)
+            else:
+                first_seen = _get_first_seen_ts(telegram_id)
+                days_since = (time.time() - first_seen) / 86400 if first_seen else 0
+                _record_command("start", "returning")
+                if days_since >= 7:
+                    send_keyboard(
+                        token, chat_id,
+                        "С возвращением! Хотите обновить профиль для лучшего подбора заказов?",
+                        [
+                            [{"text": "🔄 Пройти анкету", "callback_data": "ob:restart"}],
+                            [{"text": "Оставить текущий профиль", "callback_data": "ob:keep"}],
+                        ],
+                    )
+                else:
+                    send_message(token, chat_id, "Вы уже зарегистрированы. Используйте /profile для обновления профиля.")
         else:
             _record_command("start", "error")
             send_message(token, chat_id, "Ошибка регистрации. Попробуйте позже.")
@@ -1370,6 +1727,17 @@ def _handle_update(
 
     pending_state = _get_conversation_state(telegram_id)
     if text and not text.startswith("/") and pending_state == "await_profile":
+        return _handle_profile_submission(
+            token,
+            chat_id,
+            telegram_id,
+            text,
+            api_url,
+            api_auth_token,
+            api_user_hmac_secret,
+        )
+    ob_state = _parse_onboarding_state(pending_state)
+    if text and not text.startswith("/") and ob_state is not None and ob_state.get("step") == "edit":
         return _handle_profile_submission(
             token,
             chat_id,
