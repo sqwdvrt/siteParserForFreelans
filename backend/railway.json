@@ -5,7 +5,7 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "startCommand": "./api",
+    "startCommand": "sh -lc 'case \"${BACKEND_ROLE:-api}\" in api) exec ./api ;; crawler) echo STARTING_CRAWLER; CRAWLER_HEALTH_ADDR=:${PORT} exec ./crawler ;; notifier) NOTIFIER_HEALTH_ADDR=:${PORT} exec ./notifier ;; *) echo \"unknown BACKEND_ROLE=${BACKEND_ROLE}\" >&2; exit 1 ;; esac'",
     "healthcheckPath": "/healthz",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
