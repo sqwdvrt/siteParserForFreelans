@@ -142,10 +142,9 @@ def test_handle_update_routes_callback_query(bot, monkeypatch):
     handle_callback.assert_called_once()
 
 
-def test_run_webhook_registers_and_deletes_webhook_on_sigterm(bot, monkeypatch):
+def test_run_webhook_registers_and_keeps_webhook_on_sigterm(bot, monkeypatch):
     handlers: dict[int, object] = {}
     shutdown_called = threading.Event()
-    delete_calls: list[tuple[str, bool]] = []
     set_calls: list[tuple[str, str, str, int]] = []
 
     class FakeServer:
@@ -170,11 +169,6 @@ def test_run_webhook_registers_and_deletes_webhook_on_sigterm(bot, monkeypatch):
             (token, url, secret_token, max_connections)
         ) or True,
     )
-    monkeypatch.setattr(
-        bot,
-        "delete_webhook",
-        lambda token, drop_pending=False: delete_calls.append((token, drop_pending)),
-    )
     monkeypatch.setattr(bot.signal, "signal", lambda sig, handler: handlers.__setitem__(sig, handler))
 
     bot.run_webhook(
@@ -191,7 +185,12 @@ def test_run_webhook_registers_and_deletes_webhook_on_sigterm(bot, monkeypatch):
 
     assert set_calls == [("bot-token", "https://bot.example.com/webhook", "0123456789abcdef0123456789abcdef", 55)]
     assert shutdown_called.is_set()
-    assert delete_calls == [("bot-token", False)]
+
+
+def test_set_webhook_rejects_non_ok_response(bot, monkeypatch):
+    monkeypatch.setattr(bot, "_http_post", lambda *args, **kwargs: (200, {"ok": False, "description": "bad webhook"}))
+
+    assert bot.set_webhook("bot-token", "https://bot.example.com/webhook", "a" * 32) is False
 
 
 def test_process_update_skips_duplicate_webhook_delivery(bot, monkeypatch):

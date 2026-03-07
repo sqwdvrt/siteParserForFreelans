@@ -1105,18 +1105,21 @@ def set_my_commands(token: str) -> bool:
 def set_webhook(token: str, url: str, secret_token: str, max_connections: int = 40) -> bool:
     """Register Telegram webhook."""
     api_url = f"{TELEGRAM_BASE}{token}/setWebhook"
-    status, _ = _http_post(
+    status, data = _http_post(
         api_url,
         {
             "url": url,
             "secret_token": secret_token,
             "max_connections": max_connections,
             "allowed_updates": ["message", "callback_query"],
-            "drop_pending_updates": True,
+            "drop_pending_updates": False,
         },
     )
     if status != 200:
         logger.error("setWebhook failed: status=%s", status)
+        return False
+    if not isinstance(data, dict) or data.get("ok") is not True:
+        logger.error("setWebhook failed: unexpected response=%r", data)
         return False
     logger.info("webhook registered: %s", url)
     return True
@@ -1915,7 +1918,6 @@ def run_webhook(
             server.server_close()
         except Exception:
             pass
-        delete_webhook(token, drop_pending=False)
         logger.info("webhook server stopped")
 
 
