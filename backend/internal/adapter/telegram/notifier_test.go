@@ -261,6 +261,27 @@ func TestFormatMessage_TruncateDescription_UTF8Safe(t *testing.T) {
 	}
 }
 
+func TestFormatMessage_NormalizesWhitespaceAndDropsRepeatedTitlePrefix(t *testing.T) {
+	job := &domain.Job{
+		ID:          1,
+		Title:       "Разработчик Telegram-бота (Solana / Node.js)",
+		Description: "Разработчик Telegram-бота (Solana / Node.js):\n\n\nпроект в категории Блокчейн-решения,\u00a0 07.03.2026 в 14:36\n\n\n   Описание   задачи",
+		URL:         "https://kwork.ru/projects/1",
+	}
+
+	msg := formatMessage(port.NotifyPayload{Job: job, Score: 0.4925})
+
+	if strings.Count(msg, job.Title) != 1 {
+		t.Fatalf("title duplicated in message: %q", msg)
+	}
+	if strings.Contains(msg, "\n\n\n") {
+		t.Fatalf("message contains excessive blank lines: %q", msg)
+	}
+	if !strings.Contains(msg, "проект в категории Блокчейн-решения, 07.03.2026 в 14:36 Описание задачи") {
+		t.Fatalf("normalized description not found: %q", msg)
+	}
+}
+
 type mockTransportWithCount struct {
 	statusFirst int
 	statusLater int

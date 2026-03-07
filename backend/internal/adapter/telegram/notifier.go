@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 )
@@ -540,6 +541,8 @@ func formatMessage(p port.NotifyPayload) string {
 	if desc == "" {
 		desc = stripHTML(job.RawHTML)
 	}
+	desc = normalizeTelegramText(desc)
+	desc = trimRepeatedTitlePrefix(desc, job.Title)
 	desc = truncateRunes(desc, maxDescLen)
 	b.WriteString(escapeHTML(desc))
 
@@ -721,6 +724,51 @@ func truncateRunes(s string, max int) string {
 		return s
 	}
 	return string(runes[:max]) + "..."
+}
+
+func normalizeTelegramText(s string) string {
+	if s == "" {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(s))
+	lastSpace := false
+	for _, r := range s {
+		switch r {
+		case '\u00a0', '\u2007', '\u202f':
+			r = ' '
+		case '\u200b', '\u200c', '\u200d', '\ufeff':
+			continue
+		}
+		if unicode.IsSpace(r) {
+			if !lastSpace {
+				b.WriteByte(' ')
+				lastSpace = true
+			}
+			continue
+		}
+		b.WriteRune(r)
+		lastSpace = false
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func trimRepeatedTitlePrefix(desc, title string) string {
+	normalizedDesc := normalizeTelegramText(desc)
+	normalizedTitle := normalizeTelegramText(title)
+	if normalizedDesc == "" || normalizedTitle == "" {
+		return normalizedDesc
+	}
+	if !strings.HasPrefix(normalizedDesc, normalizedTitle) {
+		return normalizedDesc
+	}
+	trimmed := strings.TrimLeftFunc(normalizedDesc[len(normalizedTitle):], func(r rune) bool {
+		return unicode.IsSpace(r) || strings.ContainsRune(":;,.-!?", r)
+	})
+	if trimmed == "" {
+		return normalizedDesc
+	}
+	return trimmed
 }
 
 // Проверка, что Notifier реализует port.Notifier.
