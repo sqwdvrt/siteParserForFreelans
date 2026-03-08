@@ -57,7 +57,7 @@ class GeminiActorAgent(ActorAgent):
     def __init__(
         self,
         api_key: str,
-        model: str = "gemini-1.5-flash",
+        model: str = "gemini-2.0-flash",
         timeout_sec: int = DEFAULT_TIMEOUT_SEC,
         *,
         breaker_failure_threshold: int = 3,

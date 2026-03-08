@@ -184,8 +184,8 @@ def main() -> None:
         if not gemini_api_key:
             logger.error("GEMINI_API_KEY not set (required when LLM_PROVIDER=gemini)")
             sys.exit(1)
-        actor_model = os.getenv("GEMINI_ACTOR_MODEL", os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
-        critic_model = os.getenv("GEMINI_CRITIC_MODEL", os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
+        actor_model = os.getenv("GEMINI_ACTOR_MODEL", os.getenv("GEMINI_MODEL", "gemini-2.0-flash"))
+        critic_model = os.getenv("GEMINI_CRITIC_MODEL", os.getenv("GEMINI_MODEL", "gemini-2.0-flash"))
         actor_timeout = int(os.getenv("ACTOR_GEMINI_TIMEOUT_SEC", "30"))
         critic_timeout = int(os.getenv("CRITIC_GEMINI_TIMEOUT_SEC", "20"))
         actor_primary = GeminiActorAgent(api_key=gemini_api_key, model=actor_model, timeout_sec=actor_timeout)

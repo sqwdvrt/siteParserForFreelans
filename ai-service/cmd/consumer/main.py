@@ -161,7 +161,7 @@ def main() -> None:
         if not gemini_api_key:
             logger.error("GEMINI_API_KEY not set (required when LLM_PROVIDER=gemini)")
             sys.exit(1)
-        gemini_model = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
         gemini_timeout = int(os.getenv("GEMINI_TIMEOUT_SEC", "20"))
         classifier_primary = GeminiClassifier(api_key=gemini_api_key, model=gemini_model, timeout_sec=gemini_timeout)
         logger.info("classifier provider=gemini model=%s", gemini_model)
