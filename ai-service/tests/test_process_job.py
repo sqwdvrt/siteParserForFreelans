@@ -9,6 +9,7 @@ import pytest
 from ai_service.adapter.rule_based import RuleBasedClassifier
 from ai_service.domain.job import Job
 from ai_service.port.match_repository import MatchCandidate
+from ai_service.port.repository import JobEmbeddingRecord
 from ai_service.usecase.process_job import ProcessJobUseCase, _build_why_it_fits
 from ai_service.util.trace_context import reset_trace_id, set_trace_id
 
@@ -65,11 +66,14 @@ def test_execute_skips_when_embedding_exists() -> None:
     job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
     repo = MagicMock()
     repo.get.return_value = job
-    repo.has_embedding.return_value = True
+    repo.get_embedding.return_value = JobEmbeddingRecord(embedding=[0.2] * 384, metadata={})
     emb = MagicMock()
-    uc = ProcessJobUseCase(repo, emb)
-    assert uc.execute(1) is False
-    repo.has_embedding.assert_called_once_with(1)
+    match_repo = MagicMock()
+    match_repo.find_users_for_job.return_value = []
+    uc = ProcessJobUseCase(repo, emb, match_repo=match_repo)
+    assert uc.execute(1) is True
+    match_repo.find_users_for_job.assert_called_once_with([0.2] * 384, 1, 0.7, 20)
+    emb.encode.assert_not_called()
     repo.save_embedding.assert_not_called()
 
 
@@ -77,7 +81,7 @@ def test_execute_saves_embedding_with_classification() -> None:
     job = Job(id=1, title="Python", description="Django", raw_html="<p>web</p>")
     repo = MagicMock()
     repo.get.return_value = job
-    repo.has_embedding.return_value = False
+    repo.get_embedding.return_value = None
     emb = MagicMock()
     emb.encode.return_value = [0.1] * 384
     emb.model_name = "test-model"
@@ -100,7 +104,7 @@ def test_execute_calls_matching_after_save() -> None:
     job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
     repo = MagicMock()
     repo.get.return_value = job
-    repo.has_embedding.return_value = False
+    repo.get_embedding.return_value = None
     emb = MagicMock()
     emb.encode.return_value = [0.1] * 384
     emb.model_name = "test"
@@ -123,7 +127,7 @@ def test_execute_accumulates_candidates_to_pending_repo() -> None:
     job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
     repo = MagicMock()
     repo.get.return_value = job
-    repo.has_embedding.return_value = False
+    repo.get_embedding.return_value = None
     emb = MagicMock()
     emb.encode.return_value = [0.1] * 384
     emb.model_name = "test"
@@ -155,7 +159,7 @@ def test_execute_propagates_accumulate_error() -> None:
     job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
     repo = MagicMock()
     repo.get.return_value = job
-    repo.has_embedding.return_value = False
+    repo.get_embedding.return_value = None
     emb = MagicMock()
     emb.encode.return_value = [0.1] * 384
     emb.model_name = "test"
@@ -181,7 +185,7 @@ def test_execute_sets_why_it_fits_from_classification() -> None:
     job = Job(id=1, title="Python web", description="Django backend", raw_html="<p>web</p>")
     repo = MagicMock()
     repo.get.return_value = job
-    repo.has_embedding.return_value = False
+    repo.get_embedding.return_value = None
     emb = MagicMock()
     emb.encode.return_value = [0.1] * 384
     emb.model_name = "test"
@@ -206,7 +210,7 @@ def test_execute_why_it_fits_empty_without_classifier() -> None:
     job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
     repo = MagicMock()
     repo.get.return_value = job
-    repo.has_embedding.return_value = False
+    repo.get_embedding.return_value = None
     emb = MagicMock()
     emb.encode.return_value = [0.1] * 384
     emb.model_name = "test"
@@ -224,7 +228,7 @@ def test_execute_propagates_trace_id_to_candidates() -> None:
     job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
     repo = MagicMock()
     repo.get.return_value = job
-    repo.has_embedding.return_value = False
+    repo.get_embedding.return_value = None
     emb = MagicMock()
     emb.encode.return_value = [0.1] * 384
     emb.model_name = "test"
@@ -242,3 +246,29 @@ def test_execute_propagates_trace_id_to_candidates() -> None:
 
     sent = accumulate_matches.execute.call_args[0][0]
     assert sent[0].trace_id == "trace-ai-1"
+
+
+def test_execute_reuses_saved_classification_when_reprocessing() -> None:
+    job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
+    repo = MagicMock()
+    repo.get.return_value = job
+    repo.get_embedding.return_value = JobEmbeddingRecord(
+        embedding=[0.2] * 384,
+        metadata={
+            "classification": {
+                "project_type": "web",
+                "technologies": ["python", "fastapi"],
+            }
+        },
+    )
+    emb = MagicMock()
+    match_repo = MagicMock()
+    match_repo.find_users_for_job.return_value = [MatchCandidate(user_id=10, job_id=1, match_score=0.9)]
+    accumulate_matches = MagicMock()
+    uc = ProcessJobUseCase(repo, emb, match_repo=match_repo, accumulate_matches=accumulate_matches)
+
+    assert uc.execute(1) is True
+
+    sent = accumulate_matches.execute.call_args[0][0]
+    assert "python" in sent[0].why_it_fits.lower()
+    emb.encode.assert_not_called()

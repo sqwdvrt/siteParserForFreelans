@@ -64,3 +64,19 @@ def test_save_embedding_and_has_embedding(
     metadata = {"model": "test", "text_length": 100}
     repo.save_embedding(job_id, embedding, metadata)
     assert repo.has_embedding(job_id) is True
+
+
+def test_get_embedding_returns_saved_embedding_and_metadata(
+    repo: PostgresJobRepository, job_id: int
+) -> None:
+    embedding = [0.2] * 384
+    metadata = {"model": "test", "classification": {"project_type": "web"}}
+    repo.save_embedding(job_id, embedding, metadata)
+
+    saved = repo.get_embedding(job_id)
+
+    assert saved is not None
+    assert len(saved.embedding) == 384
+    assert saved.embedding[0] == pytest.approx(0.2)
+    assert saved.metadata["model"] == "test"
+    assert saved.metadata["classification"] == {"project_type": "web"}

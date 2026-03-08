@@ -3,8 +3,17 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 
 from ai_service.domain.job import Job
+
+
+@dataclass(frozen=True)
+class JobEmbeddingRecord:
+    """Saved job embedding plus optional model metadata."""
+
+    embedding: list[float]
+    metadata: dict[str, object] = field(default_factory=dict)
 
 
 class JobRepository(ABC):
@@ -28,6 +37,11 @@ class JobRepository(ABC):
     @abstractmethod
     def has_embedding(self, job_id: int) -> bool:
         """Проверить наличие embedding для job_id."""
+        ...
+
+    @abstractmethod
+    def get_embedding(self, job_id: int) -> JobEmbeddingRecord | None:
+        """Load saved job embedding and metadata for retry-safe reprocessing."""
         ...
 
     @abstractmethod

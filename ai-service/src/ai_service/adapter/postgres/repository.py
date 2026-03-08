@@ -10,7 +10,7 @@ from psycopg2.extras import RealDictCursor
 
 from ai_service.adapter.postgres._pooled_repository import PooledPostgresRepository
 from ai_service.domain.job import Job
-from ai_service.port.repository import JobRepository
+from ai_service.port.repository import JobEmbeddingRecord, JobRepository
 
 
 class PostgresJobRepository(PooledPostgresRepository, JobRepository):
@@ -82,6 +82,28 @@ class PostgresJobRepository(PooledPostgresRepository, JobRepository):
                     (job_id,),
                 )
                 return cur.fetchone() is not None
+
+    def get_embedding(self, job_id: int) -> JobEmbeddingRecord | None:
+        """Load saved embedding and ai_metadata for retry-safe reprocessing."""
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT embedding, COALESCE(ai_metadata, '{}'::jsonb) AS ai_metadata
+                    FROM job_embeddings
+                    WHERE job_id = %s
+                    LIMIT 1
+                    """,
+                    (job_id,),
+                )
+                row: dict[str, Any] | None = cur.fetchone()
+        if row is None:
+            return None
+        metadata = row["ai_metadata"] if isinstance(row["ai_metadata"], dict) else {}
+        return JobEmbeddingRecord(
+            embedding=list(row["embedding"] or []),
+            metadata=metadata,
+        )
 
     def has_recent_similar_title(self, job_id: int, title: str, days: int = 7) -> bool:
         normalized_title = " ".join((title or "").strip().lower().split())

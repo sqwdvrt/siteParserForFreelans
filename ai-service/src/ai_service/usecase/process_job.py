@@ -92,7 +92,11 @@ class ProcessJobUseCase:
         self._feedback_repo = feedback_repo
 
     def execute(self, job_id: int) -> bool:
-        """Обработать job_id. Возвращает True если embedding сохранён, False если пропущен."""
+        """Process job using a new or previously saved embedding.
+
+        Returns True when matching was attempted, False only when the job is
+        missing or saved embedding cannot be loaded for retry.
+        """
         trace_id = get_trace_id()
         job = self._repo.get(job_id)
         if job is None:
@@ -102,32 +106,44 @@ class ProcessJobUseCase:
                 logger.warning("job not found: %s", job_id)
             return False
 
-        if self._repo.has_embedding(job_id):
-            if trace_id:
-                logger.debug("embedding already exists, skip: %s trace_id=%s", job_id, trace_id)
-            else:
-                logger.debug("embedding already exists, skip: %s", job_id)
-            return False
-
-        raw = f"{job.title} {job.description or ''} {job.raw_html}"
-        text = clean_text(raw)
-        embedding = self._embedding.encode(text)
-
-        metadata: dict = {
-            "model": self._embedding.model_name,
-            "text_length": len(text),
-        }
         classification: ClassificationResult = {}
-        if self._classifier is not None:
-            classification = self._classifier.classify(text)
-            if classification:
-                metadata["classification"] = classification
-
-        self._repo.save_embedding(job_id, embedding, metadata)
-        if trace_id:
-            logger.info("saved embedding for job_id=%s trace_id=%s", job_id, trace_id)
+        embedding: list[float] = []
+        saved_embedding = self._repo.get_embedding(job_id)
+        if saved_embedding is not None:
+            embedding = saved_embedding.embedding
+            raw_classification = saved_embedding.metadata.get("classification")
+            if isinstance(raw_classification, dict):
+                classification = raw_classification
+            if trace_id:
+                logger.info("embedding already exists, continue matching job_id=%s trace_id=%s", job_id, trace_id)
+            else:
+                logger.info("embedding already exists, continue matching job_id=%s", job_id)
         else:
-            logger.info("saved embedding for job_id=%s", job_id)
+            raw = f"{job.title} {job.description or ''} {job.raw_html}"
+            text = clean_text(raw)
+            embedding = self._embedding.encode(text)
+
+            metadata: dict = {
+                "model": self._embedding.model_name,
+                "text_length": len(text),
+            }
+            if self._classifier is not None:
+                classification = self._classifier.classify(text)
+                if classification:
+                    metadata["classification"] = classification
+
+            self._repo.save_embedding(job_id, embedding, metadata)
+            if trace_id:
+                logger.info("saved embedding for job_id=%s trace_id=%s", job_id, trace_id)
+            else:
+                logger.info("saved embedding for job_id=%s", job_id)
+
+        if not embedding:
+            if trace_id:
+                logger.warning("saved embedding missing for job_id=%s trace_id=%s", job_id, trace_id)
+            else:
+                logger.warning("saved embedding missing for job_id=%s", job_id)
+            return False
 
         if self._match_repo is not None:
             candidates = self._match_repo.find_users_for_job(
