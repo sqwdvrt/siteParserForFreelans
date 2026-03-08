@@ -19,6 +19,7 @@ except ImportError:
     pass  # python-dotenv is optional in container/runtime envs
 
 from ai_service.adapter.fallback import FallbackClassifier
+from ai_service.adapter.gemini import GeminiClassifier
 from ai_service.adapter.ollama import OllamaClassifier
 from ai_service.adapter.postgres import (
     PostgresJobRepository,
@@ -153,16 +154,30 @@ def main() -> None:
     model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     threshold = float(os.getenv("SIMILARITY_THRESHOLD", "0.7"))
     max_matches = int(os.getenv("MAX_MATCHES_PER_JOB", "20"))
-    ollama_url = os.getenv("OLLAMA_URL", "http://ollama:11434")
-    ollama_model = os.getenv("OLLAMA_MODEL", "llama3.2:3b-instruct-q4_K_M")
-    ollama_timeout = int(os.getenv("OLLAMA_TIMEOUT_SEC", "30"))
-    ollama_required = os.getenv("OLLAMA_REQUIRED", "1" if is_production_env(app_env) else "0") == "1"
-    if not probe_ollama(
-        ollama_url,
-        required=ollama_required,
-        required_models=[ollama_model],
-    ) and ollama_required:
-        sys.exit(1)
+    llm_provider = os.getenv("LLM_PROVIDER", "ollama").lower()
+
+    if llm_provider == "gemini":
+        gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+        if not gemini_api_key:
+            logger.error("GEMINI_API_KEY not set (required when LLM_PROVIDER=gemini)")
+            sys.exit(1)
+        gemini_model = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+        gemini_timeout = int(os.getenv("GEMINI_TIMEOUT_SEC", "20"))
+        classifier_primary = GeminiClassifier(api_key=gemini_api_key, model=gemini_model, timeout_sec=gemini_timeout)
+        logger.info("classifier provider=gemini model=%s", gemini_model)
+    else:
+        ollama_url = os.getenv("OLLAMA_URL", "http://ollama:11434")
+        ollama_model = os.getenv("OLLAMA_MODEL", "llama3.2:3b-instruct-q4_K_M")
+        ollama_timeout = int(os.getenv("OLLAMA_TIMEOUT_SEC", "30"))
+        ollama_required = os.getenv("OLLAMA_REQUIRED", "1" if is_production_env(app_env) else "0") == "1"
+        if not probe_ollama(
+            ollama_url,
+            required=ollama_required,
+            required_models=[ollama_model],
+        ) and ollama_required:
+            sys.exit(1)
+        classifier_primary = OllamaClassifier(base_url=ollama_url, model=ollama_model, timeout_sec=ollama_timeout)
+        logger.info("classifier provider=ollama url=%s", ollama_url)
 
     repo = PostgresJobRepository(db_url, **pg_pool_kwargs)
     match_repo = PostgresMatchRepository(db_url, **pg_pool_kwargs)
@@ -174,10 +189,9 @@ def main() -> None:
     else:
         logger.info("embedding warmup disabled by %s", WARMUP_ENABLED_ENV)
     classifier = FallbackClassifier(
-        primary=OllamaClassifier(base_url=ollama_url, model=ollama_model, timeout_sec=ollama_timeout),
+        primary=classifier_primary,
         fallback=RuleBasedClassifier(),
     )
-    logger.info("classifier=FallbackClassifier(primary=Ollama[%s], fallback=RuleBased)", ollama_url)
     process_job = ProcessJobUseCase(
         repo, embedding, classifier, match_repo,
         accumulate_matches=accumulate_matches,

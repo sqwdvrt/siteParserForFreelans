@@ -23,6 +23,7 @@ except ImportError:
 
 from ai_service.adapter.actor import FallbackActorAgent, OllamaActorAgent, RuleBasedActorAgent
 from ai_service.adapter.critic import FallbackCriticAgent, OllamaCriticAgent, RuleBasedCriticAgent
+from ai_service.adapter.gemini import GeminiActorAgent, GeminiCriticAgent
 from ai_service.adapter.postgres import (
     PostgresJobRepository,
     PostgresPendingJobsRepository,
@@ -176,18 +177,36 @@ def main() -> None:
     max_attempts = int(os.getenv("AC_MAX_ATTEMPTS", "3"))
     max_jobs_per_selection = int(os.getenv("AC_MAX_JOBS_PER_SELECTION", "5"))
 
-    ollama_url = os.getenv("OLLAMA_URL", "http://ollama:11434")
-    actor_model = os.getenv("ACTOR_OLLAMA_MODEL", "llama3.2:3b-instruct-q4_K_M")
-    critic_model = os.getenv("CRITIC_OLLAMA_MODEL", "llama3.2:3b-instruct-q4_K_M")
-    actor_timeout = int(os.getenv("ACTOR_OLLAMA_TIMEOUT_SEC", "45"))
-    critic_timeout = int(os.getenv("CRITIC_OLLAMA_TIMEOUT_SEC", "30"))
-    ollama_required = os.getenv("OLLAMA_REQUIRED", "1" if is_production_env(app_env) else "0") == "1"
-    if not probe_ollama(
-        ollama_url,
-        required=ollama_required,
-        required_models=[actor_model, critic_model],
-    ) and ollama_required:
-        sys.exit(1)
+    llm_provider = os.getenv("LLM_PROVIDER", "ollama").lower()
+
+    if llm_provider == "gemini":
+        gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+        if not gemini_api_key:
+            logger.error("GEMINI_API_KEY not set (required when LLM_PROVIDER=gemini)")
+            sys.exit(1)
+        actor_model = os.getenv("GEMINI_ACTOR_MODEL", os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
+        critic_model = os.getenv("GEMINI_CRITIC_MODEL", os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
+        actor_timeout = int(os.getenv("ACTOR_GEMINI_TIMEOUT_SEC", "30"))
+        critic_timeout = int(os.getenv("CRITIC_GEMINI_TIMEOUT_SEC", "20"))
+        actor_primary = GeminiActorAgent(api_key=gemini_api_key, model=actor_model, timeout_sec=actor_timeout)
+        critic_primary = GeminiCriticAgent(api_key=gemini_api_key, model=critic_model, timeout_sec=critic_timeout)
+        logger.info("actor/critic provider=gemini model_actor=%s model_critic=%s", actor_model, critic_model)
+    else:
+        ollama_url = os.getenv("OLLAMA_URL", "http://ollama:11434")
+        actor_model = os.getenv("ACTOR_OLLAMA_MODEL", "llama3.2:3b-instruct-q4_K_M")
+        critic_model = os.getenv("CRITIC_OLLAMA_MODEL", "llama3.2:3b-instruct-q4_K_M")
+        actor_timeout = int(os.getenv("ACTOR_OLLAMA_TIMEOUT_SEC", "45"))
+        critic_timeout = int(os.getenv("CRITIC_OLLAMA_TIMEOUT_SEC", "30"))
+        ollama_required = os.getenv("OLLAMA_REQUIRED", "1" if is_production_env(app_env) else "0") == "1"
+        if not probe_ollama(
+            ollama_url,
+            required=ollama_required,
+            required_models=[actor_model, critic_model],
+        ) and ollama_required:
+            sys.exit(1)
+        actor_primary = OllamaActorAgent(base_url=ollama_url, model=actor_model, timeout_sec=actor_timeout)
+        critic_primary = OllamaCriticAgent(base_url=ollama_url, model=critic_model, timeout_sec=critic_timeout)
+        logger.info("actor/critic provider=ollama url=%s", ollama_url)
 
     init_tracer("site-parser-ac")
 
@@ -199,11 +218,11 @@ def main() -> None:
     ac_batch_queue.reclaim_stuck()
 
     actor = FallbackActorAgent(
-        primary=OllamaActorAgent(base_url=ollama_url, model=actor_model, timeout_sec=actor_timeout),
+        primary=actor_primary,
         fallback=RuleBasedActorAgent(),
     )
     critic = FallbackCriticAgent(
-        primary=OllamaCriticAgent(base_url=ollama_url, model=critic_model, timeout_sec=critic_timeout),
+        primary=critic_primary,
         fallback=RuleBasedCriticAgent(),
     )
     ac_loop = ActorCriticLoop(
