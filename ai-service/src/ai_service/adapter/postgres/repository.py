@@ -100,8 +100,9 @@ class PostgresJobRepository(PooledPostgresRepository, JobRepository):
         if row is None:
             return None
         metadata = row["ai_metadata"] if isinstance(row["ai_metadata"], dict) else {}
+        raw_embedding = row["embedding"]
         return JobEmbeddingRecord(
-            embedding=list(row["embedding"] or []),
+            embedding=list(raw_embedding) if raw_embedding is not None else [],
             metadata=metadata,
         )
 

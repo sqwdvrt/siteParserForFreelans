@@ -138,7 +138,7 @@ class ProcessJobUseCase:
             else:
                 logger.info("saved embedding for job_id=%s", job_id)
 
-        if not embedding:
+        if embedding is None or len(embedding) == 0:
             if trace_id:
                 logger.warning("saved embedding missing for job_id=%s trace_id=%s", job_id, trace_id)
             else:

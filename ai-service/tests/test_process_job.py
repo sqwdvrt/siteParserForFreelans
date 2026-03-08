@@ -272,3 +272,23 @@ def test_execute_reuses_saved_classification_when_reprocessing() -> None:
     sent = accumulate_matches.execute.call_args[0][0]
     assert "python" in sent[0].why_it_fits.lower()
     emb.encode.assert_not_called()
+
+
+def test_execute_accepts_numpy_saved_embedding_for_retry() -> None:
+    np = pytest.importorskip("numpy")
+    job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
+    repo = MagicMock()
+    repo.get.return_value = job
+    repo.get_embedding.return_value = JobEmbeddingRecord(
+        embedding=np.array([0.2] * 384),
+        metadata={},
+    )
+    emb = MagicMock()
+    match_repo = MagicMock()
+    match_repo.find_users_for_job.return_value = []
+    uc = ProcessJobUseCase(repo, emb, match_repo=match_repo)
+
+    assert uc.execute(1) is True
+
+    match_repo.find_users_for_job.assert_called_once()
+    emb.encode.assert_not_called()
