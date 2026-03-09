@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-import pytest
-
 from ai_service.port.feedback_repository import FeedbackSignal
 from ai_service.port.match_repository import MatchCandidate
 from ai_service.usecase.process_user_rematch import ProcessUserRematchUseCase

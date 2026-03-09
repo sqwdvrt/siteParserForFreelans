@@ -3,23 +3,23 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
+import hashlib
+import hmac
 import json
 import logging
 import math
 import os
 import random
-import sys
-import time
 import secrets
-import hashlib
-import hmac
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import signal
+import sys
 import threading
-import urllib.request
+import time
 import urllib.error
 import urllib.parse
+import urllib.request
+from collections import OrderedDict
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 try:
     import redis
@@ -95,7 +95,20 @@ ONBOARDING_CATEGORIES: dict[str, str] = {
 }
 
 ONBOARDING_SKILLS: dict[str, list[str]] = {
-    "backend":  ["Python", "Go", "Node.js", "Java", "C#", "PHP", "Rust", "PostgreSQL", "MySQL", "Redis", "Docker", "REST API"],
+    "backend": [
+        "Python",
+        "Go",
+        "Node.js",
+        "Java",
+        "C#",
+        "PHP",
+        "Rust",
+        "PostgreSQL",
+        "MySQL",
+        "Redis",
+        "Docker",
+        "REST API",
+    ],
     "frontend": ["React", "Vue", "Angular", "TypeScript", "JavaScript", "HTML/CSS", "Next.js", "Webpack"],
     "mobile":   ["iOS/Swift", "Android/Kotlin", "React Native", "Flutter"],
     "data_ai":  ["Python", "ML/AI", "TensorFlow", "PyTorch", "pandas", "SQL", "Spark", "Data Engineering"],
@@ -251,7 +264,10 @@ _PROMETHEUS_META: dict[str, tuple[str, str]] = {
     "telegram_bot_http_requests_total": ("counter", "Outbound HTTP requests by method, target and status class."),
     "telegram_bot_http_retries_total": ("counter", "Outbound HTTP retries by method, target and reason."),
     "telegram_bot_cache_operations_total": ("counter", "Bot cache and state operations by cache and result."),
-    "telegram_bot_state_store_operations_total": ("counter", "Telegram bot Redis state store operations by operation and result."),
+    "telegram_bot_state_store_operations_total": (
+        "counter",
+        "Telegram bot Redis state store operations by operation and result.",
+    ),
     "telegram_bot_ready": ("gauge", "Telegram bot readiness state."),
 }
 
@@ -325,7 +341,12 @@ def _start_metrics_server(bind: str, port: int) -> ThreadingHTTPServer | None:
     return server
 
 
-def _prune_expired_entries(cache: OrderedDict[int, tuple[int, float]] | OrderedDict[int, tuple[str, float]] | OrderedDict[int, float], now: float) -> None:
+def _prune_expired_entries(
+    cache: OrderedDict[int, tuple[int, float]]
+    | OrderedDict[int, tuple[str, float]]
+    | OrderedDict[int, float],
+    now: float,
+) -> None:
     expired_keys: list[int] = []
     for key, value in cache.items():
         expires_at = value[1] if isinstance(value, tuple) else value
@@ -415,7 +436,11 @@ class _RedisStateStore:
         value = str(raw).strip()
         if not value:
             self._client.delete(self._key("conversation", telegram_id))
-            _METRICS.inc("telegram_bot_state_store_operations_total", operation="get_conversation_state", result="invalid")
+            _METRICS.inc(
+                "telegram_bot_state_store_operations_total",
+                operation="get_conversation_state",
+                result="invalid",
+            )
             return None
         _METRICS.inc("telegram_bot_state_store_operations_total", operation="get_conversation_state", result="hit")
         return value
@@ -975,7 +1000,11 @@ def _set_conversation_state(telegram_id: int, state: str, *, now_monotonic: floa
             _STATE_STORE.set_conversation_state(telegram_id, state)
         except Exception as e:
             logger.warning("redis state store set_conversation_state failed: %s", _exception_name(e))
-            _METRICS.inc("telegram_bot_state_store_operations_total", operation="set_conversation_state", result="error")
+            _METRICS.inc(
+                "telegram_bot_state_store_operations_total",
+                operation="set_conversation_state",
+                result="error",
+            )
     with _CACHE_LOCK:
         _prune_expired_entries(_CONVERSATION_STATE_CACHE, now)
         ttl_sec = getattr(_CONVERSATION_STATE_CACHE, "ttl_sec", CONVERSATION_STATE_TTL_SEC)
@@ -1009,7 +1038,11 @@ def _get_conversation_state(telegram_id: int, *, now_monotonic: float | None = N
             stored_state = _STATE_STORE.get_conversation_state(telegram_id)
         except Exception as e:
             logger.warning("redis state store get_conversation_state failed: %s", _exception_name(e))
-            _METRICS.inc("telegram_bot_state_store_operations_total", operation="get_conversation_state", result="error")
+            _METRICS.inc(
+                "telegram_bot_state_store_operations_total",
+                operation="get_conversation_state",
+                result="error",
+            )
         else:
             if stored_state is not None:
                 _set_conversation_state(telegram_id, stored_state, now_monotonic=now)
@@ -1028,7 +1061,11 @@ def _clear_conversation_state(telegram_id: int) -> None:
             _STATE_STORE.clear_conversation_state(telegram_id)
         except Exception as e:
             logger.warning("redis state store clear_conversation_state failed: %s", _exception_name(e))
-            _METRICS.inc("telegram_bot_state_store_operations_total", operation="clear_conversation_state", result="error")
+            _METRICS.inc(
+                "telegram_bot_state_store_operations_total",
+                operation="clear_conversation_state",
+                result="error",
+            )
     if removed is not None:
         _METRICS.inc("telegram_bot_cache_operations_total", cache="conversation_state", result="clear")
 
@@ -1458,7 +1495,12 @@ def _onboarding_handle_callback(
             _clear_conversation_state(telegram_id)
             _record_command("onboarding", "ok")
             edit_message_text(token, chat_id, message_id, f"✅ Профиль сохранён:\n\n<i>{profile_text}</i>")
-            send_message(token, chat_id, "Как только появятся подходящие заказы — уведомлю вас.\nНажимайте 👍/👎 под заказами, чтобы обучить алгоритм.")
+            send_message(
+                token,
+                chat_id,
+                "Как только появятся подходящие заказы — уведомлю вас.\n"
+                "Нажимайте 👍/👎 под заказами, чтобы обучить алгоритм.",
+            )
             _maybe_send_profile_quality_hint(token, chat_id, profile_text)
         else:
             if status == 400:
@@ -1749,7 +1791,11 @@ def _handle_update(
                         ],
                     )
                 else:
-                    send_message(token, chat_id, "Вы уже зарегистрированы. Используйте /profile для обновления профиля.")
+                    send_message(
+                        token,
+                        chat_id,
+                        "Вы уже зарегистрированы. Используйте /profile для обновления профиля.",
+                    )
         else:
             _record_command("start", "error")
             send_message(token, chat_id, "Ошибка регистрации. Попробуйте позже.")
@@ -1981,12 +2027,16 @@ def main() -> None:
     token = os.getenv("TELEGRAM_BOT_TOKEN")
     api_auth_token = os.getenv("API_AUTH_TOKEN")
     api_user_hmac_secret = os.getenv("API_USER_HMAC_SECRET")
-    api_url = os.getenv("API_URL", "http://localhost:8080")
+    api_url = (os.getenv("API_URL") or "").strip()
+    if not api_url and not _is_production_env(app_env):
+        api_url = "http://localhost:8080"
     try:
         _validate_secret("TELEGRAM_BOT_TOKEN", token or "", 20)
         _validate_secret("API_AUTH_TOKEN", api_auth_token or "", 32)
         _validate_secret("API_USER_HMAC_SECRET", api_user_hmac_secret or "", 32)
         if _is_production_env(app_env):
+            if not api_url:
+                raise ValueError("API_URL not set in production")
             _validate_api_url_for_production(api_url)
         _register_allowed_host(api_url)
         _STATE_STORE = _build_state_store(app_env)

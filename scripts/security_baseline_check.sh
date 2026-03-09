@@ -6,7 +6,7 @@ cd "$ROOT_DIR"
 PY_USER_BASE="${ROOT_DIR}/.pyuserbase"
 
 PYTHON_BIN="${PYTHON_BIN:-}"
-GO_TOOLCHAIN="${GO_TOOLCHAIN:-go1.25.7}"
+GO_TOOLCHAIN="${GO_TOOLCHAIN:-go1.25.8}"
 GO_GOMODCACHE="${GO_GOMODCACHE:-${ROOT_DIR}/backend/.gomodcache-${GO_TOOLCHAIN}}"
 GO_GOCACHE="${GO_GOCACHE:-${ROOT_DIR}/backend/.gocache-${GO_TOOLCHAIN}}"
 PY_MODE="local"
@@ -16,8 +16,8 @@ SECURITY_BASELINE_SKIP_PIP_AUDIT="${SECURITY_BASELINE_SKIP_PIP_AUDIT:-0}"
 
 echo "[security] Validating pinned baseline versions"
 
-if ! grep -qE '^toolchain go1\.25\.7$' backend/go.mod; then
-  echo "ERROR: backend/go.mod must contain 'toolchain go1.25.7'"
+if ! grep -qE '^toolchain go1\.25\.8$' backend/go.mod; then
+  echo "ERROR: backend/go.mod must contain 'toolchain go1.25.8'"
   exit 1
 fi
 

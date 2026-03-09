@@ -6,6 +6,8 @@ import importlib.util
 import threading
 from pathlib import Path
 
+import pytest
+
 
 def _load_consumer_main_module():
     module_path = Path(__file__).resolve().parents[1] / "cmd" / "consumer" / "main.py"
@@ -24,11 +26,24 @@ def test_shutdown_grace_sec_invalid_env_fallback(monkeypatch) -> None:
     assert module._shutdown_grace_sec() == module.DEFAULT_SHUTDOWN_GRACE_SEC
 
 
+def test_main_exits_on_invalid_llm_provider(monkeypatch, tmp_path: Path) -> None:
+    module = _load_consumer_main_module()
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("LLM_PROVIDER", "claude")
+    monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
+
+    with pytest.raises(SystemExit):
+        module.main()
+
+
 def test_main_forces_requeue_on_shutdown_timeout(monkeypatch, tmp_path: Path) -> None:
     module = _load_consumer_main_module()
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
     monkeypatch.setenv(module.SHUTDOWN_GRACE_SEC_ENV, "0.05")
     monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
 
@@ -89,6 +104,7 @@ def test_main_requeues_inflight_messages_on_clean_shutdown(monkeypatch, tmp_path
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
     monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
 
     class FakeQueue:
@@ -124,6 +140,7 @@ def test_main_passes_postgres_pool_settings_to_repositories(monkeypatch, tmp_pat
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
     monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
     monkeypatch.setenv("PG_POOL_MIN_CONNS", "0")
     monkeypatch.setenv("PG_POOL_MAX_CONNS", "1")
@@ -131,9 +148,21 @@ def test_main_passes_postgres_pool_settings_to_repositories(monkeypatch, tmp_pat
 
     repo_calls: list[tuple[str, dict]] = []
 
-    monkeypatch.setattr(module, "PostgresJobRepository", lambda *_args, **kwargs: repo_calls.append(("job", kwargs)) or object())
-    monkeypatch.setattr(module, "PostgresMatchRepository", lambda *_args, **kwargs: repo_calls.append(("match", kwargs)) or object())
-    monkeypatch.setattr(module, "PostgresPendingJobsRepository", lambda *_args, **kwargs: repo_calls.append(("pending", kwargs)) or object())
+    monkeypatch.setattr(
+        module,
+        "PostgresJobRepository",
+        lambda *_args, **kwargs: repo_calls.append(("job", kwargs)) or object(),
+    )
+    monkeypatch.setattr(
+        module,
+        "PostgresMatchRepository",
+        lambda *_args, **kwargs: repo_calls.append(("match", kwargs)) or object(),
+    )
+    monkeypatch.setattr(
+        module,
+        "PostgresPendingJobsRepository",
+        lambda *_args, **kwargs: repo_calls.append(("pending", kwargs)) or object(),
+    )
     monkeypatch.setattr(module, "AccumulateMatchesUseCase", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "SentenceTransformerEmbedding", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "_warmup_embedding", lambda *_args, **_kwargs: None)

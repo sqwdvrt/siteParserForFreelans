@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-GO_TOOLCHAIN="${GO_TOOLCHAIN:-go1.25.7}"
+GO_TOOLCHAIN="${GO_TOOLCHAIN:-go1.25.8}"
 GO_GOMODCACHE="${GO_GOMODCACHE:-${ROOT_DIR}/backend/.gomodcache-${GO_TOOLCHAIN}}"
 GO_GOCACHE="${GO_GOCACHE:-${ROOT_DIR}/backend/.gocache-${GO_TOOLCHAIN}}"
 PYTHON_BIN="${PYTHON_BIN:-}"
@@ -63,7 +63,7 @@ fi
 
 run_step "Backend unit tests" bash -lc "GO_TOOLCHAIN='${GO_TOOLCHAIN}' GO_GOMODCACHE='${GO_GOMODCACHE}' GO_GOCACHE='${GO_GOCACHE}' bash ./scripts/go_test_backend.sh ./... -count=1"
 run_step "AI unit tests" ./scripts/pytest_ai.sh -q
-run_step "Telegram bot unit tests" bash -lc "cd telegram-bot && '${PY_BIN}' -m pytest -q"
+run_step "Telegram bot unit tests" ./scripts/pytest_telegram_bot.sh -q
 run_step "Coverage gate" bash -lc "PYTHON_BIN='${PY_BIN}' ./scripts/check_coverage.sh"
 run_step "Monitoring config gate" ./scripts/monitoring_config_check.sh
 run_step "Security baseline gate" bash -lc "PYTHON_BIN='${PY_BIN}' GO_TOOLCHAIN='${GO_TOOLCHAIN}' GO_GOMODCACHE='${GO_GOMODCACHE}' GO_GOCACHE='${GO_GOCACHE}' ./scripts/security_baseline_check.sh"

@@ -24,10 +24,13 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Validate docker-compose.yml
-        run: docker compose --env-file .env.example -f docker-compose.yml --profile workers --profile ai-user-embed config -q
+        run: docker compose --env-file .env.example -f docker-compose.yml --profile workers --profile ai-user-embed --profile ai-user-rematch config -q
 
       - name: Validate docker-compose.prod.yml
-        run: docker compose --env-file .env.production.example -f docker-compose.prod.yml --profile ai-user-embed config -q
+        run: docker compose --env-file .env.production.example -f docker-compose.prod.yml config -q
+
+      - name: Check production config contract
+        run: python3 ./scripts/production_config_contract.py check-consistency
 
   backend-unit:
     runs-on: ubuntu-latest
@@ -38,7 +41,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.7"
+          go-version: "1.25.8"
 
       - name: Run backend unit tests
         run: |
@@ -85,6 +88,28 @@ jobs:
           name: ai-unit-timing
           path: ai-unit-seconds.txt
 
+  browser-service-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: browser-service/requirements-dev.txt
+
+      - name: Install browser-service test dependencies
+        run: python -m pip install -r browser-service/requirements-dev.txt
+
+      - name: Run browser-service unit tests
+        run: ./scripts/pytest_browser_service.sh -q
+
+      - name: Run browser-service integration smoke
+        run: ./scripts/browser_service_integration_smoke.sh
+
   telegram-bot-unit:
     runs-on: ubuntu-latest
     defaults:
@@ -102,13 +127,13 @@ jobs:
           cache-dependency-path: telegram-bot/pyproject.toml
 
       - name: Install Telegram bot dependencies
-        run: python -m pip install "python-dotenv>=1.0" "pytest>=7.0" "pytest-cov>=4.0"
+        run: python -m pip install -e ".[dev]"
 
       - name: Run Telegram bot unit tests
         run: |
           set -euo pipefail
           started_at=$(date +%s)
-          python -m pytest -q
+          ../scripts/pytest_telegram_bot.sh -q
           finished_at=$(date +%s)
           echo $((finished_at - started_at)) > ../telegram-bot-unit-seconds.txt
 
@@ -127,7 +152,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.7"
+          go-version: "1.25.8"
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
@@ -151,6 +176,9 @@ jobs:
 
       - name: Lint ai-service
         run: ruff check ai-service
+
+      - name: Lint browser-service
+        run: ruff check browser-service
 
       - name: Lint telegram-bot
         run: ruff check telegram-bot
@@ -231,7 +259,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.7"
+          go-version: "1.25.8"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -286,7 +314,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.7"
+          go-version: "1.25.8"
 
       - name: Setup Python
         uses: actions/setup-python@v5

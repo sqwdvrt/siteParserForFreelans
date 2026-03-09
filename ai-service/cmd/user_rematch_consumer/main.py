@@ -18,17 +18,22 @@ try:
 except ImportError:
     pass  # python-dotenv не установлен — используй переменные из окружения
 
-from ai_service.adapter.postgres import PostgresFeedbackRepository, PostgresMatchRepository, PostgresUserRepository
+from ai_service.adapter.postgres import (
+    PostgresFeedbackRepository,
+    PostgresMatchRepository,
+    PostgresUserRepository,
+)
 from ai_service.adapter.redis import RedisMatchNotifyQueue
 from ai_service.adapter.redis.user_rematch_queue import RedisUserRematchQueueConsumer
+from ai_service.usecase.process_user_rematch import ProcessUserRematchUseCase
+from ai_service.util.health_server import start_health_server
 from ai_service.util.postgres_pool_config import load_postgres_pool_settings
+from ai_service.util.runtime_env import require_env, resolve_redis_url
 from ai_service.util.transport_security import (
     is_production_env,
     validate_postgres_tls_for_production,
     validate_redis_tls_for_production,
 )
-from ai_service.usecase.process_user_rematch import ProcessUserRematchUseCase
-from ai_service.util.health_server import start_health_server
 
 logging.basicConfig(
     level=logging.INFO,
@@ -153,12 +158,12 @@ def main() -> None:
     atexit.register(_cleanup_ready_file, ready_file)
 
     app_env = os.getenv("APP_ENV", "development")
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        logger.error("DATABASE_URL not set")
+    try:
+        db_url = require_env("DATABASE_URL", os.getenv("DATABASE_URL"))
+        redis_url = resolve_redis_url(app_env, os.getenv("REDIS_URL"))
+    except ValueError as e:
+        logger.error("%s", e)
         sys.exit(1)
-
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     if is_production_env(app_env):
         try:
             validate_postgres_tls_for_production("DATABASE_URL", db_url)

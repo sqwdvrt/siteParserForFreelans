@@ -10,7 +10,6 @@ from ai_service.port.feedback_repository import FeedbackSignal
 from ai_service.port.match_repository import MatchCandidate
 from ai_service.util.feedback_adjuster import adjust_candidates, apply_signal
 
-
 # ── apply_signal ──────────────────────────────────────────────────────────────
 
 

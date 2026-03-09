@@ -107,7 +107,14 @@ class PostgresPendingJobsRepository(PooledPostgresRepository, PendingJobsReposit
                 reason_codes,
                 trace_id,
             )
-            for (user_id, job_id), (match_score, raw_similarity, final_score, ranker_version, reason_codes, trace_id) in merged.items()
+            for (user_id, job_id), (
+                match_score,
+                raw_similarity,
+                final_score,
+                ranker_version,
+                reason_codes,
+                trace_id,
+            ) in merged.items()
         ]
         with self._conn() as conn:
             with conn.cursor() as cur:

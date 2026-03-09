@@ -32,7 +32,9 @@ class PostgresJobRepository(PooledPostgresRepository, JobRepository):
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 cur.execute(
                     """
-                    SELECT id, source, url, title, description, COALESCE(budget, '') AS budget, raw_html, posted_at, created_at
+                    SELECT
+                        id, source, url, title, description, COALESCE(budget, '') AS budget,
+                        raw_html, posted_at, created_at
                     FROM jobs
                     WHERE id = %s
                     """,
