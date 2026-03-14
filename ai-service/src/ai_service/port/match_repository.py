@@ -13,10 +13,14 @@ class MatchCandidate:
     user_id: int
     job_id: int
     match_score: float
+    rerank_score: float = 0.0
     raw_similarity: float = 0.0
     final_score: float = 0.0
+    profile_text: str = ""
     why_it_fits: str = ""
     trace_id: str = ""
+    ranker_version: str = ""
+    reason_codes: tuple[str, ...] = ()
 
 
 class MatchRepository(ABC):
@@ -29,6 +33,7 @@ class MatchRepository(ABC):
         job_id: int,
         threshold: float,
         limit: int = 100,
+        allowed_user_ids: list[int] | None = None,
     ) -> list[MatchCandidate]:
         """
         Найти пользователей для job по similarity.

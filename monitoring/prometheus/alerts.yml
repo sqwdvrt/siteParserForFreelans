@@ -64,6 +64,69 @@ groups:
           summary: "backend-notifier is down"
           description: "Prometheus cannot scrape backend-notifier /metrics for more than 2 minutes."
 
+      - alert: SiteParserAiServiceDown
+        expr: up{job="ai-service"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: ai-service
+        annotations:
+          summary: "ai-service is down"
+          description: "Prometheus cannot scrape ai-service /metrics for more than 5 minutes."
+
+      - alert: SiteParserACConsumerDown
+        expr: up{job="ai-ac-consumer"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: ai-ac-consumer
+        annotations:
+          summary: "ai-ac-consumer is down"
+          description: "Prometheus cannot scrape ai-ac-consumer /metrics for more than 5 minutes."
+
+      - alert: SiteParserUserEmbedDown
+        expr: up{job="ai-user-embed"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: ai-user-embed
+        annotations:
+          summary: "ai-user-embed is down"
+          description: "Prometheus cannot scrape ai-user-embed /metrics for more than 5 minutes."
+
+      - alert: SiteParserUserRematchDown
+        expr: up{job="ai-user-rematch"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: ai-user-rematch
+        annotations:
+          summary: "ai-user-rematch is down"
+          description: "Prometheus cannot scrape ai-user-rematch /metrics for more than 5 minutes."
+
+      - alert: SiteParserCrawlerVolumeLow
+        expr: |
+          increase(siteparser_crawler_jobs_scraped_total{job="backend-crawler"}[24h]) < 10
+        for: 2h
+        labels:
+          severity: warning
+          service: backend-crawler
+        annotations:
+          summary: "Crawler scraped unusually few jobs"
+          description: "crawler_jobs_scraped_total increased by fewer than 10 jobs over the last 24 hours."
+
+      - alert: SiteParserFeedbackPositiveRatioLow
+        expr: |
+          siteparser_feedback_recent_total{job="backend-api"} >= 10
+          and siteparser_feedback_positive_ratio{job="backend-api"} < 0.40
+        for: 6h
+        labels:
+          severity: warning
+          service: recommendations
+        annotations:
+          summary: "Feedback positive ratio is low"
+          description: "feedback_positive_ratio stayed below 0.40 for 6 hours; recommendation quality may be degraded."
+
   - name: siteparser-infra
     rules:
       - alert: SiteParserRedisExporterDown
@@ -169,7 +232,7 @@ groups:
   - name: siteparser-queues
     rules:
       # Queue metrics rely on redis-exporter --check-keys for:
-      # ai-process, user-embed, ac-batch, match-notify and corresponding :processing/:dlq keys.
+      # ai-process, user-embed, user-rematch, ac-batch, match-notify and corresponding :processing/:dlq keys.
       - alert: SiteParserAiProcessBacklogHigh
         expr: |
           sum by (job, instance) (redis_key_size{job="redis-exporter", key="ai-process"}) > 1000
@@ -191,6 +254,17 @@ groups:
         annotations:
           summary: "user-embed backlog is high"
           description: "Queue user-embed has more than 1000 messages for 10 minutes."
+
+      - alert: SiteParserUserRematchBacklogHigh
+        expr: |
+          sum by (job, instance) (redis_key_size{job="redis-exporter", key="user-rematch"}) > 1000
+        for: 10m
+        labels:
+          severity: warning
+          service: user-rematch
+        annotations:
+          summary: "user-rematch backlog is high"
+          description: "Queue user-rematch has more than 1000 messages for 10 minutes."
 
       - alert: SiteParserACBatchBacklogHigh
         expr: |
@@ -214,27 +288,38 @@ groups:
           summary: "match-notify backlog is high"
           description: "Queue match-notify has more than 1000 messages for 10 minutes."
 
-      - alert: SiteParserAnyDLQNotEmpty
+      - alert: SiteParserPendingACJobsTableSizeHigh
         expr: |
-          sum by (job, instance) (redis_key_size{job="redis-exporter", key=~".*:dlq"}) > 0
+          max by (job, instance) (ai_pending_ac_jobs_rows{job="ai-ac-consumer", state="unprocessed"}) > 5000
+        for: 15m
+        labels:
+          severity: warning
+          service: ai-ac-consumer
+        annotations:
+          summary: "pending_ac_jobs backlog is high"
+          description: "Unprocessed rows in pending_ac_jobs exceeded 5000 for 15 minutes."
+
+      - alert: SiteParserDLQNotEmpty
+        expr: |
+          redis_key_size{job="redis-exporter", key=~".*:dlq"} > 0
         for: 5m
         labels:
           severity: warning
           service: queues-dlq
         annotations:
-          summary: "DLQ is not empty"
-          description: "At least one DLQ has messages for more than 5 minutes."
+          summary: "DLQ {{ $labels.key }} is not empty"
+          description: "DLQ {{ $labels.key }} has {{ printf \"%.0f\" $value }} messages for more than 5 minutes."
 
       - alert: SiteParserDLQGrowing
         expr: |
-          sum by (job, instance) (delta(redis_key_size{job="redis-exporter", key=~".*:dlq"}[10m])) > 0
+          delta(redis_key_size{job="redis-exporter", key=~".*:dlq"}[10m]) > 0
         for: 10m
         labels:
           severity: warning
           service: queues-dlq
         annotations:
-          summary: "DLQ size is growing"
-          description: "Total DLQ size increased over the last 10 minutes."
+          summary: "DLQ {{ $labels.key }} is growing"
+          description: "DLQ {{ $labels.key }} increased by {{ printf \"%.0f\" $value }} messages over the last 10 minutes."
 
       - alert: SiteParserAiProcessStall
         expr: |
@@ -286,6 +371,23 @@ groups:
         annotations:
           summary: "ac-batch consumer stall suspected"
           description: "ac-batch backlog exists but processing queue stays empty for 15 minutes."
+
+      - alert: SiteParserUserRematchStall
+        expr: |
+          (
+            sum by (job, instance) (redis_key_size{job="redis-exporter", key="user-rematch"}) > 100
+          )
+          and on(job, instance)
+          (
+            sum by (job, instance) (redis_key_size{job="redis-exporter", key="user-rematch:processing"}) == 0
+          )
+        for: 15m
+        labels:
+          severity: warning
+          service: ai-user-rematch
+        annotations:
+          summary: "user-rematch consumer stall suspected"
+          description: "user-rematch backlog exists but processing queue stays empty for 15 minutes."
 
   - name: siteparser-ai-quality
     rules:

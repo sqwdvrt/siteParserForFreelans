@@ -22,8 +22,8 @@ def test_execute_upserts_all_matches() -> None:
 
     pending_repo.upsert_many.assert_called_once_with(
         [
-            (10, 1, 0.85, 0.85, 0.85, "", [], ""),
-            (20, 1, 0.72, 0.72, 0.72, "", [], ""),
+            (10, 1, 0.85, 0.85, 0.85, 0.0, 1.0, 0.85, "", [], ""),
+            (20, 1, 0.72, 0.72, 0.72, 0.0, 1.0, 0.72, "", [], ""),
         ]
     )
 
@@ -54,7 +54,7 @@ def test_execute_passes_trace_id_to_repository() -> None:
 
     pending_repo.upsert_many.assert_called_once_with(
         [
-            (10, 1, 0.85, 0.85, 0.85, "", [], "trace-ac-1"),
+            (10, 1, 0.85, 0.85, 0.85, 0.0, 1.0, 0.85, "", [], "trace-ac-1"),
         ]
     )
 
@@ -67,6 +67,7 @@ def test_execute_passes_extended_match_fields_to_repository() -> None:
             user_id=10,
             job_id=1,
             match_score=0.85,
+            rerank_score=0.78,
             raw_similarity=0.81,
             final_score=0.9,
             trace_id="trace-ac-1",
@@ -77,6 +78,6 @@ def test_execute_passes_extended_match_fields_to_repository() -> None:
 
     pending_repo.upsert_many.assert_called_once_with(
         [
-            (10, 1, 0.85, 0.81, 0.9, "", [], "trace-ac-1"),
+            (10, 1, 0.85, 0.78, 0.81, 0.0, 1.0, 0.9, "", [], "trace-ac-1"),
         ]
     )

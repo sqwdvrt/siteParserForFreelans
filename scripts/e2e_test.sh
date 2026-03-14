@@ -5,6 +5,8 @@
 
 set -e
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/lib/release_smoke_payloads.sh
+source scripts/lib/release_smoke_payloads.sh
 
 # Keep caller-provided overrides before loading .env.
 CLI_TELEGRAM_ID="${TELEGRAM_ID-}"
@@ -151,7 +153,8 @@ echo "✓ User в БД"
 echo ""
 echo "=== 9.8: PUT /profile, crawl, AI (job_embeddings, matching) ==="
 # PUT /profile
-PUT_BODY='{"profile_text":"Python developer, 5 years"}'
+PROFILE_TEXT="$(load_release_smoke_profile_text)"
+PUT_BODY="$(build_release_smoke_profile_body "$PROFILE_TEXT")"
 PUT_PATH="/users/$USER_ID/profile"
 PUT_TS="$(date +%s)"
 PUT_NONCE="$(generate_nonce)"

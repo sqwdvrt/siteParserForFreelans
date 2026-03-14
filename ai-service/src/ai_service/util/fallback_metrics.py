@@ -26,6 +26,7 @@ _PG_POOL_MAX_METRIC = "ai_pg_pool_connections_max"
 
 _primary_counters: dict[tuple[str, str], int] = defaultdict(int)
 _fallback_counters: dict[tuple[str, str], int] = defaultdict(int)
+_custom_metrics: dict[str, dict[str, object]] = {}
 _counters_lock = threading.Lock()
 
 # Pool metrics registry: pool_name → callable returning PoolStats
@@ -97,6 +98,27 @@ def reset_counters_for_tests() -> None:
     with _counters_lock:
         _primary_counters.clear()
         _fallback_counters.clear()
+        _custom_metrics.clear()
+
+
+def set_gauge(
+    name: str,
+    help_text: str,
+    value: float,
+    *,
+    labels: dict[str, str] | None = None,
+) -> None:
+    _set_custom_metric(name, "gauge", help_text, float(value), labels=labels)
+
+
+def increment_counter(
+    name: str,
+    help_text: str,
+    amount: float = 1.0,
+    *,
+    labels: dict[str, str] | None = None,
+) -> None:
+    _set_custom_metric(name, "counter", help_text, float(amount), labels=labels, accumulate=True)
 
 
 def render_prometheus_text() -> str:
@@ -126,6 +148,21 @@ def render_prometheus_text() -> str:
             f'{_FALLBACK_METRIC_NAME}{{pipeline="{pipeline_label}",'
             f'reason="{reason_label}"}} {value}'
         )
+
+    custom_metrics_snapshot = _snapshot_custom_metrics()
+    for metric_name, spec in sorted(custom_metrics_snapshot.items()):
+        lines.extend([
+            f"# HELP {metric_name} {spec['help']}",
+            f"# TYPE {metric_name} {spec['type']}",
+        ])
+        samples = spec["samples"]
+        assert isinstance(samples, dict)
+        for labels, value in sorted(samples.items()):
+            label_text = _format_labels(labels)
+            if label_text:
+                lines.append(f"{metric_name}{{{label_text}}} {value}")
+            else:
+                lines.append(f"{metric_name} {value}")
 
     # PostgreSQL connection pool gauges
     pool_snapshot = snapshot_pool_stats()
@@ -214,6 +251,63 @@ def _normalize_label_value(raw: str) -> str:
 
 def _escape_label_value(value: str) -> str:
     return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+def _normalize_labels(labels: dict[str, str] | None) -> tuple[tuple[str, str], ...]:
+    if not labels:
+        return ()
+    normalized: list[tuple[str, str]] = []
+    for key, value in sorted(labels.items()):
+        normalized.append((_normalize_label_value(key), _normalize_label_value(value)))
+    return tuple(normalized)
+
+
+def _format_labels(labels: tuple[tuple[str, str], ...]) -> str:
+    if not labels:
+        return ""
+    return ",".join(f'{key}="{_escape_label_value(value)}"' for key, value in labels)
+
+
+def _set_custom_metric(
+    name: str,
+    metric_type: str,
+    help_text: str,
+    value: float,
+    *,
+    labels: dict[str, str] | None = None,
+    accumulate: bool = False,
+) -> None:
+    normalized_name = str(name).strip()
+    if not normalized_name:
+        return
+    label_key = _normalize_labels(labels)
+    with _counters_lock:
+        spec = _custom_metrics.setdefault(
+            normalized_name,
+            {
+                "type": metric_type,
+                "help": str(help_text).strip() or normalized_name,
+                "samples": {},
+            },
+        )
+        samples = spec["samples"]
+        assert isinstance(samples, dict)
+        if accumulate:
+            samples[label_key] = float(samples.get(label_key, 0.0)) + value
+        else:
+            samples[label_key] = value
+
+
+def _snapshot_custom_metrics() -> dict[str, dict[str, object]]:
+    with _counters_lock:
+        return {
+            name: {
+                "type": spec["type"],
+                "help": spec["help"],
+                "samples": dict(spec["samples"]),
+            }
+            for name, spec in _custom_metrics.items()
+        }
 
 
 class _MetricsHandler(BaseHTTPRequestHandler):

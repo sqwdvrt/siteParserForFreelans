@@ -18,24 +18,23 @@ try:
 except ImportError:
     pass  # python-dotenv is optional in container/runtime envs
 
-from ai_service.adapter.fallback import FallbackClassifier
-from ai_service.adapter.gemini import GeminiClassifier
-from ai_service.adapter.ollama import OllamaClassifier
 from ai_service.adapter.postgres import (
+    PostgresFeedbackRepository,
+    PostgresFilterEventRepository,
     PostgresJobRepository,
     PostgresMatchRepository,
     PostgresPendingJobsRepository,
+    PostgresUserRepository,
 )
 from ai_service.adapter.redis import RedisQueueConsumer
-from ai_service.adapter.rule_based import RuleBasedClassifier
-from ai_service.adapter.sentence_transformers import SentenceTransformerEmbedding
+from ai_service.adapter.sentence_transformers import CrossEncoderReranker, SentenceTransformerEmbedding
 from ai_service.tracing.setup import init_tracer
 from ai_service.usecase.accumulate_matches import AccumulateMatchesUseCase
 from ai_service.usecase.consumer_loop import run_consumer
 from ai_service.usecase.process_job import ProcessJobUseCase
 from ai_service.util.fallback_metrics import start_metrics_server_from_env
-from ai_service.util.ollama_probe import probe_ollama
 from ai_service.util.postgres_pool_config import load_postgres_pool_settings
+from ai_service.util.runtime_env import require_env, resolve_redis_url
 from ai_service.util.transport_security import (
     is_production_env,
     validate_postgres_tls_for_production,
@@ -127,12 +126,12 @@ def main() -> None:
     atexit.register(_cleanup_ready_file, ready_file)
 
     app_env = os.getenv("APP_ENV", "development")
-    db_url = os.getenv("DATABASE_URL")
-    if not db_url:
-        logger.error("DATABASE_URL not set")
+    try:
+        db_url = require_env("DATABASE_URL", os.getenv("DATABASE_URL"))
+        redis_url = resolve_redis_url(app_env, os.getenv("REDIS_URL"))
+    except ValueError as e:
+        logger.error("%s", e)
         sys.exit(1)
-
-    redis_url = os.getenv("REDIS_URL", "redis://localhost:6379/0")
     if is_production_env(app_env):
         try:
             validate_postgres_tls_for_production("DATABASE_URL", db_url)
@@ -152,50 +151,39 @@ def main() -> None:
 
     queue_name = os.getenv("AI_QUEUE", "ai-process")
     model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    rerank_model = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-base")
+    rerank_threshold = float(os.getenv("RERANK_THRESHOLD", "0.55"))
+    rerank_top_k = int(os.getenv("RERANK_TOP_K", "10"))
     threshold = float(os.getenv("SIMILARITY_THRESHOLD", "0.7"))
-    max_matches = int(os.getenv("MAX_MATCHES_PER_JOB", "20"))
-    llm_provider = os.getenv("LLM_PROVIDER", "ollama").lower()
-
-    if llm_provider == "gemini":
-        gemini_api_key = os.getenv("GEMINI_API_KEY", "")
-        if not gemini_api_key:
-            logger.error("GEMINI_API_KEY not set (required when LLM_PROVIDER=gemini)")
-            sys.exit(1)
-        gemini_model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
-        gemini_timeout = int(os.getenv("GEMINI_TIMEOUT_SEC", "20"))
-        classifier_primary = GeminiClassifier(api_key=gemini_api_key, model=gemini_model, timeout_sec=gemini_timeout)
-        logger.info("classifier provider=gemini model=%s", gemini_model)
-    else:
-        ollama_url = os.getenv("OLLAMA_URL", "http://ollama:11434")
-        ollama_model = os.getenv("OLLAMA_MODEL", "llama3.2:3b-instruct-q4_K_M")
-        ollama_timeout = int(os.getenv("OLLAMA_TIMEOUT_SEC", "30"))
-        ollama_required = os.getenv("OLLAMA_REQUIRED", "1" if is_production_env(app_env) else "0") == "1"
-        if not probe_ollama(
-            ollama_url,
-            required=ollama_required,
-            required_models=[ollama_model],
-        ) and ollama_required:
-            sys.exit(1)
-        classifier_primary = OllamaClassifier(base_url=ollama_url, model=ollama_model, timeout_sec=ollama_timeout)
-        logger.info("classifier provider=ollama url=%s", ollama_url)
+    max_matches = int(os.getenv("MAX_MATCHES_PER_JOB", "50"))
 
     repo = PostgresJobRepository(db_url, **pg_pool_kwargs)
+    user_repo = PostgresUserRepository(db_url, **pg_pool_kwargs)
     match_repo = PostgresMatchRepository(db_url, **pg_pool_kwargs)
     pending_repo = PostgresPendingJobsRepository(db_url, **pg_pool_kwargs)
+    feedback_repo = PostgresFeedbackRepository(db_url, **pg_pool_kwargs)
+    filter_event_repo = PostgresFilterEventRepository(db_url, **pg_pool_kwargs)
     accumulate_matches = AccumulateMatchesUseCase(pending_repo)
     embedding = SentenceTransformerEmbedding(model_name)
+    reranker = CrossEncoderReranker(rerank_model)
     if _warmup_enabled():
         _warmup_embedding(embedding)
     else:
         logger.info("embedding warmup disabled by %s", WARMUP_ENABLED_ENV)
-    classifier = FallbackClassifier(
-        primary=classifier_primary,
-        fallback=RuleBasedClassifier(),
-    )
     process_job = ProcessJobUseCase(
-        repo, embedding, classifier, match_repo,
+        repo,
+        embedding,
+        classifier=None,
+        match_repo=match_repo,
         accumulate_matches=accumulate_matches,
-        similarity_threshold=threshold, max_matches_per_job=max_matches,
+        reranker=reranker,
+        similarity_threshold=threshold,
+        max_matches_per_job=max_matches,
+        rerank_threshold=rerank_threshold,
+        rerank_top_k=rerank_top_k,
+        feedback_repo=feedback_repo,
+        user_repo=user_repo,
+        filter_event_repo=filter_event_repo,
     )
     init_tracer("site-parser-ai")
     queue = RedisQueueConsumer(redis_url, queue_name)

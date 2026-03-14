@@ -1,7 +1,7 @@
 {
   "tool_name": "Bash",
-  "tool_input_preview": "{\"command\":\"find \\\"/Users/sqwdvrt/VS Code/siteParserForFreelans/backend/internal/port\\\" -name \\\"*.go\\\" | xargs grep -l \\\"BatchJobItem\\\\|NotifyPayload\\\\|BatchNotifyItem\\\" 2>/dev/null\"}",
-  "error": "Exit code 1",
-  "timestamp": "2026-03-06T21:20:00.670Z",
+  "tool_input_preview": "{\"command\":\"find \\\"/Users/sqwdvrt/VS Code/siteParserForFreelans\\\" -maxdepth 3 -name \\\"railway.json\\\" 2>/dev/null | xargs cat\"}",
+  "error": "Exit code 1\ncat: /Users/sqwdvrt/VS: No such file or directory\ncat: Code/siteParserForFreelans/ai-service/railway.json: No such file or directory\ncat: /Users/sqwdvrt/VS: No such file or directory\ncat: Code/siteParserForFreelans/telegram-bot/railway.json: No such file or directory\ncat: /Users/sqwdvrt/VS: No such file or directory\ncat: Code/siteParserForFreelans/backend/railway.json: No such file or directory\ncat: /Users/sqwdvrt/VS: No such file or directory\ncat: Code/siteParserForFreelans/browser-...",
+  "timestamp": "2026-03-08T14:55:07.569Z",
   "retry_count": 1
 }

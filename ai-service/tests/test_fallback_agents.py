@@ -77,6 +77,33 @@ def test_fallback_actor_uses_fallback_when_primary_raises() -> None:
     fallback.select.assert_called_once()
 
 
+def test_fallback_actor_explain_batch_returns_primary_when_usable() -> None:
+    primary = MagicMock()
+    fallback = MagicMock()
+    primary.explain_batch.return_value = ["fit A", "fit B"]
+    fallback.explain_batch.return_value = []
+    agent = FallbackActorAgent(primary=primary, fallback=fallback)
+
+    result = agent.explain_batch(user=_user(), candidates=_candidates())
+
+    assert result == ["fit A", "fit B"]
+    primary.explain_batch.assert_called_once()
+    fallback.explain_batch.assert_not_called()
+
+
+def test_fallback_actor_explain_batch_uses_fallback_on_invalid_primary() -> None:
+    primary = MagicMock()
+    fallback = MagicMock()
+    primary.explain_batch.return_value = ["only one"]
+    fallback.explain_batch.return_value = ["fit A", "fit B"]
+    agent = FallbackActorAgent(primary=primary, fallback=fallback)
+
+    result = agent.explain_batch(user=_user(), candidates=_candidates())
+
+    assert result == ["fit A", "fit B"]
+    fallback.explain_batch.assert_called_once()
+
+
 def test_fallback_critic_returns_primary_result() -> None:
     primary = MagicMock()
     fallback = MagicMock()

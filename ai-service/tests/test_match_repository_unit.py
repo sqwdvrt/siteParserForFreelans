@@ -17,6 +17,11 @@ def test_invalid_embedding_returns_empty() -> None:
     assert repo.find_users_for_job([0.1] * 10, job_id, 0.5) == []
 
 
+def test_find_users_for_job_empty_allowed_user_ids_returns_empty() -> None:
+    repo = PostgresMatchRepository("postgresql://fake/fake")
+    assert repo.find_users_for_job([0.1] * 384, job_id=1, threshold=0.5, allowed_user_ids=[]) == []
+
+
 def test_find_jobs_for_user_invalid_embedding_returns_empty() -> None:
     repo = PostgresMatchRepository("postgresql://fake/fake")
     assert repo.find_jobs_for_user(None, user_id=1, threshold=0.5) == []  # type: ignore[arg-type]

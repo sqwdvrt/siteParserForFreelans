@@ -22,3 +22,12 @@ class ActorAgent(ABC):
     ) -> list[RankedJob]:
         """Select top-N jobs for the user based on profile and critique."""
         ...
+
+    @abstractmethod
+    def explain_batch(
+        self,
+        user: User,
+        candidates: list[Job],
+    ) -> list[str]:
+        """Generate why_it_fits explanations for candidates in input order."""
+        ...

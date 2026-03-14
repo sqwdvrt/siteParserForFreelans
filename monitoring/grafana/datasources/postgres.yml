@@ -1,0 +1,16 @@
+apiVersion: 1
+
+datasources:
+  - name: Product Analytics Postgres
+    type: postgres
+    uid: postgres
+    url: postgres:5432
+    user: ${POSTGRES_USER}
+    database: ${POSTGRES_DB}
+    secureJsonData:
+      password: ${POSTGRES_PASSWORD}
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
+    editable: false

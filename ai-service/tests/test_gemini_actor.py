@@ -124,3 +124,29 @@ def test_empty_jobs_returns_empty_without_api_call() -> None:
     result = actor.select(_user(), [])
 
     assert result == []
+
+
+@patch("urllib.request.urlopen")
+def test_explain_batch_returns_explanations_in_order(mock_open) -> None:
+    _mock_urlopen(
+        mock_open,
+        _gemini_response(json.dumps({"explanations": ["Python match", "Django match"]})),
+    )
+    actor = GeminiActorAgent(api_key="test-key", model="gemini-1.5-flash")
+
+    result = actor.explain_batch(_user(), _jobs()[:2])
+
+    assert result == ["Python match", "Django match"]
+
+
+@patch("urllib.request.urlopen")
+def test_explain_batch_invalid_length_returns_empty(mock_open) -> None:
+    _mock_urlopen(
+        mock_open,
+        _gemini_response(json.dumps({"explanations": ["only one"]})),
+    )
+    actor = GeminiActorAgent(api_key="test-key", model="gemini-1.5-flash")
+
+    result = actor.explain_batch(_user(), _jobs()[:2])
+
+    assert result == []

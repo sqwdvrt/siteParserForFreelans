@@ -1,0 +1,229 @@
+{
+  "required_env": {
+    "APP_ENV": {
+      "type": "enum",
+      "allowed": [
+        "production"
+      ],
+      "documentation": "active"
+    },
+    "DATABASE_URL": {
+      "type": "postgres_url",
+      "documentation": "active"
+    },
+    "REDIS_URL": {
+      "type": "redis_url",
+      "documentation": "active"
+    },
+    "API_AUTH_TOKEN": {
+      "type": "secret",
+      "min_length": 32,
+      "documentation": "active"
+    },
+    "API_USER_HMAC_SECRET": {
+      "type": "secret",
+      "min_length": 32,
+      "documentation": "active"
+    },
+    "ADMIN_AUTH_TOKEN": {
+      "type": "secret",
+      "min_length": 32,
+      "documentation": "active"
+    },
+    "API_TLS_CERT_HOST_PATH": {
+      "type": "nonempty",
+      "documentation": "active"
+    },
+    "API_TLS_KEY_HOST_PATH": {
+      "type": "nonempty",
+      "documentation": "active"
+    },
+    "TELEGRAM_BOT_TOKEN": {
+      "type": "secret",
+      "min_length": 20,
+      "documentation": "active"
+    },
+    "API_URL": {
+      "type": "https_url",
+      "documentation": "active"
+    },
+    "LLM_PROVIDER": {
+      "type": "enum",
+      "allowed": [
+        "gemini",
+        "ollama"
+      ],
+      "documentation": "active"
+    }
+  },
+  "conditional_env": {
+    "LLM_PROVIDER": {
+      "gemini": {
+        "GEMINI_API_KEY": {
+          "type": "nonempty",
+          "documentation": "active"
+        }
+      },
+      "ollama": {
+        "OLLAMA_URL": {
+          "type": "nonempty",
+          "documentation": "commented_or_active"
+        }
+      }
+    }
+  },
+  "compose_contract": {
+    "backend-migrate": {
+      "must_have_env_file": true,
+      "must_reference": [
+        "DATABASE_URL"
+      ]
+    },
+    "backend-api": {
+      "must_have_env_file": true,
+      "must_reference": [
+        "DATABASE_URL",
+        "REDIS_URL",
+        "API_ADDR",
+        "API_PORT",
+        "API_BIND_IP",
+        "API_TLS_CERT_FILE",
+        "API_TLS_KEY_FILE",
+        "API_TLS_CERT_HOST_PATH",
+        "API_TLS_KEY_HOST_PATH"
+      ]
+    },
+    "backend-crawler": {
+      "must_have_env_file": true,
+      "must_reference": [
+        "DATABASE_URL",
+        "REDIS_URL"
+      ]
+    },
+    "backend-notifier": {
+      "must_have_env_file": true,
+      "must_reference": [
+        "DATABASE_URL",
+        "REDIS_URL"
+      ]
+    },
+    "ai-service": {
+      "must_have_env_file": true,
+      "must_reference": [
+        "DATABASE_URL",
+        "REDIS_URL"
+      ]
+    },
+    "ai-user-embed": {
+      "must_have_env_file": true,
+      "must_reference": [
+        "DATABASE_URL",
+        "REDIS_URL"
+      ]
+    },
+    "ai-user-rematch": {
+      "must_have_env_file": true,
+      "must_reference": [
+        "DATABASE_URL",
+        "REDIS_URL"
+      ]
+    },
+    "ai-ac-consumer": {
+      "must_have_env_file": true,
+      "must_reference": [
+        "DATABASE_URL",
+        "REDIS_URL"
+      ]
+    },
+    "telegram-bot": {
+      "must_have_env_file": true,
+      "must_reference": [
+        "API_URL"
+      ]
+    }
+  },
+  "runtime_contract": [
+    {
+      "file": "backend/cmd/api/main.go",
+      "must_contain": [
+        "DATABASE_URL not set",
+        "API_AUTH_TOKEN not set",
+        "API_USER_HMAC_SECRET not set",
+        "ADMIN_AUTH_TOKEN not set",
+        "ValidatePostgresTLSForProduction(\"DATABASE_URL\"",
+        "ValidateRedisTLSForProduction(\"REDIS_URL\"",
+        "APP_ENV=production requires API TLS"
+      ]
+    },
+    {
+      "file": "backend/cmd/crawler/main.go",
+      "must_contain": [
+        "DATABASE_URL not set",
+        "REDIS_URL not set",
+        "ValidatePostgresTLSForProduction(\"DATABASE_URL\"",
+        "ValidateRedisTLSForProduction(\"REDIS_URL\""
+      ]
+    },
+    {
+      "file": "backend/cmd/notifier/main.go",
+      "must_contain": [
+        "DATABASE_URL not set",
+        "REDIS_URL not set",
+        "TELEGRAM_BOT_TOKEN not set",
+        "ValidatePostgresTLSForProduction(\"DATABASE_URL\"",
+        "ValidateRedisTLSForProduction(\"REDIS_URL\"",
+        "ValidateSecret(\"TELEGRAM_BOT_TOKEN\""
+      ]
+    },
+    {
+      "file": "ai-service/src/ai_service/util/runtime_env.py",
+      "must_contain": [
+        "REDIS_URL not set",
+        "LLM_PROVIDER not set",
+        "LLM_PROVIDER must be 'gemini' or 'ollama'"
+      ]
+    },
+    {
+      "file": "ai-service/cmd/consumer/main.py",
+      "must_contain": [
+        "require_env",
+        "resolve_redis_url",
+        "resolve_llm_provider",
+        "GEMINI_API_KEY not set (required when LLM_PROVIDER=gemini)"
+      ]
+    },
+    {
+      "file": "ai-service/cmd/ac_consumer/main.py",
+      "must_contain": [
+        "require_env",
+        "resolve_redis_url",
+        "resolve_llm_provider",
+        "GEMINI_API_KEY not set (required when LLM_PROVIDER=gemini)"
+      ]
+    },
+    {
+      "file": "ai-service/cmd/user_embed_consumer/main.py",
+      "must_contain": [
+        "require_env",
+        "resolve_redis_url"
+      ]
+    },
+    {
+      "file": "ai-service/cmd/user_rematch_consumer/main.py",
+      "must_contain": [
+        "require_env",
+        "resolve_redis_url"
+      ]
+    },
+    {
+      "file": "telegram-bot/main.py",
+      "must_contain": [
+        "TELEGRAM_BOT_TOKEN",
+        "API_AUTH_TOKEN",
+        "API_USER_HMAC_SECRET",
+        "API_URL not set in production",
+        "_validate_api_url_for_production"
+      ]
+    }
+  ]
+}

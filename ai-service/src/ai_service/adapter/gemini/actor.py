@@ -36,6 +36,24 @@ Respond with JSON:
 {{"selected": [{{"job_id": <int>, "rank": <int 1=best>, "why_it_fits": "<string>", "confidence": <0.0-1.0>}}]}}
 """.strip()
 
+EXPLAIN_SYSTEM_PROMPT = """
+You are a job matching expert. Given a freelancer's profile and preselected jobs,
+write one concise why_it_fits explanation per job. Respond ONLY with valid JSON.
+""".strip()
+
+EXPLAIN_USER_TEMPLATE = """
+Freelancer profile:
+{profile}
+
+Preselected jobs in fixed order:
+{jobs_block}
+
+Write exactly {job_count} short explanations in the same order as the jobs above.
+
+Respond with JSON:
+{{"explanations": ["...", "..."]}}
+""".strip()
+
 
 def _to_int(value: object, default: int) -> int:
     try:
@@ -104,6 +122,34 @@ class GeminiActorAgent(ActorAgent):
         self._breaker.record_success()
         return self._parse_response(raw, candidates)
 
+    def explain_batch(
+        self,
+        user: User,
+        candidates: list[Job],
+    ) -> list[str]:
+        if not candidates:
+            return []
+
+        jobs_block = "\n".join(
+            f"{index + 1}. [{job.title}] {(job.description or '')[:300]}"
+            for index, job in enumerate(candidates)
+        )
+        prompt = EXPLAIN_USER_TEMPLATE.format(
+            profile=user.profile_text or "(no profile)",
+            jobs_block=jobs_block,
+            job_count=len(candidates),
+        )
+        if not self._breaker.allow_request():
+            logger.warning("actor: Gemini explain_batch skipped, circuit breaker open")
+            return []
+        try:
+            raw = self._call_gemini(EXPLAIN_SYSTEM_PROMPT, prompt)
+        except Exception:
+            self._breaker.record_failure()
+            raise
+        self._breaker.record_success()
+        return self._parse_explanations(raw, len(candidates))
+
     def _call_gemini(self, system_prompt: str, user_prompt: str) -> str:
         url = f"{GEMINI_API_BASE}/{self._model}:generateContent"
         payload = {
@@ -168,3 +214,23 @@ class GeminiActorAgent(ActorAgent):
                 )
             )
         return sorted(result, key=lambda job: job.rank)
+
+    def _parse_explanations(self, raw: str, expected_count: int) -> list[str]:
+        try:
+            data = json.loads(raw)
+            explanations = data.get("explanations", [])
+            if not isinstance(explanations, list):
+                return []
+        except (json.JSONDecodeError, AttributeError):
+            logger.error("actor: invalid explanations JSON from Gemini: %s", raw[:200])
+            return []
+
+        cleaned = [str(item).strip()[:500] for item in explanations]
+        if len(cleaned) != expected_count:
+            logger.warning(
+                "actor: explain_batch length mismatch from Gemini expected=%d actual=%d",
+                expected_count,
+                len(cleaned),
+            )
+            return []
+        return cleaned

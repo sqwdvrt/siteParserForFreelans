@@ -6,6 +6,8 @@ import importlib.util
 import threading
 from pathlib import Path
 
+import pytest
+
 
 def _load_user_embed_consumer_main_module():
     module_path = Path(__file__).resolve().parents[1] / "cmd" / "user_embed_consumer" / "main.py"
@@ -22,6 +24,18 @@ def test_shutdown_grace_sec_invalid_env_fallback(monkeypatch) -> None:
     monkeypatch.setenv(module.SHUTDOWN_GRACE_SEC_ENV, "bad-value")
 
     assert module._shutdown_grace_sec() == module.DEFAULT_SHUTDOWN_GRACE_SEC
+
+
+def test_main_rejects_missing_redis_url_in_production(monkeypatch, tmp_path: Path) -> None:
+    module = _load_user_embed_consumer_main_module()
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db?sslmode=require")
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
+
+    with pytest.raises(SystemExit):
+        module.main()
 
 
 def test_main_starts_metrics_server_from_env(monkeypatch, tmp_path: Path) -> None:

@@ -1,0 +1,212 @@
+{
+  "uid": "siteparser-product",
+  "title": "SiteParser — Product Analytics",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-30d", "to": "now" },
+  "timepicker": {},
+  "panels": [
+    {
+      "id": 1,
+      "title": "Registrations Today",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*)::bigint AS value\nFROM product_events\nWHERE event_type = 'user_registered'\n  AND (created_at AT TIME ZONE 'Europe/Moscow')::date = (NOW() AT TIME ZONE 'Europe/Moscow')::date;",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 2,
+      "title": "Profile Completion Rate",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(\n  COUNT(*) FILTER (WHERE profile_text IS NOT NULL AND BTRIM(profile_text) <> '')::double precision / NULLIF(COUNT(*), 0)::double precision,\n  0\n) AS value\nFROM users;",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.25 },
+              { "color": "green", "value": 0.5 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Notification to Feedback Conversion",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH sent AS (\n  SELECT DISTINCT user_id, job_id\n  FROM product_events\n  WHERE event_type = 'notification_sent'\n    AND $__timeFilter(created_at)\n), feedback AS (\n  SELECT DISTINCT user_id, job_id\n  FROM product_events\n  WHERE event_type = 'feedback_submitted'\n    AND $__timeFilter(created_at)\n)\nSELECT COALESCE(\n  COUNT(*) FILTER (WHERE feedback.user_id IS NOT NULL)::double precision / NULLIF(COUNT(*), 0)::double precision,\n  0\n) AS value\nFROM sent\nLEFT JOIN feedback USING (user_id, job_id);",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.1 },
+              { "color": "green", "value": 0.2 }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 4,
+      "title": "Profile Completions Today",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*)::bigint AS value\nFROM product_events\nWHERE event_type = 'profile_completed'\n  AND (created_at AT TIME ZONE 'Europe/Moscow')::date = (NOW() AT TIME ZONE 'Europe/Moscow')::date;",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": 5,
+      "title": "Registrations Over Time",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 11, "x": 0, "y": 4 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres" },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '1d'), COUNT(*)::bigint AS registrations\nFROM product_events\nWHERE event_type = 'user_registered'\n  AND $__timeFilter(created_at)\nGROUP BY 1\nORDER BY 1;",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": { "mode": "palette-classic" }
+        }
+      }
+    },
+    {
+      "id": 6,
+      "title": "Best Sources by Match Quality",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 13, "x": 11, "y": 4 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH sent AS (\n  SELECT DISTINCT user_id, job_id, COALESCE(NULLIF(source, ''), 'unknown') AS source\n  FROM product_events\n  WHERE event_type = 'notification_sent'\n    AND $__timeFilter(created_at)\n), feedback AS (\n  SELECT DISTINCT user_id, job_id, COALESCE(properties->>'feedback', '') AS feedback\n  FROM product_events\n  WHERE event_type = 'feedback_submitted'\n    AND $__timeFilter(created_at)\n)\nSELECT\n  sent.source,\n  COUNT(*)::bigint AS notifications_sent,\n  COUNT(*) FILTER (WHERE feedback.feedback <> '')::bigint AS feedback_count,\n  COUNT(*) FILTER (WHERE feedback.feedback = 'good')::bigint AS good_feedback,\n  COUNT(*) FILTER (WHERE feedback.feedback = 'bad')::bigint AS bad_feedback,\n  COALESCE(COUNT(*) FILTER (WHERE feedback.feedback <> '')::double precision / NULLIF(COUNT(*), 0)::double precision, 0) AS feedback_conversion,\n  COALESCE(COUNT(*) FILTER (WHERE feedback.feedback = 'good')::double precision / NULLIF(COUNT(*) FILTER (WHERE feedback.feedback <> ''), 0)::double precision, 0) AS good_feedback_rate\nFROM sent\nLEFT JOIN feedback USING (user_id, job_id)\nGROUP BY sent.source\nORDER BY good_feedback_rate DESC, feedback_count DESC, notifications_sent DESC;",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "footer": { "show": false }
+      },
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "feedback_conversion" },
+            "properties": [{ "id": "unit", "value": "percentunit" }]
+          },
+          {
+            "matcher": { "id": "byName", "options": "good_feedback_rate" },
+            "properties": [{ "id": "unit", "value": "percentunit" }]
+          }
+        ]
+      }
+    }
+  ]
+}

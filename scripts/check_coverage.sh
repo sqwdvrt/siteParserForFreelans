@@ -2,7 +2,7 @@
 # Coverage gate:
 # - backend/internal >= BACKEND_INTERNAL_COVERAGE_MIN (default 70)
 # - ai-service/src >= AI_SERVICE_COVERAGE_MIN (default 70)
-# - telegram-bot/main.py >= TELEGRAM_BOT_COVERAGE_MIN (default 80)
+# - telegram-bot TOTAL >= TELEGRAM_BOT_COVERAGE_MIN (default 80)
 
 set -euo pipefail
 
@@ -31,26 +31,30 @@ is_coverage_ok() {
 choose_python_cmd() {
   if [[ -n "${PYTHON_BIN:-}" ]]; then
     if command -v "${PYTHON_BIN}" >/dev/null 2>&1; then
-      echo "${PYTHON_BIN}"
-      return 0
+      if has_pytest_cov "${PYTHON_BIN}"; then
+        echo "${PYTHON_BIN}"
+        return 0
+      fi
+      echo "ERROR: PYTHON_BIN=${PYTHON_BIN} does not have pytest-cov" >&2
+      return 1
     fi
     echo "ERROR: PYTHON_BIN=${PYTHON_BIN} not found" >&2
     return 1
   fi
 
-  if [[ -x ".venv/bin/python" ]]; then
+  if [[ -x ".venv/bin/python" ]] && has_pytest_cov ".venv/bin/python"; then
     echo ".venv/bin/python"
     return 0
   fi
 
-  for candidate in python3 python; do
-    if command -v "${candidate}" >/dev/null 2>&1; then
+  for candidate in python3.13 python3.12 python3.11 python3 python; do
+    if command -v "${candidate}" >/dev/null 2>&1 && has_pytest_cov "${candidate}"; then
       echo "${candidate}"
       return 0
     fi
   done
 
-  echo "ERROR: Python interpreter not found (tried PYTHON_BIN, .venv/bin/python, python3, python)" >&2
+  echo "ERROR: Python interpreter with pytest-cov not found (tried PYTHON_BIN, .venv/bin/python, python3.13, python3.12, python3.11, python3, python)" >&2
   return 1
 }
 
@@ -157,7 +161,7 @@ if ! is_coverage_ok "${AI_TOTAL}" "${AI_SERVICE_COVERAGE_MIN}"; then
 fi
 
 echo ""
-echo "=== Python coverage: telegram-bot/main.py ==="
+echo "=== Python coverage: telegram-bot TOTAL ==="
 cd "${ROOT_DIR}/telegram-bot"
 TG_COVER_LOG="$(mktemp)"
 TG_PYTHON_BIN="$(choose_python_cmd)"
@@ -171,15 +175,15 @@ if [[ ${PYTEST_TG_STATUS} -ne 0 ]]; then
   exit ${PYTEST_TG_STATUS}
 fi
 
-TG_TOTAL_RAW="$(awk '$1 ~ /(^|\/)main\.py$/ {for (i=1; i<=NF; i++) if ($i ~ /%$/) pct=$i} END {print pct}' "${TG_COVER_LOG}")"
+TG_TOTAL_RAW="$(awk '/^TOTAL/ {for (i=1; i<=NF; i++) if ($i ~ /%$/) pct=$i} END {print pct}' "${TG_COVER_LOG}")"
 if [[ -z "${TG_TOTAL_RAW}" ]]; then
-  echo "ERROR: failed to parse telegram-bot main.py coverage"
+  echo "ERROR: failed to parse telegram-bot total coverage"
   exit 1
 fi
 TG_TOTAL="${TG_TOTAL_RAW%\%}"
-echo "telegram-bot coverage: ${TG_TOTAL}%"
+echo "telegram-bot total coverage: ${TG_TOTAL}%"
 if ! is_coverage_ok "${TG_TOTAL}" "${TELEGRAM_BOT_COVERAGE_MIN}"; then
-  echo "ERROR: telegram-bot coverage gate failed (${TG_TOTAL}% < ${TELEGRAM_BOT_COVERAGE_MIN}%)"
+  echo "ERROR: telegram-bot total coverage gate failed (${TG_TOTAL}% < ${TELEGRAM_BOT_COVERAGE_MIN}%)"
   exit 1
 fi
 

@@ -51,3 +51,15 @@ def test_select_ignores_critique_and_still_returns_results() -> None:
 
     assert len(result) == 1
     assert result[0].job_id == 1
+
+
+def test_explain_batch_returns_one_explanation_per_candidate() -> None:
+    actor = RuleBasedActorAgent()
+    candidates = [_job(1, "A"), _job(2, "B")]
+
+    result = actor.explain_batch(user=_user(), candidates=candidates)
+
+    assert result == [
+        "Соответствует вашему профилю по схожести.",
+        "Соответствует вашему профилю по схожести.",
+    ]

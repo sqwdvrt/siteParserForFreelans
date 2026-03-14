@@ -27,7 +27,10 @@ class PostgresPendingJobsRepository(PooledPostgresRepository, PendingJobsReposit
         job_id: int,
         match_score: float,
         *,
+        rerank_score: float = 0.0,
         raw_similarity: float = 0.0,
+        feedback_bonus: float = 0.0,
+        preference_multiplier: float = 1.0,
         final_score: float = 0.0,
         ranker_version: str = "",
         reason_codes: list[str] | None = None,
@@ -43,20 +46,37 @@ class PostgresPendingJobsRepository(PooledPostgresRepository, PendingJobsReposit
                         user_id,
                         job_id,
                         match_score,
+                        rerank_score,
                         raw_similarity,
+                        feedback_bonus,
+                        preference_multiplier,
                         final_score,
                         ranker_version,
                         reason_codes,
                         trace_id
                     )
-                    VALUES (%s, %s, %s, %s, %s, NULLIF(%s, ''), %s, NULLIF(%s, ''))
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NULLIF(%s, ''), %s, NULLIF(%s, ''))
                     ON CONFLICT (user_id, job_id) DO UPDATE
                     SET
                         match_score = GREATEST(pending_ac_jobs.match_score, EXCLUDED.match_score),
+                        rerank_score = GREATEST(
+                            COALESCE(pending_ac_jobs.rerank_score, 0),
+                            COALESCE(EXCLUDED.rerank_score, 0)
+                        ),
                         raw_similarity = GREATEST(
                             COALESCE(pending_ac_jobs.raw_similarity, 0),
                             COALESCE(EXCLUDED.raw_similarity, 0)
                         ),
+                        feedback_bonus = CASE
+                            WHEN COALESCE(EXCLUDED.final_score, 0) >= COALESCE(pending_ac_jobs.final_score, 0)
+                                THEN COALESCE(EXCLUDED.feedback_bonus, pending_ac_jobs.feedback_bonus)
+                            ELSE pending_ac_jobs.feedback_bonus
+                        END,
+                        preference_multiplier = CASE
+                            WHEN COALESCE(EXCLUDED.final_score, 0) >= COALESCE(pending_ac_jobs.final_score, 0)
+                                THEN COALESCE(EXCLUDED.preference_multiplier, pending_ac_jobs.preference_multiplier)
+                            ELSE pending_ac_jobs.preference_multiplier
+                        END,
                         final_score = GREATEST(
                             COALESCE(pending_ac_jobs.final_score, 0),
                             COALESCE(EXCLUDED.final_score, 0)
@@ -80,7 +100,10 @@ class PostgresPendingJobsRepository(PooledPostgresRepository, PendingJobsReposit
                         user_id,
                         job_id,
                         match_score,
+                        rerank_score,
                         raw_similarity,
+                        feedback_bonus,
+                        preference_multiplier,
                         final_score,
                         ranker_version,
                         normalized_reasons,
@@ -90,7 +113,11 @@ class PostgresPendingJobsRepository(PooledPostgresRepository, PendingJobsReposit
 
     def upsert_many(
         self,
-        rows: list[tuple[int, int, float, float, float, str, list[str] | None, str]],
+        rows: list[
+            tuple[int, int, float, float, float, str, list[str] | None, str]
+            | tuple[int, int, float, float, float, float, str, list[str] | None, str]
+            | tuple[int, int, float, float, float, float, float, float, str, list[str] | None, str]
+        ],
     ) -> None:
         if not rows:
             return
@@ -101,7 +128,10 @@ class PostgresPendingJobsRepository(PooledPostgresRepository, PendingJobsReposit
                 user_id,
                 job_id,
                 match_score,
+                rerank_score,
                 raw_similarity,
+                feedback_bonus,
+                preference_multiplier,
                 final_score,
                 ranker_version,
                 reason_codes,
@@ -109,7 +139,10 @@ class PostgresPendingJobsRepository(PooledPostgresRepository, PendingJobsReposit
             )
             for (user_id, job_id), (
                 match_score,
+                rerank_score,
                 raw_similarity,
+                feedback_bonus,
+                preference_multiplier,
                 final_score,
                 ranker_version,
                 reason_codes,
@@ -125,7 +158,10 @@ class PostgresPendingJobsRepository(PooledPostgresRepository, PendingJobsReposit
                         user_id,
                         job_id,
                         match_score,
+                        rerank_score,
                         raw_similarity,
+                        feedback_bonus,
+                        preference_multiplier,
                         final_score,
                         ranker_version,
                         reason_codes,
@@ -135,10 +171,24 @@ class PostgresPendingJobsRepository(PooledPostgresRepository, PendingJobsReposit
                     ON CONFLICT (user_id, job_id) DO UPDATE
                     SET
                         match_score = GREATEST(pending_ac_jobs.match_score, EXCLUDED.match_score),
+                        rerank_score = GREATEST(
+                            COALESCE(pending_ac_jobs.rerank_score, 0),
+                            COALESCE(EXCLUDED.rerank_score, 0)
+                        ),
                         raw_similarity = GREATEST(
                             COALESCE(pending_ac_jobs.raw_similarity, 0),
                             COALESCE(EXCLUDED.raw_similarity, 0)
                         ),
+                        feedback_bonus = CASE
+                            WHEN COALESCE(EXCLUDED.final_score, 0) >= COALESCE(pending_ac_jobs.final_score, 0)
+                                THEN COALESCE(EXCLUDED.feedback_bonus, pending_ac_jobs.feedback_bonus)
+                            ELSE pending_ac_jobs.feedback_bonus
+                        END,
+                        preference_multiplier = CASE
+                            WHEN COALESCE(EXCLUDED.final_score, 0) >= COALESCE(pending_ac_jobs.final_score, 0)
+                                THEN COALESCE(EXCLUDED.preference_multiplier, pending_ac_jobs.preference_multiplier)
+                            ELSE pending_ac_jobs.preference_multiplier
+                        END,
                         final_score = GREATEST(
                             COALESCE(pending_ac_jobs.final_score, 0),
                             COALESCE(EXCLUDED.final_score, 0)
@@ -159,7 +209,41 @@ class PostgresPendingJobsRepository(PooledPostgresRepository, PendingJobsReposit
                         queued_at = NULL
                     """,
                     values,
-                    template="(%s, %s, %s, %s, %s, NULLIF(%s, ''), %s, NULLIF(%s, ''))",
+                    template="(%s, %s, %s, %s, %s, %s, %s, %s, NULLIF(%s, ''), %s, NULLIF(%s, ''))",
+                )
+
+    def save_scoring_components(
+        self,
+        user_id: int,
+        rows: list[tuple[int, float, float, float, float]],
+    ) -> None:
+        # Keep scoring components in pending rows for downstream debugging/tracing.
+        if not rows:
+            return
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    UPDATE pending_ac_jobs
+                    SET
+                        rerank_score = %s,
+                        feedback_bonus = %s,
+                        preference_multiplier = %s,
+                        final_score = %s
+                    WHERE user_id = %s
+                      AND job_id = %s
+                    """,
+                    [
+                        (
+                            float(rerank_score),
+                            float(feedback_bonus),
+                            float(preference_multiplier),
+                            float(final_score),
+                            int(user_id),
+                            int(job_id),
+                        )
+                        for (job_id, rerank_score, feedback_bonus, preference_multiplier, final_score) in rows
+                    ],
                 )
 
     def mark_processed(self, user_id: int, job_ids: list[int]) -> None:
@@ -315,15 +399,96 @@ class PostgresPendingJobsRepository(PooledPostgresRepository, PendingJobsReposit
                 break
         return job_ids, trace_id
 
+    def count_rows(self) -> int:
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM pending_ac_jobs")
+                row = cur.fetchone()
+        return int(row[0] if row else 0)
+
+    def count_unprocessed_rows(self) -> int:
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM pending_ac_jobs WHERE processed_at IS NULL")
+                row = cur.fetchone()
+        return int(row[0] if row else 0)
+
+    def delete_processed_older_than(self, older_than_days: int) -> int:
+        if older_than_days <= 0:
+            return 0
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    DELETE FROM pending_ac_jobs
+                    WHERE processed_at IS NOT NULL
+                      AND processed_at < NOW() - make_interval(days => %s)
+                    """,
+                    (older_than_days,),
+                )
+                deleted = cur.rowcount
+        return int(deleted or 0)
+
     @staticmethod
     def _merge_rows(
-        rows: list[tuple[int, int, float, float, float, str, list[str] | None, str]],
-    ) -> dict[tuple[int, int], tuple[float, float, float, str, list[str], str]]:
-        merged: dict[tuple[int, int], tuple[float, float, float, str, list[str], str]] = {}
-        for user_id, job_id, match_score, raw_similarity, final_score, ranker_version, reason_codes, trace_id in rows:
+        rows: list[
+            tuple[int, int, float, float, float, str, list[str] | None, str]
+            | tuple[int, int, float, float, float, float, str, list[str] | None, str]
+            | tuple[int, int, float, float, float, float, float, float, str, list[str] | None, str]
+        ],
+    ) -> dict[tuple[int, int], tuple[float, float, float, float, float, float, str, list[str], str]]:
+        merged: dict[tuple[int, int], tuple[float, float, float, float, float, float, str, list[str], str]] = {}
+        for row in rows:
+            if len(row) == 8:
+                (
+                    user_id,
+                    job_id,
+                    match_score,
+                    raw_similarity,
+                    final_score,
+                    ranker_version,
+                    reason_codes,
+                    trace_id,
+                ) = row
+                rerank_score = 0.0
+                feedback_bonus = 0.0
+                preference_multiplier = 1.0
+            elif len(row) == 9:
+                (
+                    user_id,
+                    job_id,
+                    match_score,
+                    rerank_score,
+                    raw_similarity,
+                    final_score,
+                    ranker_version,
+                    reason_codes,
+                    trace_id,
+                ) = row
+                feedback_bonus = 0.0
+                preference_multiplier = 1.0
+            elif len(row) == 11:
+                (
+                    user_id,
+                    job_id,
+                    match_score,
+                    rerank_score,
+                    raw_similarity,
+                    feedback_bonus,
+                    preference_multiplier,
+                    final_score,
+                    ranker_version,
+                    reason_codes,
+                    trace_id,
+                ) = row
+            else:
+                raise ValueError(f"invalid pending match row length: {len(row)}")
             key = (int(user_id), int(job_id))
             score = float(match_score)
+            normalized_rerank = float(rerank_score)
             similarity = float(raw_similarity)
+            normalized_feedback_bonus = float(feedback_bonus)
+            normalized_preference_multiplier = float(preference_multiplier)
             normalized_final = float(final_score)
             normalized_ranker = str(ranker_version or "").strip()[:64]
             normalized_reasons = [str(code).strip()[:64] for code in (reason_codes or []) if str(code).strip()]
@@ -332,18 +497,34 @@ class PostgresPendingJobsRepository(PooledPostgresRepository, PendingJobsReposit
             if current is None:
                 merged[key] = (
                     score,
+                    normalized_rerank,
                     similarity,
+                    normalized_feedback_bonus,
+                    normalized_preference_multiplier,
                     normalized_final,
                     normalized_ranker,
                     normalized_reasons,
                     normalized_trace,
                 )
                 continue
-            current_score, current_similarity, current_final, current_ranker, current_reasons, current_trace = current
+            (
+                current_score,
+                current_rerank,
+                current_similarity,
+                current_feedback_bonus,
+                current_preference_multiplier,
+                current_final,
+                current_ranker,
+                current_reasons,
+                current_trace,
+            ) = current
             keep_new = normalized_final >= current_final
             merged[key] = (
                 max(current_score, score),
+                max(current_rerank, normalized_rerank),
                 max(current_similarity, similarity),
+                normalized_feedback_bonus if keep_new else current_feedback_bonus,
+                normalized_preference_multiplier if keep_new else current_preference_multiplier,
                 max(current_final, normalized_final),
                 normalized_ranker if keep_new and normalized_ranker else current_ranker,
                 normalized_reasons if keep_new and normalized_reasons else current_reasons,

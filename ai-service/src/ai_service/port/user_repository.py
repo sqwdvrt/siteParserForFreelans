@@ -11,6 +11,11 @@ class UserRepository(ABC):
     """Репозиторий для работы с пользователями."""
 
     @abstractmethod
+    def list_matchable_users(self) -> list[User]:
+        """Вернуть пользователей с embedding и preferences для pre-filter перед ANN."""
+        ...
+
+    @abstractmethod
     def save(self, telegram_id: int) -> int:
         """Создать пользователя. Возвращает user_id."""
         ...

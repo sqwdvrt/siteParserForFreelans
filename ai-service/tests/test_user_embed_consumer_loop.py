@@ -49,6 +49,17 @@ class ReliableFakeUserEmbedQueueConsumer(FakeUserEmbedQueueConsumer):
         self.nacked.append(user_id)
 
 
+class FlakyReclaimUserEmbedQueueConsumer(ReliableFakeUserEmbedQueueConsumer):
+    def __init__(self, user_ids: list[int]) -> None:
+        super().__init__(user_ids)
+        self.reclaim_calls = 0
+
+    def reclaim_stuck(self) -> None:
+        self.reclaim_calls += 1
+        if self.reclaim_calls == 1:
+            raise RuntimeError("redis temporary error")
+
+
 class ShutdownAfterPopUserEmbedQueueConsumer(ReliableFakeUserEmbedQueueConsumer):
     def __init__(self, user_ids: list[int], stop_event: threading.Event) -> None:
         super().__init__(user_ids)
@@ -145,6 +156,24 @@ def test_run_user_embed_consumer_nacks_on_process_error() -> None:
 
     assert queue.acked == []
     assert queue.nacked == [42]
+
+
+def test_run_user_embed_consumer_retries_reclaim_error(monkeypatch) -> None:
+    process = MagicMock(spec=ProcessUserEmbedUseCase)
+    queue = FlakyReclaimUserEmbedQueueConsumer([42])
+    stop = threading.Event()
+
+    monkeypatch.setenv("AI_QUEUE_RETRY_DELAY_SEC", "0")
+
+    def _execute(user_id: int) -> None:
+        stop.set()
+
+    process.execute.side_effect = _execute
+
+    run_user_embed_consumer(queue, process, timeout_sec=1, stop_event=stop)
+
+    assert queue.reclaim_calls == 2
+    process.execute.assert_called_once_with(42)
 
 
 def test_run_user_embed_consumer_requeues_message_if_shutdown_happens_after_pop() -> None:

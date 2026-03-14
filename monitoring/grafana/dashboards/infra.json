@@ -2,7 +2,7 @@
   "uid": "siteparser-infra",
   "title": "SiteParser — Infrastructure",
   "schemaVersion": 38,
-  "version": 1,
+  "version": 2,
   "refresh": "30s",
   "time": { "from": "now-1h", "to": "now" },
   "timepicker": {},
@@ -140,7 +140,7 @@
       "id": 10,
       "title": "backend-crawler",
       "type": "stat",
-      "gridPos": { "h": 3, "w": 12, "x": 0, "y": 3 },
+      "gridPos": { "h": 3, "w": 8, "x": 0, "y": 3 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
@@ -169,13 +169,42 @@
       "id": 11,
       "title": "backend-notifier",
       "type": "stat",
-      "gridPos": { "h": 3, "w": 12, "x": 12, "y": 3 },
+      "gridPos": { "h": 3, "w": 8, "x": 8, "y": 3 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
           "expr": "up{job=\"backend-notifier\"}",
           "legendFormat": "backend-notifier",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "value_and_name"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "DOWN", "color": "red", "index": 0 }, "1": { "text": "UP", "color": "green", "index": 1 } } }
+          ],
+          "thresholds": { "mode": "absolute", "steps": [] }
+        }
+      }
+    },
+    {
+      "id": 12,
+      "title": "ai-user-embed",
+      "type": "stat",
+      "gridPos": { "h": 3, "w": 8, "x": 16, "y": 3 },
+      "datasource": { "type": "prometheus", "uid": "${datasource}" },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "${datasource}" },
+          "expr": "up{job=\"ai-user-embed\"}",
+          "legendFormat": "ai-user-embed",
           "refId": "A"
         }
       ],

@@ -17,6 +17,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 )
 
 type mockUserEmbedQueue struct {
@@ -28,6 +29,17 @@ func (m *mockUserEmbedQueue) Enqueue(ctx context.Context, userID int64) error {
 		return m.enqueueFunc(ctx, userID)
 	}
 	return nil
+}
+
+type mockUserEmbedDispatcher struct {
+	flushFunc func(ctx context.Context, limit int) (int, error)
+}
+
+func (m *mockUserEmbedDispatcher) Flush(ctx context.Context, limit int) (int, error) {
+	if m.flushFunc != nil {
+		return m.flushFunc(ctx, limit)
+	}
+	return 0, nil
 }
 
 type mockNonceStore struct {
@@ -60,20 +72,45 @@ func (m *mockRateLimiter) Allow(ctx context.Context, key string, limit int, wind
 	return true, nil
 }
 
+type mockUserStatsRepo struct {
+	getUserStatsFunc func(ctx context.Context, userID int64, window time.Duration) (*port.UserStats, error)
+}
+
+func (m *mockUserStatsRepo) GetUserStats(ctx context.Context, userID int64, window time.Duration) (*port.UserStats, error) {
+	if m.getUserStatsFunc != nil {
+		return m.getUserStatsFunc(ctx, userID, window)
+	}
+	return &port.UserStats{}, nil
+}
+
+type mockProductEventRepo struct {
+	recordFunc func(ctx context.Context, event port.ProductEvent) error
+	events     []port.ProductEvent
+}
+
+func (m *mockProductEventRepo) Record(ctx context.Context, event port.ProductEvent) error {
+	m.events = append(m.events, event)
+	if m.recordFunc != nil {
+		return m.recordFunc(ctx, event)
+	}
+	return nil
+}
+
 type mockUserRepo struct {
-	saveFunc              func(ctx context.Context, telegramID int64) (int64, error)
+	saveFunc              func(ctx context.Context, telegramID int64) (int64, bool, error)
 	getByIDFunc           func(ctx context.Context, userID int64) (*domain.User, error)
 	updateProfileFunc     func(ctx context.Context, userID int64, profileText string) error
+	updateProfileAndStage func(ctx context.Context, userID int64, profileText string) error
 	updateNotifyHourFunc  func(ctx context.Context, userID int64, hour int) error
 	getPreferencesFunc    func(ctx context.Context, userID int64) (*domain.UserPreferences, error)
 	upsertPreferencesFunc func(ctx context.Context, userID int64, prefs domain.UserPreferences) error
 }
 
-func (m *mockUserRepo) Save(ctx context.Context, telegramID int64) (int64, error) {
+func (m *mockUserRepo) Save(ctx context.Context, telegramID int64) (int64, bool, error) {
 	if m.saveFunc != nil {
 		return m.saveFunc(ctx, telegramID)
 	}
-	return 42, nil
+	return 42, true, nil
 }
 
 func (m *mockUserRepo) GetByID(ctx context.Context, userID int64) (*domain.User, error) {
@@ -96,6 +133,30 @@ func (m *mockUserRepo) UpdateProfile(ctx context.Context, userID int64, profileT
 
 func (m *mockUserRepo) UpdateProfileScoped(ctx context.Context, userID int64, profileText string) error {
 	return m.UpdateProfile(ctx, userID, profileText)
+}
+
+func (m *mockUserRepo) UpdateProfileScopedAndStage(
+	ctx context.Context,
+	userID int64,
+	profileText string,
+	_ port.QueueDispatchTrace,
+) error {
+	if m.updateProfileAndStage != nil {
+		return m.updateProfileAndStage(ctx, userID, profileText)
+	}
+	return m.UpdateProfile(ctx, userID, profileText)
+}
+
+func (m *mockUserRepo) ClaimPendingUserEmbeds(ctx context.Context, limit int, lease time.Duration) ([]port.PendingUserEmbed, error) {
+	return nil, nil
+}
+
+func (m *mockUserRepo) DeletePendingUserEmbeds(ctx context.Context, userIDs []int64) error {
+	return nil
+}
+
+func (m *mockUserRepo) ReleasePendingUserEmbeds(ctx context.Context, userIDs []int64) error {
+	return nil
 }
 
 func (m *mockUserRepo) UpdateNotifyHourScoped(ctx context.Context, userID int64, hour int) error {
@@ -176,11 +237,11 @@ func attachRouteUserID(req *http.Request, userID string) *http.Request {
 
 func TestHandlers_PostUsers_Success(t *testing.T) {
 	repo := &mockUserRepo{
-		saveFunc: func(ctx context.Context, telegramID int64) (int64, error) {
+		saveFunc: func(ctx context.Context, telegramID int64) (int64, bool, error) {
 			if telegramID != 123456789 {
-				return 0, errors.New("unexpected telegram_id")
+				return 0, false, errors.New("unexpected telegram_id")
 			}
-			return 1, nil
+			return 1, true, nil
 		},
 	}
 	h := &Handlers{UserRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
@@ -200,6 +261,50 @@ func TestHandlers_PostUsers_Success(t *testing.T) {
 	}
 	if resp.UserID != 1 {
 		t.Errorf("user_id = %d, want 1", resp.UserID)
+	}
+}
+
+func TestHandlers_PostUsers_RecordsRegistrationEventOnlyForNewUser(t *testing.T) {
+	eventRepo := &mockProductEventRepo{}
+	repo := &mockUserRepo{
+		saveFunc: func(ctx context.Context, telegramID int64) (int64, bool, error) {
+			return 77, true, nil
+		},
+	}
+	h := &Handlers{
+		UserRepo:         repo,
+		ProductEventRepo: eventRepo,
+		AuthToken:        testAuthToken,
+		UserHMACSecret:   testUserHMACSecret,
+	}
+
+	body, _ := json.Marshal(PostUsersRequest{TelegramID: 123456789})
+	req := newJSONRequest(http.MethodPost, "/users", body, newAuthHeadersWithUserSign(http.MethodPost, "/users", 123456789, body))
+	rr := httptest.NewRecorder()
+
+	h.PostUsers(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if len(eventRepo.events) != 1 {
+		t.Fatalf("events len = %d, want 1", len(eventRepo.events))
+	}
+	if eventRepo.events[0].Type != port.ProductEventUserRegistered {
+		t.Fatalf("event type = %q, want %q", eventRepo.events[0].Type, port.ProductEventUserRegistered)
+	}
+	if eventRepo.events[0].UserID != 77 {
+		t.Fatalf("event user_id = %d, want 77", eventRepo.events[0].UserID)
+	}
+
+	eventRepo.events = nil
+	repo.saveFunc = func(ctx context.Context, telegramID int64) (int64, bool, error) {
+		return 77, false, nil
+	}
+	rr = httptest.NewRecorder()
+	h.PostUsers(rr, req)
+	if len(eventRepo.events) != 0 {
+		t.Fatalf("events len = %d, want 0 for existing user", len(eventRepo.events))
 	}
 }
 
@@ -260,8 +365,8 @@ func TestHandlers_PostUsers_InvalidTelegramID(t *testing.T) {
 
 func TestHandlers_PostUsers_RepoError(t *testing.T) {
 	repo := &mockUserRepo{
-		saveFunc: func(ctx context.Context, telegramID int64) (int64, error) {
-			return 0, errors.New("db error")
+		saveFunc: func(ctx context.Context, telegramID int64) (int64, bool, error) {
+			return 0, false, errors.New("db error")
 		},
 	}
 	h := &Handlers{UserRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
@@ -286,21 +391,29 @@ func TestHandlers_PostUsers_RepoError(t *testing.T) {
 func TestHandlers_PutUserProfile_Success(t *testing.T) {
 	var gotUserID int64
 	var gotProfile string
-	var enqueuedUserID int64
-	queue := &mockUserEmbedQueue{
-		enqueueFunc: func(ctx context.Context, userID int64) error {
-			enqueuedUserID = userID
-			return nil
-		},
-	}
+	var flushed bool
 	repo := &mockUserRepo{
-		updateProfileFunc: func(ctx context.Context, userID int64, profileText string) error {
+		updateProfileAndStage: func(ctx context.Context, userID int64, profileText string) error {
 			gotUserID = userID
 			gotProfile = profileText
 			return nil
 		},
 	}
-	h := &Handlers{UserRepo: repo, UserEmbedQueue: queue, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+	h := &Handlers{
+		UserRepo:              repo,
+		UserEmbedDispatchRepo: repo,
+		UserEmbedDispatcher: &mockUserEmbedDispatcher{
+			flushFunc: func(ctx context.Context, limit int) (int, error) {
+				flushed = true
+				if limit != 1 {
+					t.Fatalf("limit = %d, want 1", limit)
+				}
+				return 1, nil
+			},
+		},
+		AuthToken:      testAuthToken,
+		UserHMACSecret: testUserHMACSecret,
+	}
 
 	body := []byte(`{"profile_text":"` + validProfileText + `"}`)
 	req := newJSONRequest(http.MethodPut, "/users/1/profile", body, newAuthHeadersWithUserSign(http.MethodPut, "/users/1/profile", 123456789, body))
@@ -318,8 +431,47 @@ func TestHandlers_PutUserProfile_Success(t *testing.T) {
 	if gotProfile != validProfileText {
 		t.Errorf("profile_text = %q, want %q", gotProfile, validProfileText)
 	}
-	if enqueuedUserID != 1 {
-		t.Errorf("enqueued user_id = %d, want 1", enqueuedUserID)
+	if !flushed {
+		t.Error("want best-effort flush after staging")
+	}
+}
+
+func TestHandlers_PutUserProfile_RecordsCompletionForFirstProfile(t *testing.T) {
+	eventRepo := &mockProductEventRepo{}
+	repo := &mockUserRepo{
+		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+			return &domain.User{ID: userID, TelegramID: 123456789}, nil
+		},
+		updateProfileAndStage: func(ctx context.Context, userID int64, profileText string) error {
+			return nil
+		},
+	}
+	h := &Handlers{
+		UserRepo:              repo,
+		UserEmbedDispatchRepo: repo,
+		ProductEventRepo:      eventRepo,
+		AuthToken:             testAuthToken,
+		UserHMACSecret:        testUserHMACSecret,
+	}
+
+	body := []byte(`{"profile_text":"` + validProfileText + `"}`)
+	req := newJSONRequest(http.MethodPut, "/users/42/profile", body, newAuthHeadersWithUserSign(http.MethodPut, "/users/42/profile", 123456789, body))
+	req = attachRouteUserID(req, "42")
+	rr := httptest.NewRecorder()
+
+	h.PutUserProfile(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+	if len(eventRepo.events) != 2 {
+		t.Fatalf("events len = %d, want 2", len(eventRepo.events))
+	}
+	if eventRepo.events[0].Type != port.ProductEventProfileUpdated {
+		t.Fatalf("first event type = %q, want %q", eventRepo.events[0].Type, port.ProductEventProfileUpdated)
+	}
+	if eventRepo.events[1].Type != port.ProductEventProfileCompleted {
+		t.Fatalf("second event type = %q, want %q", eventRepo.events[1].Type, port.ProductEventProfileCompleted)
 	}
 }
 
@@ -383,17 +535,12 @@ func TestHandlers_PutUserProfile_BodyTooLarge(t *testing.T) {
 }
 
 func TestHandlers_PutUserProfile_RepoError(t *testing.T) {
-	queue := &mockUserEmbedQueue{
-		enqueueFunc: func(ctx context.Context, userID int64) error {
-			return nil
-		},
-	}
 	repo := &mockUserRepo{
-		updateProfileFunc: func(ctx context.Context, userID int64, profileText string) error {
+		updateProfileAndStage: func(ctx context.Context, userID int64, profileText string) error {
 			return errors.New("db error")
 		},
 	}
-	h := &Handlers{UserRepo: repo, UserEmbedQueue: queue, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+	h := &Handlers{UserRepo: repo, UserEmbedDispatchRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
 
 	body := []byte(`{"profile_text":"` + validProfileText + `"}`)
 	req := newJSONRequest(http.MethodPut, "/users/1/profile", body, newAuthHeadersWithUserSign(http.MethodPut, "/users/1/profile", 123456789, body))
@@ -466,19 +613,24 @@ func TestHandlers_PutUserProfile_ProfilePlaceholderRejected(t *testing.T) {
 }
 
 func TestHandlers_PutUserProfile_EnqueuesUserEmbed(t *testing.T) {
-	var enqueuedUserID int64
-	queue := &mockUserEmbedQueue{
-		enqueueFunc: func(ctx context.Context, userID int64) error {
-			enqueuedUserID = userID
-			return nil
-		},
-	}
+	var flushed bool
 	repo := &mockUserRepo{
-		updateProfileFunc: func(ctx context.Context, userID int64, profileText string) error {
+		updateProfileAndStage: func(ctx context.Context, userID int64, profileText string) error {
 			return nil
 		},
 	}
-	h := &Handlers{UserRepo: repo, UserEmbedQueue: queue, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+	h := &Handlers{
+		UserRepo:              repo,
+		UserEmbedDispatchRepo: repo,
+		UserEmbedDispatcher: &mockUserEmbedDispatcher{
+			flushFunc: func(ctx context.Context, limit int) (int, error) {
+				flushed = true
+				return 1, nil
+			},
+		},
+		AuthToken:      testAuthToken,
+		UserHMACSecret: testUserHMACSecret,
+	}
 
 	body := []byte(`{"profile_text":"` + validProfileText + `"}`)
 	req := newJSONRequest(http.MethodPut, "/users/42/profile", body, newAuthHeadersWithUserSign(http.MethodPut, "/users/42/profile", 123456789, body))
@@ -490,15 +642,15 @@ func TestHandlers_PutUserProfile_EnqueuesUserEmbed(t *testing.T) {
 	if rr.Code != http.StatusNoContent {
 		t.Errorf("status = %d, want 204", rr.Code)
 	}
-	if enqueuedUserID != 42 {
-		t.Errorf("enqueued user_id = %d, want 42", enqueuedUserID)
+	if !flushed {
+		t.Error("expected flush to be attempted")
 	}
 }
 
-func TestHandlers_PutUserProfile_QueueUnavailable(t *testing.T) {
+func TestHandlers_PutUserProfile_DispatchRepoUnavailable(t *testing.T) {
 	var updateCalled bool
 	repo := &mockUserRepo{
-		updateProfileFunc: func(ctx context.Context, userID int64, profileText string) error {
+		updateProfileAndStage: func(ctx context.Context, userID int64, profileText string) error {
 			updateCalled = true
 			return nil
 		},
@@ -512,32 +664,33 @@ func TestHandlers_PutUserProfile_QueueUnavailable(t *testing.T) {
 
 	h.PutUserProfile(rr, req)
 
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want 503", rr.Code)
+	if rr.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want 500", rr.Code)
 	}
 	if updateCalled {
-		t.Error("update profile must not be called when queue is unavailable")
+		t.Error("staged update must not be called when dispatch repo is unavailable")
 	}
 }
 
-func TestHandlers_PutUserProfile_EnqueueError_RollsBackAndReturns503(t *testing.T) {
-	profiles := make([]string, 0, 2)
-	oldProfileText := validProfileText
-	queue := &mockUserEmbedQueue{
-		enqueueFunc: func(ctx context.Context, userID int64) error {
-			return errors.New("redis down")
-		},
-	}
+func TestHandlers_PutUserProfile_FlushError_DoesNotRollback(t *testing.T) {
+	profiles := make([]string, 0, 1)
 	repo := &mockUserRepo{
-		updateProfileFunc: func(ctx context.Context, userID int64, profileText string) error {
+		updateProfileAndStage: func(ctx context.Context, userID int64, profileText string) error {
 			profiles = append(profiles, profileText)
 			return nil
 		},
-		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
-			return &domain.User{ID: userID, TelegramID: 123456789, ProfileText: &oldProfileText}, nil
-		},
 	}
-	h := &Handlers{UserRepo: repo, UserEmbedQueue: queue, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+	h := &Handlers{
+		UserRepo:              repo,
+		UserEmbedDispatchRepo: repo,
+		UserEmbedDispatcher: &mockUserEmbedDispatcher{
+			flushFunc: func(ctx context.Context, limit int) (int, error) {
+				return 0, errors.New("redis down")
+			},
+		},
+		AuthToken:      testAuthToken,
+		UserHMACSecret: testUserHMACSecret,
+	}
 
 	newProfile := "Go backend разработчик, 5 лет опыта. Делаю REST API, очереди, Redis, PostgreSQL, Docker и интеграции."
 	body := []byte(`{"profile_text":"` + newProfile + `"}`)
@@ -547,17 +700,14 @@ func TestHandlers_PutUserProfile_EnqueueError_RollsBackAndReturns503(t *testing.
 
 	h.PutUserProfile(rr, req)
 
-	if rr.Code != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want 503", rr.Code)
+	if rr.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want 204", rr.Code)
 	}
-	if len(profiles) != 2 {
-		t.Fatalf("update profile calls = %d, want 2 (update + rollback)", len(profiles))
+	if len(profiles) != 1 {
+		t.Fatalf("update profile calls = %d, want 1", len(profiles))
 	}
 	if profiles[0] != newProfile {
 		t.Errorf("first update profile = %q, want %q", profiles[0], newProfile)
-	}
-	if profiles[1] != validProfileText {
-		t.Errorf("rollback profile = %q, want %q", profiles[1], validProfileText)
 	}
 }
 
@@ -728,6 +878,92 @@ func TestHandlers_GetUserPreferences_Success(t *testing.T) {
 	}
 }
 
+func TestHandlers_GetUserStats_Success(t *testing.T) {
+	repo := &mockUserRepo{
+		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+			return &domain.User{ID: userID, TelegramID: 123456789}, nil
+		},
+	}
+	statsRepo := &mockUserStatsRepo{
+		getUserStatsFunc: func(ctx context.Context, userID int64, window time.Duration) (*port.UserStats, error) {
+			if userID != 7 {
+				t.Fatalf("userID=%d, want 7", userID)
+			}
+			if window <= 0 {
+				t.Fatalf("window=%s, want >0", window)
+			}
+			return &port.UserStats{
+				PeriodDays:               7,
+				ProjectsFound:            42,
+				ProjectsShown:            12,
+				ProjectsFilteredOther:    30,
+				ProjectsFilteredByBudget: 18,
+				BudgetFilterActive:       true,
+			}, nil
+		},
+	}
+	h := &Handlers{
+		UserRepo:       repo,
+		UserStatsRepo:  statsRepo,
+		AuthToken:      testAuthToken,
+		UserHMACSecret: testUserHMACSecret,
+	}
+
+	req := newJSONRequest(
+		http.MethodGet,
+		"/users/7/stats",
+		nil,
+		newAuthHeadersWithUserSign(http.MethodGet, "/users/7/stats", 123456789, nil),
+	)
+	req = attachRouteUserID(req, "7")
+	rr := httptest.NewRecorder()
+
+	h.GetUserStats(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var resp port.UserStats
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.ProjectsFound != 42 || resp.ProjectsShown != 12 || resp.ProjectsFilteredOther != 30 {
+		t.Fatalf("unexpected stats response: %#v", resp)
+	}
+	if !resp.BudgetFilterActive || resp.ProjectsFilteredByBudget != 18 {
+		t.Fatalf("unexpected budget stats: %#v", resp)
+	}
+}
+
+func TestHandlers_GetUserStats_OwnerMismatch(t *testing.T) {
+	repo := &mockUserRepo{
+		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+			return &domain.User{ID: userID, TelegramID: 777}, nil
+		},
+	}
+	h := &Handlers{
+		UserRepo:       repo,
+		UserStatsRepo:  &mockUserStatsRepo{},
+		AuthToken:      testAuthToken,
+		UserHMACSecret: testUserHMACSecret,
+	}
+
+	req := newJSONRequest(
+		http.MethodGet,
+		"/users/7/stats",
+		nil,
+		newAuthHeadersWithUserSign(http.MethodGet, "/users/7/stats", 123456789, nil),
+	)
+	req = attachRouteUserID(req, "7")
+	rr := httptest.NewRecorder()
+
+	h.GetUserStats(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+}
+
 func TestHandlers_PutUserPreferences_Success(t *testing.T) {
 	var captured domain.UserPreferences
 	repo := &mockUserRepo{
@@ -868,7 +1104,7 @@ func TestHandlers_PutUserProfile_InvalidTelegramHeader(t *testing.T) {
 	req := newJSONRequest(
 		http.MethodPut,
 		"/users/1/profile",
-		[]byte(`{"profile_text":"` + validProfileText + `"}`),
+		[]byte(`{"profile_text":"`+validProfileText+`"}`),
 		headers,
 	)
 	req = attachRouteUserID(req, "1")

@@ -31,6 +31,10 @@ func TestCrawlerMetrics_CollectsRunAndQueueMetrics(t *testing.T) {
 	if got := saved.GetMetric()[0].GetCounter().GetValue(); got != 3 {
 		t.Fatalf("saved jobs counter = %v, want 3", got)
 	}
+	scraped := findMetricFamily(t, families, crawlerJobsScrapedTotalMetricName)
+	if got := scraped.GetMetric()[0].GetCounter().GetValue(); got != 3 {
+		t.Fatalf("scraped jobs counter = %v, want 3", got)
+	}
 
 	queueDepth := findMetricFamily(t, families, crawlerQueueDepthMetricName)
 	assertGaugeLabelValue(

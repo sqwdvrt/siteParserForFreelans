@@ -21,6 +21,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/observability"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 )
 
@@ -38,6 +39,7 @@ const defaultNonceTTL = 10 * time.Minute
 const defaultRateLimitWindow = time.Minute
 const defaultIPRateLimit = 120
 const defaultTelegramRateLimit = 60
+const defaultUserStatsRequestWindow = 7 * 24 * time.Hour
 const maxPreferenceKeywords = 32
 const maxPreferenceSources = 16
 const maxPreferenceValueLen = 64
@@ -87,21 +89,28 @@ type RequestRateLimiter interface {
 	Allow(ctx context.Context, key string, limit int, window time.Duration) (bool, error)
 }
 
+type UserEmbedDispatcher interface {
+	Flush(ctx context.Context, limit int) (int, error)
+}
+
 // Handlers — HTTP handlers для API.
 type Handlers struct {
-	UserRepo          port.UserRepository
-	UserEmbedQueue    port.UserEmbedQueue     // nil — очередь не используется
-	FeedbackRepo      port.FeedbackRepository // nil — feedback не сохраняется
-	AuthToken         string                  // обязательный bearer token для API
-	UserHMACSecret    string                  // обязательный секрет подписи user-level запросов
-	Logger            *slog.Logger            // optional structured logger; defaults to slog.Default()
-	NonceStore        NonceStore              // optional: anti-replay (nonce)
-	RateLimiter       RequestRateLimiter      // optional: rate limit (per ip/per telegram id)
-	TrustedProxyCIDRs []*net.IPNet            // optional: trusted reverse proxies for forwarded headers
-	NonceTTL          time.Duration
-	RateLimitWindow   time.Duration
-	IPRateLimit       int
-	TelegramRateLimit int
+	UserRepo              port.UserRepository
+	UserStatsRepo         port.UserStatsRepository // optional: user-facing stats for /users/{id}/stats
+	UserEmbedDispatchRepo port.UserEmbedDispatchRepository
+	UserEmbedDispatcher   UserEmbedDispatcher     // optional: best-effort low-latency flush after staging
+	FeedbackRepo          port.FeedbackRepository // nil — feedback не сохраняется
+	ProductEventRepo      port.ProductEventRepository
+	AuthToken             string             // обязательный bearer token для API
+	UserHMACSecret        string             // обязательный секрет подписи user-level запросов
+	Logger                *slog.Logger       // optional structured logger; defaults to slog.Default()
+	NonceStore            NonceStore         // optional: anti-replay (nonce)
+	RateLimiter           RequestRateLimiter // optional: rate limit (per ip/per telegram id)
+	TrustedProxyCIDRs     []*net.IPNet       // optional: trusted reverse proxies for forwarded headers
+	NonceTTL              time.Duration
+	RateLimitWindow       time.Duration
+	IPRateLimit           int
+	TelegramRateLimit     int
 }
 
 // PostUsersRequest — тело POST /users.
@@ -173,11 +182,17 @@ func (h *Handlers) PostUsers(w http.ResponseWriter, r *http.Request) {
 	if !h.enforceTelegramRateLimit(w, r, callerTelegramID) {
 		return
 	}
-	userID, err := h.UserRepo.Save(r.Context(), int64(req.TelegramID))
+	userID, created, err := h.UserRepo.Save(r.Context(), int64(req.TelegramID))
 	if err != nil {
 		h.logger().Error("post users save failed", "err", err)
 		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
 		return
+	}
+	if created {
+		h.recordProductEvent(r.Context(), port.ProductEvent{
+			Type:   port.ProductEventUserRegistered,
+			UserID: userID,
+		})
 	}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(PostUsersResponse{UserID: userID}); err != nil {
@@ -278,33 +293,40 @@ func (h *Handlers) PutUserProfile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if h.UserEmbedQueue == nil {
-		h.logger().Error("put user profile user embed queue unavailable", "user_id", userID)
-		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+	if h.UserEmbedDispatchRepo == nil {
+		h.logger().Error("put user profile dispatch repository unavailable", "user_id", userID)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
 		return
 	}
-	if err := h.UserRepo.UpdateProfileScoped(r.Context(), userID, req.ProfileText); err != nil {
+	if err := h.UserEmbedDispatchRepo.UpdateProfileScopedAndStage(
+		r.Context(),
+		userID,
+		req.ProfileText,
+		observability.QueueDispatchTraceFromContext(r.Context()),
+	); err != nil {
 		h.logger().Error("put user profile update failed", "user_id", userID, "err", err)
 		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
 		return
 	}
-	if err := h.UserEmbedQueue.Enqueue(r.Context(), userID); err != nil {
-		h.logger().Error("put user profile enqueue user embed failed", "user_id", userID, "err", err)
-		rollbackProfileText := ""
-		if user.ProfileText != nil {
-			rollbackProfileText = *user.ProfileText
+	if h.UserEmbedDispatcher != nil {
+		flushCtx, cancel := context.WithTimeout(r.Context(), 500*time.Millisecond)
+		defer cancel()
+		if _, err := h.UserEmbedDispatcher.Flush(flushCtx, 1); err != nil {
+			h.logger().Warn("put user profile dispatch flush failed", "user_id", userID, "err", err)
 		}
-		if rollbackErr := h.UserRepo.UpdateProfile(r.Context(), userID, rollbackProfileText); rollbackErr != nil {
-			h.logger().Error(
-				"put user profile rollback failed after enqueue error",
-				"user_id", userID,
-				"err", rollbackErr,
-			)
-		} else {
-			h.logger().Warn("put user profile rolled back after enqueue error", "user_id", userID)
-		}
-		http.Error(w, "service unavailable", http.StatusServiceUnavailable)
-		return
+	}
+	h.recordProductEvent(r.Context(), port.ProductEvent{
+		Type:   port.ProductEventProfileUpdated,
+		UserID: userID,
+		Properties: map[string]any{
+			"profile_length": len(strings.TrimSpace(req.ProfileText)),
+		},
+	})
+	if !hasNonEmptyProfileText(user.ProfileText) {
+		h.recordProductEvent(r.Context(), port.ProductEvent{
+			Type:   port.ProductEventProfileCompleted,
+			UserID: userID,
+		})
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -371,6 +393,13 @@ func (h *Handlers) PutUserNotifyHour(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
 		return
 	}
+	h.recordProductEvent(r.Context(), port.ProductEvent{
+		Type:   port.ProductEventNotifyHourUpdated,
+		UserID: userID,
+		Properties: map[string]any{
+			"notify_hour": req.Hour,
+		},
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -414,6 +443,49 @@ func (h *Handlers) GetUserPreferences(w http.ResponseWriter, r *http.Request) {
 		PreferredSources: cloneAndNormalizePreferenceValues(prefs.PreferredSources, maxPreferenceSources),
 		IsPro:            user.IsPro,
 	})
+}
+
+// GetUserStats returns explainable matching stats for the user over last 7 days.
+func (h *Handlers) GetUserStats(w http.ResponseWriter, r *http.Request) {
+	if !h.authorize(w, r) {
+		return
+	}
+	userID, callerTelegramID, ok := h.authorizeOwnedUserRequest(w, r, nil)
+	if !ok {
+		return
+	}
+	user, err := h.UserRepo.GetByID(r.Context(), userID)
+	if err != nil {
+		h.logger().Error("get user stats get user failed", "user_id", userID, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	if user == nil {
+		http.Error(w, "user not found", http.StatusNotFound)
+		return
+	}
+	if user.TelegramID != callerTelegramID {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if h.UserStatsRepo == nil {
+		writeJSON(w, port.UserStats{
+			PeriodDays: int(defaultUserStatsRequestWindow.Hours() / 24),
+		})
+		return
+	}
+	stats, err := h.UserStatsRepo.GetUserStats(r.Context(), userID, defaultUserStatsRequestWindow)
+	if err != nil {
+		h.logger().Error("get user stats failed", "user_id", userID, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	if stats == nil {
+		stats = &port.UserStats{
+			PeriodDays: int(defaultUserStatsRequestWindow.Hours() / 24),
+		}
+	}
+	writeJSON(w, stats)
 }
 
 // PutUserPreferences обновляет user_preferences пользователя.
@@ -476,6 +548,18 @@ func (h *Handlers) PutUserPreferences(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
 		return
 	}
+	h.recordProductEvent(r.Context(), port.ProductEvent{
+		Type:   port.ProductEventPreferencesUpdated,
+		UserID: userID,
+		Properties: map[string]any{
+			"include_keywords_count":  len(prefs.IncludeKeywords),
+			"exclude_keywords_count":  len(prefs.ExcludeKeywords),
+			"preferred_sources_count": len(prefs.PreferredSources),
+			"preferred_sources":       append([]string(nil), prefs.PreferredSources...),
+			"has_min_budget":          prefs.MinBudget != nil,
+			"has_max_budget":          prefs.MaxBudget != nil,
+		},
+	})
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -551,6 +635,14 @@ func (h *Handlers) PostUserFeedback(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	h.recordProductEvent(r.Context(), port.ProductEvent{
+		Type:   port.ProductEventFeedbackSubmitted,
+		UserID: userID,
+		JobID:  req.JobID,
+		Properties: map[string]any{
+			"feedback": string(fb),
+		},
+	})
 	h.logger().Info("feedback recorded", "user_id", userID, "job_id", req.JobID, "feedback", req.Feedback)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -893,4 +985,20 @@ func (h *Handlers) logger() *slog.Logger {
 		return h.Logger
 	}
 	return slog.Default()
+}
+
+func (h *Handlers) recordProductEvent(ctx context.Context, event port.ProductEvent) {
+	if h.ProductEventRepo == nil {
+		return
+	}
+	if err := h.ProductEventRepo.Record(ctx, event); err != nil {
+		h.logger().Warn("record product event failed", "event_type", event.Type, "user_id", event.UserID, "job_id", event.JobID, "err", err)
+	}
+}
+
+func hasNonEmptyProfileText(profileText *string) bool {
+	if profileText == nil {
+		return false
+	}
+	return strings.TrimSpace(*profileText) != ""
 }

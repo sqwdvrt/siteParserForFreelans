@@ -66,3 +66,35 @@ def test_get_embedding_returns_none_when_user_missing() -> None:
     repo._conn = fake_conn  # type: ignore[method-assign]
 
     assert repo.get_embedding(42) is None
+
+
+def test_list_matchable_users_returns_users_without_embeddings_loaded() -> None:
+    repo = PostgresUserRepository("postgresql://user:pass@localhost:5432/db")
+    conn = MagicMock()
+    rows = [
+        {
+            "id": 7,
+            "telegram_id": 700,
+            "profile_text": "python",
+            "include_keywords": [],
+            "exclude_keywords": ["php"],
+            "min_budget": 1000,
+            "max_budget": 5000,
+            "preferred_sources": ["kwork"],
+        }
+    ]
+
+    @contextlib.contextmanager
+    def fake_conn():
+        yield conn
+
+    repo._conn = fake_conn  # type: ignore[method-assign]
+    conn.cursor.return_value.__enter__.return_value.fetchall.return_value = rows
+
+    got = repo.list_matchable_users()
+
+    assert len(got) == 1
+    assert got[0].id == 7
+    assert got[0].embedding is None
+    assert got[0].preferences.exclude_keywords == ("php",)
+    assert got[0].preferences.preferred_sources == ("kwork",)

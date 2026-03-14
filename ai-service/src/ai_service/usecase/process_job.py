@@ -3,21 +3,42 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from ai_service.port.classifier import ClassificationResult
 from ai_service.port.embedding import EmbeddingService
 from ai_service.port.match_repository import MatchRepository
 from ai_service.port.repository import JobRepository
 from ai_service.util.feedback_adjuster import adjust_candidates
+from ai_service.util.preference_filter import (
+    PREFERENCE_FILTER_REASON_BUDGET,
+    evaluate_preference_filter,
+)
+from ai_service.util.profile_structurer import build_structured_profile_text
 from ai_service.util.text_cleaner import clean_text
 from ai_service.util.trace_context import get_trace_id
 
 if TYPE_CHECKING:
     from ai_service.port.classifier import Classifier
+    from ai_service.port.filter_event_repository import FilterEventRepository
+    from ai_service.port.match_repository import MatchCandidate
+    from ai_service.port.user_repository import UserRepository
     from ai_service.usecase.accumulate_matches import AccumulateMatchesUseCase
 
+    class Reranker(Protocol):
+        """Minimal protocol for query/document reranking."""
+
+        @property
+        def model_name(self) -> str:
+            """Human-readable model name for logging/metadata."""
+            ...
+
+        def score_pairs(self, pairs: list[tuple[str, str]]) -> list[float]:
+            """Return normalized rerank scores in 0..1."""
+            ...
+
 logger = logging.getLogger(__name__)
+DEFAULT_ANN_TOP_K = 50
 
 _PROJECT_TYPE_LABELS: dict[str, str] = {
     "web": "Веб-проект",
@@ -77,19 +98,29 @@ class ProcessJobUseCase:
         classifier: Classifier | None = None,
         match_repo: MatchRepository | None = None,
         accumulate_matches: AccumulateMatchesUseCase | None = None,
+        reranker: Reranker | None = None,
         *,
         similarity_threshold: float = 0.7,
         max_matches_per_job: int = 20,
+        rerank_threshold: float = 0.55,
+        rerank_top_k: int = 10,
         feedback_repo=None,
+        user_repo: UserRepository | None = None,
+        filter_event_repo: FilterEventRepository | None = None,
     ) -> None:
         self._repo = repo
         self._embedding = embedding_service
         self._classifier = classifier
         self._match_repo = match_repo
         self._accumulate_matches = accumulate_matches
+        self._reranker = reranker
         self._threshold = similarity_threshold
         self._limit = max_matches_per_job
+        self._rerank_threshold = rerank_threshold
+        self._rerank_top_k = rerank_top_k
         self._feedback_repo = feedback_repo
+        self._user_repo = user_repo
+        self._filter_event_repo = filter_event_repo
 
     def execute(self, job_id: int) -> bool:
         """Process job using a new or previously saved embedding.
@@ -146,13 +177,55 @@ class ProcessJobUseCase:
             return False
 
         if self._match_repo is not None:
+            allowed_user_ids: list[int] | None = None
+            if self._user_repo is not None:
+                matchable_users = self._user_repo.list_matchable_users()
+                filter_result = evaluate_preference_filter(job, matchable_users, classification=classification)
+                filtered_users = filter_result.passed
+                allowed_user_ids = [user.id for user in filtered_users]
+                filtered_count = len(matchable_users) - len(filtered_users)
+                self._record_budget_filtered_users(
+                    job_id=job_id,
+                    filtered_user_reasons=filter_result.filtered_user_reasons,
+                    trace_id=trace_id or "",
+                )
+                if filtered_count > 0:
+                    if trace_id:
+                        logger.info(
+                            "job_id=%s trace_id=%s: preference pre-filter excluded %d/%d users "
+                            "reason_code=pref_filtered",
+                            job_id,
+                            trace_id,
+                            filtered_count,
+                            len(matchable_users),
+                        )
+                    else:
+                        logger.info(
+                            "job_id=%s: preference pre-filter excluded %d/%d users reason_code=pref_filtered",
+                            job_id,
+                            filtered_count,
+                            len(matchable_users),
+                        )
+                if not allowed_user_ids:
+                    if trace_id:
+                        logger.info("job_id=%s trace_id=%s: no users passed preference pre-filter", job_id, trace_id)
+                    else:
+                        logger.info("job_id=%s: no users passed preference pre-filter", job_id)
+                    return True
             candidates = self._match_repo.find_users_for_job(
-                embedding, job_id, self._threshold, self._limit
+                embedding,
+                job_id,
+                self._threshold,
+                max(self._limit, DEFAULT_ANN_TOP_K) if self._reranker is not None else self._limit,
+                allowed_user_ids=allowed_user_ids,
             )
             if trace_id:
                 logger.info("job_id=%s trace_id=%s: %d match candidates", job_id, trace_id, len(candidates))
             else:
                 logger.info("job_id=%s: %d match candidates", job_id, len(candidates))
+
+            if self._reranker is not None and candidates:
+                candidates = self._rerank_candidates(job, candidates)
 
             # Корректировка скоров на основе обратной связи (👍/👎).
             # Учитывает как позитивный (буст до +15%), так и негативный (штраф до -50%) сигнал.
@@ -176,3 +249,95 @@ class ProcessJobUseCase:
                     self._accumulate_matches.execute(candidates)
 
         return True
+
+    def _record_budget_filtered_users(
+        self,
+        *,
+        job_id: int,
+        filtered_user_reasons: dict[int, set[str]],
+        trace_id: str,
+    ) -> None:
+        if self._filter_event_repo is None or not filtered_user_reasons:
+            return
+        budget_filtered_user_ids = [
+            int(user_id)
+            for user_id, reasons in filtered_user_reasons.items()
+            if PREFERENCE_FILTER_REASON_BUDGET in reasons
+        ]
+        if not budget_filtered_user_ids:
+            return
+        try:
+            self._filter_event_repo.record_events(
+                job_id=job_id,
+                user_ids=budget_filtered_user_ids,
+                reason=PREFERENCE_FILTER_REASON_BUDGET,
+                trace_id=trace_id,
+            )
+        except Exception as e:
+            logger.warning(
+                "job_id=%s: failed to persist budget filter events count=%d err=%s",
+                job_id,
+                len(budget_filtered_user_ids),
+                e,
+            )
+
+    def _rerank_candidates(self, job: object, candidates: list[MatchCandidate]) -> list[MatchCandidate]:
+        """Rerank ANN candidates with cross-encoder before persisting pending rows."""
+        if self._reranker is None or not candidates:
+            return candidates
+
+        job_title = getattr(job, "title", "") or ""
+        job_description = getattr(job, "description", "") or ""
+        job_text = clean_text(f"{job_title}\n{job_description}".strip())
+        pairs = [
+            (build_structured_profile_text(str(candidate.profile_text or "").strip()), job_text)
+            for candidate in candidates
+        ]
+        rerank_scores = self._reranker.score_pairs(pairs)
+        if len(rerank_scores) != len(candidates):
+            raise ValueError(
+                f"reranker returned {len(rerank_scores)} scores for {len(candidates)} candidates"
+            )
+
+        for candidate, rerank_score in zip(candidates, rerank_scores, strict=True):
+            candidate.rerank_score = rerank_score
+            # Keep final_score aligned with rerank output until downstream scoring takes over.
+            candidate.final_score = rerank_score
+
+        ranked = sorted(
+            candidates,
+            key=lambda candidate: (candidate.rerank_score, candidate.raw_similarity, candidate.user_id),
+            reverse=True,
+        )
+        filtered = [
+            candidate
+            for candidate in ranked
+            if candidate.rerank_score >= self._rerank_threshold
+        ][: self._rerank_top_k]
+
+        trace_id = get_trace_id()
+        best_score = filtered[0].rerank_score if filtered else 0.0
+        if trace_id:
+            logger.info(
+                "job_id=%s trace_id=%s: reranked %d/%d candidates model=%s threshold=%.2f top_k=%d best=%.3f",
+                getattr(job, "id", 0),
+                trace_id,
+                len(filtered),
+                len(candidates),
+                self._reranker.model_name,
+                self._rerank_threshold,
+                self._rerank_top_k,
+                best_score,
+            )
+        else:
+            logger.info(
+                "job_id=%s: reranked %d/%d candidates model=%s threshold=%.2f top_k=%d best=%.3f",
+                getattr(job, "id", 0),
+                len(filtered),
+                len(candidates),
+                self._reranker.model_name,
+                self._rerank_threshold,
+                self._rerank_top_k,
+                best_score,
+            )
+        return filtered

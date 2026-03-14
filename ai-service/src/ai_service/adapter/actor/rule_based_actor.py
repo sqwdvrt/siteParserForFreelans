@@ -11,6 +11,8 @@ from ai_service.port.actor import ActorAgent
 class RuleBasedActorAgent(ActorAgent):
     """Fallback Actor: keeps candidate order and returns top-N."""
 
+    _DEFAULT_EXPLANATION = "Соответствует вашему профилю по схожести."
+
     def select(
         self,
         user: User,
@@ -30,7 +32,7 @@ class RuleBasedActorAgent(ActorAgent):
                 RankedJob(
                     job_id=job.id,
                     title=job.title,
-                    why_it_fits="Соответствует вашему профилю по схожести.",
+                    why_it_fits=self._DEFAULT_EXPLANATION,
                     rank=index + 1,
                     actor_confidence=confidence,
                     final_score=job.final_score or job.match_score,
@@ -39,3 +41,11 @@ class RuleBasedActorAgent(ActorAgent):
                 )
             )
         return ranked
+
+    def explain_batch(
+        self,
+        user: User,
+        candidates: list[Job],
+    ) -> list[str]:
+        del user
+        return [self._DEFAULT_EXPLANATION for _job in candidates]

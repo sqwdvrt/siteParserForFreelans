@@ -4,10 +4,12 @@
 |------------|-----------|
 | **APP_ENV** | Режим запуска: `development` (локально) или `production` (включает строгие transport-policy проверки) |
 | **TELEGRAM_BOT_TOKEN** | [@BotFather](https://t.me/BotFather) → /newbot → скопировать токен |
+| **LOCAL_TELEGRAM_BOT_TOKEN** | Локальный dev-only токен для polling / smoke, если production token уже занят webhook'ом |
 | **ALERTMANAGER_TELEGRAM_BOT_TOKEN / ALERTMANAGER_TELEGRAM_CHAT_ID** | Опциональные отдельные секреты Alertmanager (если не заданы, используются `TELEGRAM_BOT_TOKEN` и `TELEGRAM_ID`) |
 | **ALERTMANAGER_SLACK_WEBHOOK_URL** | Slack webhook для алертов Alertmanager (опционально) |
 | **LOG_LEVEL** | Уровень логов telegram-bot (`DEBUG`, `INFO`, `WARNING`, `ERROR`), по умолчанию `INFO` |
 | **DATABASE_URL** | PostgreSQL URL. Локально: `...?sslmode=disable`. В production: только `sslmode=require|verify-ca|verify-full` |
+| **DATABASE_MIGRATE_URL** | Отдельный PostgreSQL URL только для миграций. Нужен в production, если `DATABASE_URL` указывает на transaction-pooler, а миграции требуют session/advisory locks |
 | **POSTGRES_PASSWORD** | Сильный пароль PostgreSQL (обязателен; в `.env.example` только шаблон) |
 | **REDIS_URL** | Redis URL. Локально: `redis://localhost:6379/0`. В production: только `rediss://...` + пароль |
 | **API_URL** | URL Backend API. Локально: `http://localhost:8080`. В production (telegram-bot): только `https://` |
@@ -55,9 +57,9 @@ Production compose не поднимает локальные PostgreSQL/Redis �
 ## Требования по версиям
 
 - **Python:** `>=3.11` (по `ai-service/pyproject.toml`).
-- **Go (security baseline):** использовать патч-версию `>=1.25.7`.
+- **Go (security baseline):** использовать патч-версию `>=1.25.8`.
   Для локальных запусков можно явно задавать:
-  `GO_TOOLCHAIN=go1.25.7 bash ./scripts/go_test_backend.sh ./...`
+  `GO_TOOLCHAIN=go1.25.8 bash ./scripts/go_test_backend.sh ./...`
   Если host-сеть ограничена (proxy.golang.org/github.com недоступны), используй:
   `BACKEND_GO_TEST_MODE=docker bash ./scripts/go_test_backend.sh ./...`
 - Проверка Python:
@@ -90,7 +92,7 @@ python3.11 -m pip install python-dotenv redis psycopg2-binary pgvector sentence-
 
 ```bash
 # API
-cd backend && GOTOOLCHAIN=go1.25.7 go run ./cmd/api
+cd backend && GOTOOLCHAIN=go1.25.8 go run ./cmd/api
 
 # AI user-embed consumer
 cd ai-service && PYTHONPATH=src python3.11 cmd/user_embed_consumer/main.py

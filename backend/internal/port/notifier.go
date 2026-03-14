@@ -25,7 +25,17 @@ type NotifyPayload struct {
 	ReasonCodes   []string
 	WhyItFits     string // 1–2 фразы из ai_metadata, почему подходит (опционально)
 	Batch         []BatchNotifyItem
+	BatchScore    float64
 	CriticScore   float64
+}
+
+// EffectiveBatchScore returns the canonical batch score and falls back to the
+// legacy CriticScore during the transition.
+func (p NotifyPayload) EffectiveBatchScore() float64 {
+	if p.BatchScore != 0 || p.CriticScore == 0 {
+		return p.BatchScore
+	}
+	return p.CriticScore
 }
 
 // Notifier отправляет уведомления пользователям (например, в Telegram).

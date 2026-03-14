@@ -11,6 +11,6 @@
     }
   },
   "deploy": {
-    "startCommand": "./api"
+    "startCommand": "./scripts/railway-start.sh"
   }
 }

@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 )
 
@@ -520,6 +521,47 @@ func waitForRetry(ctx context.Context, d time.Duration) error {
 	}
 }
 
+// formatJobAge возвращает строку с возрастом заказа и цветовым индикатором свежести.
+// Использует PostedAt если задан, иначе CreatedAt.
+func formatJobAge(job *domain.Job, now time.Time) string {
+	var posted time.Time
+	if job.PostedAt != nil {
+		posted = *job.PostedAt
+	} else {
+		posted = job.CreatedAt
+	}
+	if posted.IsZero() {
+		return ""
+	}
+	age := now.Sub(posted)
+	if age < 0 {
+		age = 0
+	}
+	var emoji, label string
+	switch {
+	case age < time.Minute:
+		emoji = "🟢"
+		label = "только что"
+	case age < time.Hour:
+		mins := int(age.Minutes())
+		emoji = "🟢"
+		label = fmt.Sprintf("%d мин назад", mins)
+	case age < 6*time.Hour:
+		hours := int(age.Hours())
+		emoji = "🟡"
+		label = fmt.Sprintf("%d ч назад", hours)
+	case age < 24*time.Hour:
+		hours := int(age.Hours())
+		emoji = "🟠"
+		label = fmt.Sprintf("%d ч назад", hours)
+	default:
+		days := int(age.Hours() / 24)
+		emoji = "🔴"
+		label = fmt.Sprintf("%d дн назад", days)
+	}
+	return emoji + " " + label
+}
+
 // formatMessage формирует текст уведомления: заголовок, описание (500 символов), бюджет, ссылка, почему подходит.
 func formatMessage(p port.NotifyPayload) string {
 	job := p.Job
@@ -528,7 +570,14 @@ func formatMessage(p port.NotifyPayload) string {
 	// Заголовок
 	b.WriteString("<b>")
 	b.WriteString(escapeHTML(job.Title))
-	b.WriteString("</b>\n\n")
+	b.WriteString("</b>")
+
+	// Возраст заказа
+	if age := formatJobAge(job, time.Now()); age != "" {
+		b.WriteString("\n")
+		b.WriteString(age)
+	}
+	b.WriteString("\n\n")
 
 	// Описание (до 500 символов)
 	desc := job.Description
@@ -566,7 +615,7 @@ func formatBatchMessage(p port.NotifyPayload) string {
 	items := sortedBatchItems(p.Batch)
 	var b strings.Builder
 
-	score := p.CriticScore
+	score := p.EffectiveBatchScore()
 	if score < 0 {
 		score = 0
 	}
@@ -589,6 +638,10 @@ func formatBatchMessage(p port.NotifyPayload) string {
 		b.WriteString(fmt.Sprintf("%d. ", idx+1))
 		b.WriteString(escapeHTML(title))
 		b.WriteString("</b>")
+		if age := formatJobAge(job, time.Now()); age != "" {
+			b.WriteString(" · ")
+			b.WriteString(age)
+		}
 
 		why := strings.TrimSpace(item.WhyItFits)
 		if why != "" {

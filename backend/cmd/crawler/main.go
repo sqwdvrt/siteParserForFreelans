@@ -35,6 +35,8 @@ import (
 	"go.opentelemetry.io/otel"
 )
 
+const jobEmbedDispatchFlushPeriod = 2 * time.Second
+
 func main() {
 	_ = godotenv.Load()
 	_ = godotenv.Load("../.env") // при запуске из backend/
@@ -58,6 +60,10 @@ func main() {
 	}
 	redisURL := os.Getenv("REDIS_URL")
 	if redisURL == "" {
+		if isProd {
+			slog.Error("REDIS_URL not set")
+			os.Exit(1)
+		}
 		redisURL = "redis://localhost:6379/0"
 	}
 	if isProd {
@@ -195,6 +201,8 @@ func main() {
 		queueName = "ai-process"
 	}
 	queue := redisqueue.NewQueue(rdb, queueName)
+	dispatchRepo := postgres.NewDispatchRepository(pool)
+	jobEmbedDispatcher := usecase.NewPendingJobEmbedDispatcher(dispatchRepo, queue, 30*time.Second)
 	registry := prometheus.NewRegistry()
 	registry.MustRegister(
 		collectors.NewGoCollector(),
@@ -245,28 +253,28 @@ func main() {
 		sources = append(sources, crawlSource{
 			name:    "kwork",
 			listURL: kworkListURL,
-			crawl:   usecase.NewCrawlProjects(kworkFetcher, kwork.NewExtractor(), repo, queue),
+			crawl:   usecase.NewCrawlProjects(kworkFetcher, kwork.NewExtractor(), repo, dispatchRepo),
 		})
 	}
 	if enabledSources["flru"] {
 		sources = append(sources, crawlSource{
 			name:    "flru",
 			listURL: flruListURL,
-			crawl:   usecase.NewCrawlProjects(fetcher, flru.NewExtractor(), repo, queue),
+			crawl:   usecase.NewCrawlProjects(fetcher, flru.NewExtractor(), repo, dispatchRepo),
 		})
 	}
 	if enabledSources["freelancehunt"] {
 		sources = append(sources, crawlSource{
 			name:    "freelancehunt",
 			listURL: freelancehuntListURL,
-			crawl:   usecase.NewCrawlProjects(fetcher, freelancehunt.NewExtractor(), repo, queue),
+			crawl:   usecase.NewCrawlProjects(fetcher, freelancehunt.NewExtractor(), repo, dispatchRepo),
 		})
 	}
 	if enabledSources["weblancer"] {
 		sources = append(sources, crawlSource{
 			name:    "weblancer",
 			listURL: weblancerListURL,
-			crawl:   usecase.NewCrawlProjects(fetcher, weblancer.NewExtractor(), repo, queue),
+			crawl:   usecase.NewCrawlProjects(fetcher, weblancer.NewExtractor(), repo, dispatchRepo),
 		})
 	}
 	if len(sources) == 0 {
@@ -277,6 +285,7 @@ func main() {
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	go runJobEmbedDispatchLoop(ctx, jobEmbedDispatcher)
 
 	healthAddr := os.Getenv("CRAWLER_HEALTH_ADDR")
 	if healthAddr == "" {
@@ -342,6 +351,19 @@ func main() {
 		}
 		crawlerMetrics.ObserveRunSuccess(totalSaved, time.Since(startedAt))
 		slog.Info("CrawlOnce done", "total_saved", totalSaved, "sources", len(sources), "trace_id", traceID)
+
+		// Re-enqueue any jobs that were saved but never reached the ai-process queue
+		// (e.g. due to a Redis blip during a previous crawl run).
+		if requeued, err := sources[0].crawl.RequeueOrphaned(crawlCtx, 50); err != nil {
+			slog.Warn("crawl: orphan requeue scan failed", "err", err)
+		} else if requeued > 0 {
+			slog.Info("crawl: orphaned jobs requeued", "count", requeued, "trace_id", traceID)
+		}
+		if flushed, err := jobEmbedDispatcher.Flush(crawlCtx, 500); err != nil {
+			slog.Warn("crawl: pending job dispatch flush failed", "err", err, "trace_id", traceID)
+		} else if flushed > 0 {
+			slog.Info("crawl: pending jobs dispatched", "count", flushed, "trace_id", traceID)
+		}
 	}
 
 	c := cron.New()
@@ -485,4 +507,22 @@ func observeCrawlerQueueDepth(client *redisclient.Client, metrics *telemetry.Cra
 		return
 	}
 	metrics.SetQueueDepth(ready, processing, dlq)
+}
+
+func runJobEmbedDispatchLoop(ctx context.Context, dispatcher *usecase.PendingJobEmbedDispatcher) {
+	if dispatcher == nil {
+		return
+	}
+	ticker := time.NewTicker(jobEmbedDispatchFlushPeriod)
+	defer ticker.Stop()
+	for {
+		if _, err := dispatcher.Flush(ctx, 200); err != nil && ctx.Err() == nil {
+			slog.Warn("job-embed dispatch flush failed", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }

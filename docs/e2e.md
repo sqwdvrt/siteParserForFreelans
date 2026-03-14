@@ -10,18 +10,25 @@
 
 **Полный стек с ботом:**
 ```bash
-docker compose --profile workers up -d
+docker compose --profile workers --profile bot up -d
 ```
-Запускает: postgres, redis, backend-api, backend-crawler, backend-notifier, ai-service, **telegram-bot**.
+Запускает core-сервисы + `workers`/`bot` профили (включая `browser-service`, `backend-crawler`, `backend-notifier`, `ai-service`, `ai-ac-consumer`, `ollama`, `telegram-bot`).
 `ai-user-embed` запускается отдельно через profile `ai-user-embed` при необходимости.
+`ai-user-rematch` в `docker-compose.yml` без profile и стартует по умолчанию.
 
 Напишите боту в Telegram `/start` → `/profile Ваш профиль` — всё автоматически.
+
+Проверки UX для `/profile`:
+- `/profile` без текста: бот должен попросить отправить текст профиля следующим сообщением.
+- пустое follow-up сообщение после `/profile`: бот должен ответить, что пустой профиль не сохраняется.
+- при временной недоступности backend: бот должен вернуть понятное сообщение о недоступности сервиса, а не молчать.
 
 **E2E с вашим ID (из .env):**
 ```bash
 ./scripts/e2e_test.sh
 ```
 Скрипт поднимает compose с профилем `workers`.
+Локальный `telegram-bot` скрипт не поднимает (для этого нужен `--profile bot`).
 Скрипт берёт `TELEGRAM_ID` из `.env` — уведомления придут вам.
 
 ## Быстрый запуск E2E
@@ -54,7 +61,8 @@ docker compose --profile workers up -d
 # 2. POST /users (имитация /start)
 # В API включена HMAC-подпись user-level запросов, поэтому проще использовать ./scripts/e2e_test.sh.
 # Для ручной проверки нужно добавить заголовки:
-# X-Telegram-ID, X-Request-Timestamp, X-Request-Signature (см. scripts/e2e_test.sh -> sign_user_request)
+# X-Telegram-ID, X-Request-Timestamp, X-Request-Nonce, X-Request-Signature
+# (см. scripts/e2e_test.sh -> sign_user_request)
 
 # 3. Проверка в БД
 docker compose exec postgres psql -U site_parser -d site_parser -c "SELECT * FROM users;"
@@ -69,4 +77,4 @@ docker compose exec postgres psql -U site_parser -d site_parser -c "SELECT * FRO
 - Crawler: `docker compose logs backend-crawler`
 - AI Service: `docker compose logs ai-service`
 - Notifier: `docker compose logs backend-notifier`
-- Telegram bot: `docker compose logs telegram-bot`
+- Telegram bot (если запущен profile `bot`): `docker compose logs telegram-bot`

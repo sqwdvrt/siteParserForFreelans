@@ -25,8 +25,11 @@ import (
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/security"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/telemetry"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/usecase"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
+
+const userEmbedDispatchFlushPeriod = 2 * time.Second
 
 func main() {
 	_ = godotenv.Load()
@@ -99,13 +102,17 @@ func main() {
 	defer pool.Close()
 
 	userRepo := postgres.NewUserRepository(pool)
+	userStatsRepo := postgres.NewUserStatsRepository(pool)
 	feedbackRepo := postgres.NewFeedbackRepository(pool)
+	productEventRepo := postgres.NewProductEventRepository(pool)
 	adminRepo := postgres.NewAdminRepository(pool)
+	dispatchRepo := postgres.NewDispatchRepository(pool)
 
 	var userEmbedQueue port.UserEmbedQueue
 	var nonceStore api.NonceStore
 	var rateLimiter api.RequestRateLimiter
 	var rdb *redisclient.Client
+	var userEmbedDispatcher *usecase.PendingUserEmbedDispatcher
 
 	opt, err := redisclient.ParseURL(redisURL)
 	if err != nil {
@@ -128,6 +135,7 @@ func main() {
 				queueName = "user-embed"
 			}
 			userEmbedQueue = redisqueue.NewUserEmbedQueue(rdb, queueName)
+			userEmbedDispatcher = usecase.NewPendingUserEmbedDispatcher(dispatchRepo, userEmbedQueue, 30*time.Second)
 			nonceStore = redisqueue.NewNonceStore(rdb, "api:nonce")
 			rateLimiter = redisqueue.NewRateLimiter(rdb, "api:ratelimit")
 		}
@@ -164,19 +172,22 @@ func main() {
 	}
 
 	handlers := &api.Handlers{
-		UserRepo:          userRepo,
-		UserEmbedQueue:    userEmbedQueue,
-		FeedbackRepo:      feedbackRepo,
-		AuthToken:         apiToken,
-		UserHMACSecret:    userHMACSecret,
-		Logger:            slog.Default(),
-		NonceStore:        nonceStore,
-		RateLimiter:       rateLimiter,
-		TrustedProxyCIDRs: trustedProxyCIDRs,
-		NonceTTL:          time.Duration(nonceTTLSec) * time.Second,
-		RateLimitWindow:   time.Duration(rateWindowSec) * time.Second,
-		IPRateLimit:       ipRPM,
-		TelegramRateLimit: tgRPM,
+		UserRepo:              userRepo,
+		UserStatsRepo:         userStatsRepo,
+		UserEmbedDispatchRepo: dispatchRepo,
+		UserEmbedDispatcher:   userEmbedDispatcher,
+		FeedbackRepo:          feedbackRepo,
+		ProductEventRepo:      productEventRepo,
+		AuthToken:             apiToken,
+		UserHMACSecret:        userHMACSecret,
+		Logger:                slog.Default(),
+		NonceStore:            nonceStore,
+		RateLimiter:           rateLimiter,
+		TrustedProxyCIDRs:     trustedProxyCIDRs,
+		NonceTTL:              time.Duration(nonceTTLSec) * time.Second,
+		RateLimitWindow:       time.Duration(rateWindowSec) * time.Second,
+		IPRateLimit:           ipRPM,
+		TelegramRateLimit:     tgRPM,
 	}
 
 	r := chi.NewRouter()
@@ -185,6 +196,7 @@ func main() {
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
+	registry.MustRegister(telemetry.NewFeedbackQualityCollector(feedbackRepo, 7*24*time.Hour, 3*time.Second, slog.Default()))
 	httpMetrics := telemetry.NewHTTPMetrics(registry)
 	r.Use(otelhttp.NewMiddleware("site-parser-api"))
 	r.Use(httpMetrics.Middleware)
@@ -201,6 +213,7 @@ func main() {
 	r.Put("/users/{id}/profile", handlers.PutUserProfile)
 	r.Put("/users/{id}/notify-hour", handlers.PutUserNotifyHour)
 	r.Get("/users/{id}/preferences", handlers.GetUserPreferences)
+	r.Get("/users/{id}/stats", handlers.GetUserStats)
 	r.Put("/users/{id}/preferences", handlers.PutUserPreferences)
 	r.Post("/users/{id}/feedback", handlers.PostUserFeedback)
 	r.Route("/admin", func(r chi.Router) {
@@ -249,11 +262,17 @@ func main() {
 			fatal("API listen failed", "err", err)
 		}
 	}()
+	dispatchCtx, dispatchCancel := context.WithCancel(context.Background())
+	defer dispatchCancel()
+	if userEmbedDispatcher != nil {
+		go runUserEmbedDispatchLoop(dispatchCtx, userEmbedDispatcher)
+	}
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh
 	signal.Stop(sigCh)
 	slog.Info("shutdown signal received")
+	dispatchCancel()
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
@@ -360,4 +379,22 @@ func validateRuntimeSecurityPolicy(isProd, allowRedisDegraded bool) error {
 		return fmt.Errorf("APP_ENV=production forbids API_ALLOW_REDIS_DEGRADED=1; redis-backed nonce/rate-limit/user-embed queue are mandatory")
 	}
 	return nil
+}
+
+func runUserEmbedDispatchLoop(ctx context.Context, dispatcher *usecase.PendingUserEmbedDispatcher) {
+	if dispatcher == nil {
+		return
+	}
+	ticker := time.NewTicker(userEmbedDispatchFlushPeriod)
+	defer ticker.Stop()
+	for {
+		if _, err := dispatcher.Flush(ctx, 100); err != nil && ctx.Err() == nil {
+			slog.Warn("user-embed dispatch flush failed", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }

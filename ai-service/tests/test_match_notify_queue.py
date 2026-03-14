@@ -42,11 +42,12 @@ def test_serialize_batch_includes_ranked_jobs_and_score() -> None:
                 actor_confidence=0.9,
             )
         ],
-        critic_score=8.24,
+        batch_score=8.24,
     )
     data = json.loads(payload)
     assert data["user_id"] == 10
-    assert data["critic_score"] == 8.24
+    assert data["batch_score"] == 8.24
+    assert "critic_score" not in data
     assert len(data["jobs"]) == 1
     assert data["jobs"][0]["job_id"] == 1
     assert data["jobs"][0]["rank"] == 1
@@ -66,10 +67,29 @@ def test_serialize_batch_uses_explicit_trace_id() -> None:
                     actor_confidence=0.9,
                 )
             ],
-            critic_score=8.24,
+            batch_score=8.24,
             trace_id="trace-explicit-1",
         )
     finally:
         reset_trace_id(token)
     data = json.loads(payload)
     assert data["trace_id"] == "trace-explicit-1"
+
+
+def test_serialize_batch_accepts_legacy_critic_score_alias() -> None:
+    payload = RedisMatchNotifyQueue._serialize_batch(
+        user_id=10,
+        ranked_jobs=[
+            RankedJob(
+                job_id=1,
+                title="Backend Python",
+                why_it_fits="Good Django fit",
+                rank=1,
+                actor_confidence=0.9,
+            )
+        ],
+        critic_score=8.24,
+    )
+    data = json.loads(payload)
+    assert data["batch_score"] == 8.24
+    assert data["critic_score"] == 8.24

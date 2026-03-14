@@ -8,6 +8,7 @@ import threading
 from ai_service.port.queue import JobQueueConsumer
 from ai_service.tracing.setup import extract_context
 from ai_service.usecase.process_job import ProcessJobUseCase
+from ai_service.util.queue_retry import reclaim_with_retry, wait_before_retry
 from ai_service.util.trace_context import reset_trace_id, set_trace_id
 
 logger = logging.getLogger(__name__)
@@ -19,10 +20,11 @@ except ImportError:
     _OTEL_AVAILABLE = False
 
 
-def _maybe_reclaim(queue: JobQueueConsumer) -> None:
+def _maybe_reclaim(queue: JobQueueConsumer):
     reclaim = getattr(queue, "reclaim_stuck", None)
     if callable(reclaim):
-        reclaim()
+        return reclaim
+    return None
 
 
 def _maybe_ack(queue: JobQueueConsumer, job_id: int) -> None:
@@ -120,12 +122,25 @@ def run_consumer(
 ) -> None:
     """Цикл: BRPOP → ProcessJob. Выход по stop_event.set()."""
     stop = stop_event or threading.Event()
-    _maybe_reclaim(queue)
+    if not reclaim_with_retry(
+        reclaim=_maybe_reclaim(queue),
+        stop_event=stop,
+        logger=logger,
+        operation="queue reclaim",
+    ):
+        logger.info("consumer loop stopped before reclaim completed")
+        return
     while not stop.is_set():
         try:
             job_id = queue.pop_blocking(timeout_sec=timeout_sec)
         except Exception as e:
-            logger.exception("queue pop failed: %s", e)
+            if wait_before_retry(
+                stop_event=stop,
+                logger=logger,
+                operation="queue pop",
+                exc=e,
+            ):
+                break
             continue
         if job_id is not None:
             if _maybe_shutdown_requeue(queue, job_id, stop):

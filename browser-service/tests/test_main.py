@@ -1,0 +1,269 @@
+from __future__ import annotations
+
+from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
+from pathlib import Path
+import sys
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import main  # noqa: E402
+
+
+@dataclass
+class FakePage:
+    html: str = "<html></html>"
+    goto_error: Exception | None = None
+    wait_error: Exception | None = None
+    content_error: Exception | None = None
+    goto_calls: list[dict[str, Any]] = field(default_factory=list)
+    wait_calls: list[dict[str, Any]] = field(default_factory=list)
+    closed: bool = False
+
+    async def goto(self, url: str, *, wait_until: str, timeout: int) -> None:
+        self.goto_calls.append({"url": url, "wait_until": wait_until, "timeout": timeout})
+        if self.goto_error is not None:
+            raise self.goto_error
+
+    async def wait_for_selector(self, selector: str, *, timeout: int) -> None:
+        self.wait_calls.append({"selector": selector, "timeout": timeout})
+        if self.wait_error is not None:
+            raise self.wait_error
+
+    async def content(self) -> str:
+        if self.content_error is not None:
+            raise self.content_error
+        return self.html
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@dataclass
+class FakeContext:
+    page: FakePage
+    new_page_error: Exception | None = None
+    closed: bool = False
+
+    async def new_page(self) -> FakePage:
+        if self.new_page_error is not None:
+            raise self.new_page_error
+        return self.page
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+@dataclass
+class FakeBrowser:
+    context: FakeContext | None = None
+    connected: bool = True
+    new_context_error: Exception | None = None
+    new_context_calls: list[dict[str, Any]] = field(default_factory=list)
+
+    def is_connected(self) -> bool:
+        return self.connected
+
+    async def new_context(self, **kwargs: Any) -> FakeContext:
+        self.new_context_calls.append(kwargs)
+        if self.new_context_error is not None:
+            raise self.new_context_error
+        if self.context is None:
+            raise RuntimeError("context is not configured")
+        return self.context
+
+
+@pytest.fixture
+def client(monkeypatch: pytest.MonkeyPatch):
+    @asynccontextmanager
+    async def test_lifespan(_: Any):
+        yield
+
+    original_lifespan = main.app.router.lifespan_context
+    main.app.router.lifespan_context = test_lifespan
+    monkeypatch.setattr(main, "_browser", None)
+    monkeypatch.setattr(main, "_playwright", None)
+    try:
+        with TestClient(main.app) as test_client:
+            yield test_client
+    finally:
+        main.app.router.lifespan_context = original_lifespan
+
+
+def set_browser(monkeypatch: pytest.MonkeyPatch, browser: FakeBrowser | None) -> None:
+    monkeypatch.setattr(main, "_browser", browser)
+
+
+def test_healthz_returns_200_when_browser_connected(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    set_browser(monkeypatch, FakeBrowser(connected=True))
+
+    response = client.get("/healthz")
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+
+
+def test_healthz_returns_503_when_browser_not_ready(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    set_browser(monkeypatch, FakeBrowser(connected=False))
+
+    response = client.get("/healthz")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "browser not ready"
+
+
+@pytest.mark.parametrize(
+    ("url", "detail"),
+    [
+        ("ftp://example.com/page", "invalid url scheme"),
+        ("https:///missing-host", "invalid url: missing host"),
+    ],
+)
+def test_render_rejects_invalid_urls(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    url: str,
+    detail: str,
+) -> None:
+    set_browser(monkeypatch, FakeBrowser())
+
+    response = client.get("/render", params={"url": url})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == detail
+
+
+def test_render_returns_503_when_browser_is_missing(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    set_browser(monkeypatch, None)
+
+    response = client.get("/render", params={"url": "https://example.com/page"})
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "browser not ready"
+
+
+def test_render_returns_html_for_non_kwork_pages(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    page = FakePage(html="<html><body>plain</body></html>")
+    context = FakeContext(page=page)
+    browser = FakeBrowser(context=context)
+    set_browser(monkeypatch, browser)
+
+    response = client.get("/render", params={"url": "https://example.com/page"})
+
+    assert response.status_code == 200
+    assert response.json() == {"html": "<html><body>plain</body></html>", "url": "https://example.com/page"}
+    assert len(browser.new_context_calls) == 1
+    assert browser.new_context_calls[0]["locale"] == "ru-RU"
+    assert browser.new_context_calls[0]["timezone_id"] == "Europe/Moscow"
+    assert page.goto_calls == [{"url": "https://example.com/page", "wait_until": "domcontentloaded", "timeout": main._TIMEOUT_MS}]
+    assert page.wait_calls == []
+    assert page.closed is True
+    assert context.closed is True
+
+
+def test_render_waits_for_kwork_selector(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    page = FakePage(html="<html><div class='want-card'>ready</div></html>")
+    context = FakeContext(page=page)
+    browser = FakeBrowser(context=context)
+    set_browser(monkeypatch, browser)
+
+    response = client.get("/render", params={"url": "https://kwork.ru/projects"})
+
+    assert response.status_code == 200
+    assert response.json()["html"] == "<html><div class='want-card'>ready</div></html>"
+    assert page.wait_calls == [{"selector": main._KWORK_READY_SELECTOR, "timeout": min(main._TIMEOUT_MS, 20_000)}]
+
+
+def test_render_returns_current_dom_when_kwork_selector_times_out(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = FakePage(
+        html="<html><body>fallback DOM</body></html>",
+        wait_error=main.PWTimeoutError("selector timeout"),
+    )
+    context = FakeContext(page=page)
+    browser = FakeBrowser(context=context)
+    set_browser(monkeypatch, browser)
+
+    response = client.get("/render", params={"url": "https://www.kwork.ru/projects"})
+
+    assert response.status_code == 200
+    assert response.json()["html"] == "<html><body>fallback DOM</body></html>"
+    assert len(page.wait_calls) == 1
+
+
+def test_render_truncates_large_html(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(main, "_MAX_BODY", 16)
+    page = FakePage(html="<html><body>0123456789abcdef</body></html>")
+    context = FakeContext(page=page)
+    browser = FakeBrowser(context=context)
+    set_browser(monkeypatch, browser)
+
+    response = client.get("/render", params={"url": "https://example.com/large"})
+
+    assert response.status_code == 200
+    assert response.json()["html"] == "<html><body>0123"
+
+
+def test_render_maps_playwright_timeout_to_504_and_cleans_up(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = FakePage(goto_error=main.PWTimeoutError("goto timeout"))
+    context = FakeContext(page=page)
+    browser = FakeBrowser(context=context)
+    set_browser(monkeypatch, browser)
+
+    response = client.get("/render", params={"url": "https://example.com/slow"})
+
+    assert response.status_code == 504
+    assert "render timeout" in response.json()["detail"]
+    assert page.closed is True
+    assert context.closed is True
+
+
+def test_render_maps_generic_errors_to_500_and_cleans_up(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = FakePage(content_error=RuntimeError("boom"))
+    context = FakeContext(page=page)
+    browser = FakeBrowser(context=context)
+    set_browser(monkeypatch, browser)
+
+    response = client.get("/render", params={"url": "https://example.com/fail"})
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "boom"
+    assert page.closed is True
+    assert context.closed is True
+
+
+def test_render_maps_context_creation_errors_to_500(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    browser = FakeBrowser(new_context_error=RuntimeError("context boom"))
+    set_browser(monkeypatch, browser)
+
+    response = client.get("/render", params={"url": "https://example.com/context-fail"})
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "context boom"
+
+
+def test_render_maps_page_creation_errors_to_500_and_closes_context(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = FakeContext(page=FakePage(), new_page_error=RuntimeError("page boom"))
+    browser = FakeBrowser(context=context)
+    set_browser(monkeypatch, browser)
+
+    response = client.get("/render", params={"url": "https://example.com/page-fail"})
+
+    assert response.status_code == 500
+    assert response.json()["detail"] == "page boom"
+    assert context.closed is True

@@ -75,6 +75,10 @@ POLL_RETRY_BASE_DELAY_SEC = 0.5
 POLL_RETRY_MAX_DELAY_SEC = 10.0
 HEARTBEAT_FILE_ENV = "TELEGRAM_HEARTBEAT_FILE"
 DEFAULT_HEARTBEAT_FILE = "/tmp/telegram-bot-heartbeat"
+LOCAL_BOT_TOKEN_ENV = "LOCAL_TELEGRAM_BOT_TOKEN"
+POLLING_ACTIVE_WEBHOOK_POLICY_ENV = "POLLING_ACTIVE_WEBHOOK_POLICY"
+DEFAULT_POLLING_ACTIVE_WEBHOOK_POLICY = "standby"
+POLLING_STANDBY_SLEEP_SEC = 30.0
 WEBHOOK_PATH = "/webhook"
 DEFAULT_METRICS_BIND = "0.0.0.0"
 DEFAULT_METRICS_PORT = 9107
@@ -939,6 +943,30 @@ def get_user_is_pro(
     return bool(prefs.get("is_pro"))
 
 
+def get_user_stats(
+    api_url: str,
+    user_id: int,
+    telegram_id: int,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> dict | None:
+    """GET /users/:id/stats. Returns json payload or None."""
+    url = f"{api_url.rstrip('/')}/users/{user_id}/stats"
+    body = b""
+    return _http_get(
+        url,
+        {},
+        headers=_signed_user_headers(api_auth_token, api_user_hmac_secret, "GET", url, telegram_id, body),
+    )
+
+
+def _to_int_or_default(value: object, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _cache_user_id(telegram_id: int, user_id: int, *, now_monotonic: float | None = None) -> None:
     now = now_monotonic if now_monotonic is not None else time.monotonic()
     if _STATE_STORE is not None:
@@ -1162,6 +1190,7 @@ def set_my_commands(token: str) -> bool:
     commands = [
         {"command": "start",       "description": "Начать / перезапустить настройку профиля"},
         {"command": "profile",     "description": "Обновить профиль фрилансера вручную"},
+        {"command": "stats",       "description": "Показать статистику подбора за 7 дней"},
         {"command": "notify_hour", "description": "Установить час дайджеста (Pro, 0–23, МСК)"},
         {"command": "help",        "description": "Список команд"},
     ]
@@ -1204,6 +1233,54 @@ def delete_webhook(token: str, drop_pending: bool = False) -> None:
         logger.warning("deleteWebhook failed: status=%s", status)
         return
     logger.info("webhook deleted")
+
+
+def get_webhook_info(token: str) -> dict:
+    """Return Telegram webhook metadata for the current bot token."""
+    data = _http_get(f"{TELEGRAM_BASE}{token}/getWebhookInfo", {})
+    if not data or not data.get("ok"):
+        return {}
+    result = data.get("result")
+    return result if isinstance(result, dict) else {}
+
+
+def _resolve_bot_token(app_env: str) -> tuple[str, str]:
+    """Resolve bot token, preferring a local override outside production."""
+    if not _is_production_env(app_env):
+        local_token = (os.getenv(LOCAL_BOT_TOKEN_ENV) or "").strip()
+        if local_token:
+            return local_token, LOCAL_BOT_TOKEN_ENV
+    return (os.getenv("TELEGRAM_BOT_TOKEN") or "").strip(), "TELEGRAM_BOT_TOKEN"
+
+
+def _polling_active_webhook_policy() -> str:
+    policy = (os.getenv(POLLING_ACTIVE_WEBHOOK_POLICY_ENV, DEFAULT_POLLING_ACTIVE_WEBHOOK_POLICY) or "").strip().lower()
+    if not policy:
+        return DEFAULT_POLLING_ACTIVE_WEBHOOK_POLICY
+    return policy
+
+
+def run_polling_standby(reason: str, *, sleep_sec: float = POLLING_STANDBY_SLEEP_SEC) -> None:
+    """Keep the local bot healthy without polling when another webhook owns the token."""
+    heartbeat_file = os.getenv(HEARTBEAT_FILE_ENV, DEFAULT_HEARTBEAT_FILE)
+    stop_event = threading.Event()
+
+    def _handle_shutdown(signum: int, frame: object) -> None:
+        _ = frame
+        try:
+            signal_name = signal.Signals(signum).name
+        except ValueError:
+            signal_name = str(signum)
+        logger.info("standby shutdown signal received: %s", signal_name)
+        stop_event.set()
+
+    signal.signal(signal.SIGTERM, _handle_shutdown)
+    signal.signal(signal.SIGINT, _handle_shutdown)
+    logger.warning("polling standby enabled: %s", _compact_log_text(reason, 240))
+    while not stop_event.is_set():
+        _touch_heartbeat(heartbeat_file)
+        stop_event.wait(timeout=max(1.0, float(sleep_sec)))
+    logger.info("polling standby stopped")
 
 
 def send_message(token: str, chat_id: int, text: str) -> bool:
@@ -1368,9 +1445,22 @@ def _onboarding_start(token: str, chat_id: int, telegram_id: int) -> None:
     _set_conversation_state(telegram_id, json.dumps({"step": "category"}))
     send_keyboard(
         token, chat_id,
-        "Добро пожаловать! Давайте настроим ваш профиль.\n\n<b>Шаг 1 из 4.</b> Выберите специализацию:",
+        "Добро пожаловать! Я подбираю фриланс-заказы под ваш профиль.\n\n"
+        "Как это работает:\n"
+        "1. Вы отвечаете на 4 коротких вопроса.\n"
+        "2. Я собираю профиль и начинаю искать подходящие проекты.\n"
+        "3. Вы ставите 👍/👎 под заказами, и подбор становится точнее.\n\n"
+        "<b>Шаг 1 из 4.</b> Выберите специализацию:",
         _build_category_keyboard(),
     )
+
+
+def _build_returning_user_keyboard() -> list[list[dict]]:
+    return [
+        [{"text": "🔄 Пройти анкету", "callback_data": "ob:restart"}],
+        [{"text": "✏️ Обновить вручную", "callback_data": "ob:manual"}],
+        [{"text": "Оставить текущий профиль", "callback_data": "ob:keep"}],
+    ]
 
 
 def _maybe_send_profile_quality_hint(token: str, chat_id: int, profile_text: str) -> None:
@@ -1481,7 +1571,8 @@ def _onboarding_handle_callback(
         profile_text = _build_onboarding_profile_text(ob)
         user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
         if user_id is None:
-            send_message(token, chat_id, "Сначала отправьте /start")
+            _record_command("onboarding", "resolve_failed")
+            send_message(token, chat_id, _profile_missing_start_or_backend_message())
             return
         status = put_user_profile_status(
             api_url,
@@ -1512,13 +1603,33 @@ def _onboarding_handle_callback(
                     "Добавьте стек, опыт и тип задач, которые вам интересны.",
                 )
             else:
-                _record_command("onboarding", "error")
-                send_message(token, chat_id, "Ошибка сохранения профиля. Попробуйте позже.")
+                if status == 0 or status >= 500:
+                    _record_command("onboarding", "backend_unavailable")
+                    send_message(token, chat_id, _profile_backend_unavailable_message())
+                else:
+                    _record_command("onboarding", "error")
+                    send_message(token, chat_id, "Ошибка сохранения профиля. Попробуйте позже.")
 
     elif data == "ob:edit":
         ob["step"] = "edit"
         _set_conversation_state(telegram_id, json.dumps(ob))
-        edit_message_text(token, chat_id, message_id, "✏️ Отправьте текст профиля следующим сообщением:")
+        edit_message_text(
+            token,
+            chat_id,
+            message_id,
+            "✏️ Отправьте текст профиля следующим сообщением.\n\n"
+            "Что лучше указать: стек, тип задач, опыт и какие проекты вам интересны.",
+        )
+
+    elif data == "ob:manual":
+        _set_conversation_state(telegram_id, json.dumps({"step": "edit"}))
+        edit_message_text(
+            token,
+            chat_id,
+            message_id,
+            "✏️ Отправьте текст профиля следующим сообщением.\n\n"
+            "Что лучше указать: стек, тип задач, опыт и какие проекты вам интересны.",
+        )
 
     elif data == "ob:restart":
         _clear_conversation_state(telegram_id)
@@ -1674,6 +1785,28 @@ def _extract_update_id(update: dict) -> int | None:
     return update_id
 
 
+def _profile_missing_start_or_backend_message() -> str:
+    return (
+        "Не удалось подготовить обновление профиля. "
+        "Если вы ещё не регистрировались, отправьте /start. "
+        "Если /start уже был, backend временно недоступен — попробуйте позже."
+    )
+
+
+def _profile_backend_unavailable_message() -> str:
+    return (
+        "Сервис профилей временно недоступен (backend не отвечает). "
+        "Попробуйте обновить профиль через пару минут."
+    )
+
+
+def _profile_empty_message() -> str:
+    return (
+        "Пустой профиль не сохраню. Отправьте текст профиля одним сообщением "
+        "или используйте /profile &lt;текст профиля&gt;."
+    )
+
+
 def _handle_profile_submission(
     token: str,
     chat_id: int,
@@ -1685,8 +1818,8 @@ def _handle_profile_submission(
 ) -> bool:
     user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
     if user_id is None:
-        _record_command("profile", "missing_start")
-        send_message(token, chat_id, "Сначала отправьте /start")
+        _record_command("profile", "resolve_failed")
+        send_message(token, chat_id, _profile_missing_start_or_backend_message())
         return True
     status = put_user_profile_status(api_url, user_id, telegram_id, profile_text, api_auth_token, api_user_hmac_secret)
     if status == 204:
@@ -1703,9 +1836,12 @@ def _handle_profile_submission(
                 "Профиль слишком короткий или похож на тестовую заглушку. "
                 "Опишите навыки, стек, опыт и типы задач, которые вам интересны.",
             )
+        elif status == 0 or status >= 500:
+            _record_command("profile", "backend_unavailable")
+            send_message(token, chat_id, _profile_backend_unavailable_message())
         else:
             _record_command("profile", "error")
-            send_message(token, chat_id, "Ошибка обновления профиля.")
+            send_message(token, chat_id, "Не удалось обновить профиль. Попробуйте позже.")
     return True
 
 
@@ -1791,10 +1927,13 @@ def _handle_update(
                         ],
                     )
                 else:
-                    send_message(
+                    send_keyboard(
                         token,
                         chat_id,
-                        "Вы уже зарегистрированы. Используйте /profile для обновления профиля.",
+                        "Вы уже зарегистрированы.\n\n"
+                        "Можно заново пройти короткую анкету, обновить профиль вручную "
+                        "или оставить текущий профиль без изменений.",
+                        _build_returning_user_keyboard(),
                     )
         else:
             _record_command("start", "error")
@@ -1832,12 +1971,53 @@ def _handle_update(
                 "<b>Команды бота:</b>\n"
                 "/start — зарегистрироваться\n"
                 "/profile &lt;текст&gt; — обновить профиль фрилансера\n"
+                "/stats — статистика подбора за последние 7 дней\n"
                 "/notify_hour &lt;0–23&gt; — выбрать час дайджеста по МСК (только Pro)\n"
                 "/help — эта справка\n\n"
                 "После обновления профиля ИИ подберёт подходящие заказы и пришлёт уведомления.\n"
                 "Нажмите 👍 или 👎 под каждым заказом, чтобы обучить алгоритм."
             ),
         )
+        return True
+
+    if text == "/stats" or text.startswith("/stats@"):
+        _clear_conversation_state(telegram_id)
+        user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+        if user_id is None:
+            _record_command("stats", "missing_start")
+            send_message(token, chat_id, "Сначала отправьте /start")
+            return True
+        stats = get_user_stats(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
+        if not isinstance(stats, dict):
+            _record_command("stats", "error")
+            send_message(token, chat_id, "Не удалось получить статистику. Попробуйте позже.")
+            return True
+
+        period_days = max(1, _to_int_or_default(stats.get("period_days"), 7))
+        projects_found = max(0, _to_int_or_default(stats.get("projects_found"), 0))
+        projects_shown = max(0, _to_int_or_default(stats.get("projects_shown"), 0))
+        filtered_other = max(0, _to_int_or_default(stats.get("projects_filtered_other"), 0))
+        filtered_by_budget = max(0, _to_int_or_default(stats.get("projects_filtered_by_budget"), 0))
+        budget_filter_active = bool(stats.get("budget_filter_active"))
+
+        budget_line = (
+            f"• Отфильтровано по бюджету: {filtered_by_budget}"
+            if budget_filter_active
+            else "• Бюджетный фильтр: не задан"
+        )
+
+        send_message(
+            token,
+            chat_id,
+            (
+                f"📊 Статистика за последние {period_days} дней:\n"
+                f"• Найдено подходящих проектов: {projects_found}\n"
+                f"• Показано вам: {projects_shown}\n"
+                f"• Не показано после ранжирования/лимитов: {filtered_other}\n"
+                f"{budget_line}"
+            ),
+        )
+        _record_command("stats", "ok")
         return True
 
     if text == "/notify_hour" or text.startswith("/notify_hour "):
@@ -1873,6 +2053,15 @@ def _handle_update(
         )
 
     pending_state = _get_conversation_state(telegram_id)
+    ob_state = _parse_onboarding_state(pending_state)
+    if pending_state == "await_profile" and not text:
+        _record_command("profile", "empty")
+        send_message(token, chat_id, _profile_empty_message())
+        return True
+    if ob_state is not None and ob_state.get("step") == "edit" and not text:
+        _record_command("profile", "empty")
+        send_message(token, chat_id, _profile_empty_message())
+        return True
     if text and not text.startswith("/") and pending_state == "await_profile":
         return _handle_profile_submission(
             token,
@@ -1883,7 +2072,6 @@ def _handle_update(
             api_auth_token,
             api_user_hmac_secret,
         )
-    ob_state = _parse_onboarding_state(pending_state)
     if text and not text.startswith("/") and ob_state is not None and ob_state.get("step") == "edit":
         return _handle_profile_submission(
             token,
@@ -2024,14 +2212,14 @@ def main() -> None:
     global _STATE_STORE
     _METRICS.set_ready(False)
     app_env = os.getenv("APP_ENV", "development")
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    token, token_env_name = _resolve_bot_token(app_env)
     api_auth_token = os.getenv("API_AUTH_TOKEN")
     api_user_hmac_secret = os.getenv("API_USER_HMAC_SECRET")
     api_url = (os.getenv("API_URL") or "").strip()
     if not api_url and not _is_production_env(app_env):
         api_url = "http://localhost:8080"
     try:
-        _validate_secret("TELEGRAM_BOT_TOKEN", token or "", 20)
+        _validate_secret(token_env_name, token or "", 20)
         _validate_secret("API_AUTH_TOKEN", api_auth_token or "", 32)
         _validate_secret("API_USER_HMAC_SECRET", api_user_hmac_secret or "", 32)
         if _is_production_env(app_env):
@@ -2047,10 +2235,14 @@ def main() -> None:
     if bot_mode not in {"polling", "webhook"}:
         logger.error("BOT_MODE must be polling or webhook")
         sys.exit(1)
+    webhook_policy = _polling_active_webhook_policy()
+    if webhook_policy not in {"standby", "ignore"}:
+        logger.error("%s must be standby or ignore", POLLING_ACTIVE_WEBHOOK_POLICY_ENV)
+        sys.exit(1)
     metrics_bind = os.getenv("BOT_METRICS_BIND", DEFAULT_METRICS_BIND)
     metrics_port = _read_non_negative_int_env("BOT_METRICS_PORT", DEFAULT_METRICS_PORT)
     metrics_server = _start_metrics_server(metrics_bind, metrics_port)
-    logger.info("bot started, API=%s mode=%s", api_url, bot_mode)
+    logger.info("bot started, API=%s mode=%s token_env=%s", api_url, bot_mode, token_env_name)
     set_my_commands(token or "")
     _METRICS.set_ready(True)
     if bot_mode == "webhook":
@@ -2076,6 +2268,15 @@ def main() -> None:
         )
     else:
         try:
+            if webhook_policy != "ignore":
+                webhook_info = get_webhook_info(token or "")
+                active_webhook_url = str(webhook_info.get("url") or "").strip()
+                if active_webhook_url:
+                    _METRICS.set_ready(False)
+                    run_polling_standby(
+                        f"active webhook detected for polling token: {active_webhook_url}",
+                    )
+                    return
             run_polling(token or "", api_url, api_auth_token or "", api_user_hmac_secret or "")
         finally:
             _METRICS.set_ready(False)

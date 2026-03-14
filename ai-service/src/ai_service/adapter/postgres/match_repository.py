@@ -28,6 +28,7 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
         job_id: int,
         threshold: float,
         limit: int = 100,
+        allowed_user_ids: list[int] | None = None,
     ) -> list[MatchCandidate]:
         """
         SQL: score = 1 - (embedding <=> $1) считается в CTE.
@@ -37,19 +38,29 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
         """
         if embedding is None or len(embedding) == 0 or len(embedding) != 384:
             return []
+        if allowed_user_ids is not None and not allowed_user_ids:
+            return []
         with self._conn() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 vec = Vector(embedding)
+                user_scope_sql = ""
+                params: list[object] = [vec]
+                if allowed_user_ids is not None:
+                    user_scope_sql = " AND u.id = ANY(%s)"
+                    params.append(allowed_user_ids)
+                params.extend([threshold, job_id, limit])
                 cur.execute(
-                    """
+                    f"""
                     WITH scored_users AS (
                       SELECT
                         u.id AS user_id,
+                        COALESCE(u.profile_text, '') AS profile_text,
                         1 - (u.embedding <=> %s) AS similarity
                       FROM users u
                       WHERE u.embedding IS NOT NULL
+                      {user_scope_sql}
                     )
-                    SELECT s.user_id, s.similarity
+                    SELECT s.user_id, s.profile_text, s.similarity
                     FROM scored_users s
                     WHERE s.similarity >= %s
                       AND NOT EXISTS (
@@ -61,7 +72,7 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
                     ORDER BY s.similarity DESC
                     LIMIT %s
                     """,
-                    (vec, threshold, job_id, limit),
+                    tuple(params),
                 )
                 rows = cur.fetchall()
         return [
@@ -69,8 +80,10 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
                 user_id=row["user_id"],
                 job_id=job_id,
                 match_score=float(row["similarity"]),
+                rerank_score=0.0,
                 raw_similarity=float(row["similarity"]),
                 final_score=float(row["similarity"]),
+                profile_text=str(row.get("profile_text") or ""),
             )
             for row in rows
         ]
@@ -119,6 +132,7 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
                 user_id=user_id,
                 job_id=row["job_id"],
                 match_score=float(row["similarity"]),
+                rerank_score=0.0,
                 raw_similarity=float(row["similarity"]),
                 final_score=float(row["similarity"]),
             )

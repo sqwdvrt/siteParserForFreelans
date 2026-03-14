@@ -63,7 +63,7 @@ services:
       - monitoring
     command:
       - --redis.addr=${REDIS_EXPORTER_REDIS_ADDR:-redis://redis:6379}
-      - --check-keys=${REDIS_EXPORTER_CHECK_KEYS:-ai-process,ai-process:processing,ai-process:dlq,user-embed,user-embed:processing,user-embed:dlq,ac-batch,ac-batch:processing,ac-batch:dlq,match-notify,match-notify:processing,match-notify:dlq}
+      - --check-keys=${REDIS_EXPORTER_CHECK_KEYS:-ai-process,ai-process:processing,ai-process:dlq,user-embed,user-embed:processing,user-embed:dlq,user-rematch,user-rematch:processing,user-rematch:dlq,ac-batch,ac-batch:processing,ac-batch:dlq,match-notify,match-notify:processing,match-notify:dlq}
     depends_on:
       redis:
         condition: service_healthy
@@ -103,6 +103,9 @@ services:
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/api-overview.json
+      POSTGRES_DB: "${POSTGRES_DB:-site_parser}"
+      POSTGRES_USER: "${POSTGRES_USER:-site_parser}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}"
     volumes:
       - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
       - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
@@ -111,6 +114,7 @@ services:
       - "${GRAFANA_BIND_IP:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
     depends_on:
       - prometheus
+      - postgres
     deploy:
       resources:
         limits:

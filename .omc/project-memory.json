@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1772797605083,
+  "lastScanned": 1773042305841,
   "projectRoot": "/Users/sqwdvrt/VS Code/siteParserForFreelans",
   "techStack": {
     "languages": [
@@ -45,14 +45,14 @@
       "path": "Library",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1772797605078,
+      "lastAccessed": 1773042305836,
       "keyFiles": []
     },
     "ai-service": {
       "path": "ai-service",
       "purpose": null,
       "fileCount": 8,
-      "lastAccessed": 1772797605078,
+      "lastAccessed": 1773042305836,
       "keyFiles": [
         "Dockerfile",
         "pyproject.toml",
@@ -65,7 +65,7 @@
       "path": "backend",
       "purpose": null,
       "fileCount": 10,
-      "lastAccessed": 1772797605078,
+      "lastAccessed": 1773042305837,
       "keyFiles": [
         "Dockerfile",
         "crawler",
@@ -77,20 +77,30 @@
     "browser-service": {
       "path": "browser-service",
       "purpose": null,
-      "fileCount": 4,
-      "lastAccessed": 1772797605078,
+      "fileCount": 5,
+      "lastAccessed": 1773042305837,
       "keyFiles": [
         "Dockerfile",
         "main.py",
         "railway.json",
+        "requirements-dev.txt",
         "requirements.txt"
+      ]
+    },
+    "config": {
+      "path": "config",
+      "purpose": "Configuration files",
+      "fileCount": 1,
+      "lastAccessed": 1773042305837,
+      "keyFiles": [
+        "production_env_contract.json"
       ]
     },
     "docs": {
       "path": "docs",
       "purpose": "Documentation",
       "fileCount": 3,
-      "lastAccessed": 1772797605079,
+      "lastAccessed": 1773042305837,
       "keyFiles": [
         "e2e.md",
         "env_setup.md",
@@ -101,27 +111,27 @@
       "path": "monitoring",
       "purpose": null,
       "fileCount": 1,
-      "lastAccessed": 1772797605079,
+      "lastAccessed": 1773042305837,
       "keyFiles": []
     },
     "scripts": {
       "path": "scripts",
       "purpose": "Build/utility scripts",
-      "fileCount": 14,
-      "lastAccessed": 1772797605079,
+      "fileCount": 23,
+      "lastAccessed": 1773042305838,
       "keyFiles": [
         "backup_postgres.sh",
         "backup_restore_smoke.sh",
-        "check_coverage.sh",
-        "dump-kwork-html.sh",
-        "e2e_test.sh"
+        "bootstrap_ai_venv.sh",
+        "bootstrap_browser_service_venv.sh",
+        "bootstrap_telegram_bot_venv.sh"
       ]
     },
     "telegram-bot": {
       "path": "telegram-bot",
       "purpose": null,
       "fileCount": 7,
-      "lastAccessed": 1772797605079,
+      "lastAccessed": 1773042305838,
       "keyFiles": [
         "Dockerfile",
         "main.py",
@@ -133,108 +143,117 @@
       "path": "ai-service/docs",
       "purpose": "Documentation",
       "fileCount": 1,
-      "lastAccessed": 1772797605079,
+      "lastAccessed": 1773042305838,
       "keyFiles": [
         "CODE_REVIEW_STAGE7.md"
+      ]
+    },
+    "browser-service/tests": {
+      "path": "browser-service/tests",
+      "purpose": "Test files",
+      "fileCount": 1,
+      "lastAccessed": 1773042305839,
+      "keyFiles": [
+        "test_main.py"
       ]
     }
   },
   "hotPaths": [
     {
-      "path": "telegram-bot/main.py",
-      "accessCount": 37,
-      "lastAccessed": 1772881176056,
+      "path": ".env.production.example",
+      "accessCount": 7,
+      "lastAccessed": 1773043197796,
       "type": "file"
     },
     {
-      "path": "ai-service/src/ai_service/usecase/process_job.py",
-      "accessCount": 7,
-      "lastAccessed": 1772831677214,
+      "path": ".env.example",
+      "accessCount": 2,
+      "lastAccessed": 1773043115465,
+      "type": "file"
+    },
+    {
+      "path": "backend",
+      "accessCount": 2,
+      "lastAccessed": 1773043132407,
+      "type": "directory"
+    },
+    {
+      "path": "",
+      "accessCount": 2,
+      "lastAccessed": 1773043194672,
+      "type": "directory"
+    },
+    {
+      "path": "docker-compose.prod.yml",
+      "accessCount": 1,
+      "lastAccessed": 1773042399565,
       "type": "file"
     },
     {
       "path": "Makefile",
-      "accessCount": 5,
-      "lastAccessed": 1772831510214,
-      "type": "file"
-    },
-    {
-      "path": "ai-service/src/ai_service/adapter/postgres/feedback_repository.py",
-      "accessCount": 3,
-      "lastAccessed": 1772831319869,
-      "type": "file"
-    },
-    {
-      "path": "ai-service/src/ai_service/adapter/postgres/__init__.py",
-      "accessCount": 2,
-      "lastAccessed": 1772831655011,
-      "type": "file"
-    },
-    {
-      "path": "backend/internal/port/notification_repository.go",
-      "accessCount": 2,
-      "lastAccessed": 1772832092507,
-      "type": "file"
-    },
-    {
-      "path": "telegram-bot/Dockerfile",
       "accessCount": 1,
-      "lastAccessed": 1772819063097,
+      "lastAccessed": 1773042414403,
       "type": "file"
     },
     {
-      "path": "ai-service/cmd/ac_consumer/main.py",
+      "path": "backend/cmd/crawler/main.go",
       "accessCount": 1,
-      "lastAccessed": 1772831445650,
+      "lastAccessed": 1773042420914,
       "type": "file"
     },
     {
-      "path": ".claude/worktrees/musing-spence/ai-service/cmd/user_rematch_consumer/main.py",
+      "path": "backend/cmd/notifier/main.go",
       "accessCount": 1,
-      "lastAccessed": 1772831446028,
+      "lastAccessed": 1773042427049,
       "type": "file"
     },
     {
-      "path": "ai-service/tests/test_process_job.py",
+      "path": "scripts/full_check.sh",
       "accessCount": 1,
-      "lastAccessed": 1772831703118,
+      "lastAccessed": 1773042432529,
       "type": "file"
     },
     {
-      "path": "backend/internal/port/notifier.go",
+      "path": "scripts/e2e_test.sh",
       "accessCount": 1,
-      "lastAccessed": 1772832007450,
+      "lastAccessed": 1773042440561,
       "type": "file"
     },
     {
-      "path": "backend/internal/port/match_notify_consumer.go",
+      "path": "docs/operations.md",
       "accessCount": 1,
-      "lastAccessed": 1772832007588,
+      "lastAccessed": 1773042447194,
       "type": "file"
     },
     {
-      "path": "backend/internal/usecase/send_notification_test.go",
+      "path": "monitoring/prometheus/alerts.yml",
       "accessCount": 1,
-      "lastAccessed": 1772832049819,
+      "lastAccessed": 1773042478720,
       "type": "file"
     },
     {
-      "path": "backend/migrations/016_notifications_why_it_fits.sql",
+      "path": "backend/cmd/api",
       "accessCount": 1,
-      "lastAccessed": 1772832070091,
-      "type": "file"
-    },
-    {
-      "path": "backend/internal/port/user_repository.go",
-      "accessCount": 1,
-      "lastAccessed": 1772832099007,
-      "type": "file"
-    },
-    {
-      "path": "",
-      "accessCount": 1,
-      "lastAccessed": 1772879679544,
+      "lastAccessed": 1773042498674,
       "type": "directory"
+    },
+    {
+      "path": "ai-service/cmd",
+      "accessCount": 1,
+      "lastAccessed": 1773042507121,
+      "type": "directory"
+    },
+    {
+      "path": "backend/internal/adapter/browser/fetcher.go",
+      "accessCount": 1,
+      "lastAccessed": 1773043122011,
+      "type": "file"
+    },
+    {
+      "path": "backend/internal/adapter/http/fetcher.go",
+      "accessCount": 1,
+      "lastAccessed": 1773043141892,
+      "type": "file"
     }
   ],
   "userDirectives": []

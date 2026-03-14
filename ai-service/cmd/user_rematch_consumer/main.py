@@ -28,6 +28,7 @@ from ai_service.adapter.redis.user_rematch_queue import RedisUserRematchQueueCon
 from ai_service.usecase.process_user_rematch import ProcessUserRematchUseCase
 from ai_service.util.health_server import start_health_server
 from ai_service.util.postgres_pool_config import load_postgres_pool_settings
+from ai_service.util.queue_retry import reclaim_with_retry, wait_before_retry
 from ai_service.util.runtime_env import require_env, resolve_redis_url
 from ai_service.util.transport_security import (
     is_production_env,
@@ -120,14 +121,26 @@ def _run_consumer(
 ) -> None:
     """Цикл: BRPOP user-rematch → ProcessUserRematch. Выход по stop_event.set()."""
     reclaim = getattr(queue, "reclaim_stuck", None)
-    if callable(reclaim):
-        reclaim()
+    if not reclaim_with_retry(
+        reclaim=reclaim if callable(reclaim) else None,
+        stop_event=stop_event,
+        logger=logger,
+        operation="user-rematch queue reclaim",
+    ):
+        logger.info("user-rematch consumer loop stopped before reclaim completed")
+        return
 
     while not stop_event.is_set():
         try:
             user_id = queue.pop_blocking(timeout_sec=timeout_sec)
         except Exception as e:
-            logger.exception("user-rematch queue pop failed: %s", e)
+            if wait_before_retry(
+                stop_event=stop_event,
+                logger=logger,
+                operation="user-rematch queue pop",
+                exc=e,
+            ):
+                break
             continue
         if user_id is not None:
             if _maybe_shutdown_requeue(queue, user_id, stop_event):

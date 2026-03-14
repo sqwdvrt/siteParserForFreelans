@@ -47,6 +47,42 @@ def test_run_polling_handles_start(bot, monkeypatch):
     send_keyboard.assert_called_once()  # onboarding wizard starts
 
 
+def test_run_polling_start_for_returning_user_shows_onboarding_actions(bot, monkeypatch):
+    updates = [
+        (
+            [
+                {
+                    "update_id": 1,
+                    "message": {
+                        "chat": {"id": 100},
+                        "from": {"id": 200},
+                        "text": "/start",
+                    },
+                }
+            ],
+            2,
+        )
+    ]
+
+    monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
+    monkeypatch.setattr(bot, "post_users", MagicMock(return_value=1))
+    monkeypatch.setattr(bot, "_mark_first_seen", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(bot, "_get_first_seen_ts", lambda *_args, **_kwargs: int(bot.time.time()))
+    send_keyboard = MagicMock(return_value=42)
+    send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(bot, "send_keyboard", send_keyboard)
+    monkeypatch.setattr(bot, "send_message", send_message)
+
+    with pytest.raises(KeyboardInterrupt):
+        bot.run_polling("token", "https://api.example.com", "tok", "hmac")
+
+    send_message.assert_not_called()
+    send_keyboard.assert_called_once()
+    keyboard = send_keyboard.call_args.args[3]
+    callback_data = [button["callback_data"] for row in keyboard for button in row]
+    assert callback_data == ["ob:restart", "ob:manual", "ob:keep"]
+
+
 def test_run_polling_handles_profile(bot, monkeypatch):
     updates = [
         (
@@ -245,7 +281,7 @@ def test_run_polling_profile_requires_start(bot, monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         bot.run_polling("token", "https://api.example.com", "tok", "hmac")
 
-    assert "Сначала отправьте /start" in send_message.call_args.args[2]
+    assert "Не удалось подготовить обновление профиля" in send_message.call_args.args[2]
 
 
 def test_run_polling_profile_update_error(bot, monkeypatch):
@@ -265,7 +301,31 @@ def test_run_polling_profile_update_error(bot, monkeypatch):
     with pytest.raises(KeyboardInterrupt):
         bot.run_polling("token", "https://api.example.com", "tok", "hmac")
 
-    assert "Ошибка обновления профиля." in send_message.call_args.args[2]
+    assert "Сервис профилей временно недоступен" in send_message.call_args.args[2]
+
+
+def test_run_polling_profile_empty_followup_text(bot, monkeypatch):
+    updates = [
+        (
+            [
+                {"update_id": 1, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "/profile"}},
+                {"update_id": 2, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "   "}},
+            ],
+            3,
+            True,
+        )
+    ]
+
+    send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
+    monkeypatch.setattr(bot, "send_message", send_message)
+
+    with pytest.raises(KeyboardInterrupt):
+        bot.run_polling("token", "https://api.example.com", "tok", "hmac")
+
+    assert send_message.call_count == 2
+    assert "Отправьте следующим сообщением текст профиля" in send_message.call_args_list[0].args[2]
+    assert "Пустой профиль не сохраню" in send_message.call_args_list[1].args[2]
 
 
 def test_run_polling_profile_invalid_message(bot, monkeypatch):
@@ -414,6 +474,70 @@ def test_handle_notify_hour_submission_clears_state_on_forbidden(bot, monkeypatc
     assert handled is True
     assert bot._get_conversation_state(200) is None
     assert "только Pro-пользователям" in send_message.call_args.args[2]
+
+
+def test_run_polling_handles_stats_command(bot, monkeypatch):
+    updates = [
+        (
+            [
+                {"update_id": 1, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "/stats"}},
+            ],
+            2,
+            True,
+        )
+    ]
+
+    send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
+    monkeypatch.setattr(bot, "post_users", MagicMock(return_value=123))
+    monkeypatch.setattr(
+        bot,
+        "get_user_stats",
+        MagicMock(
+            return_value={
+                "period_days": 7,
+                "projects_found": 42,
+                "projects_shown": 12,
+                "projects_filtered_other": 30,
+                "projects_filtered_by_budget": 18,
+                "budget_filter_active": True,
+            },
+        ),
+    )
+    monkeypatch.setattr(bot, "send_message", send_message)
+
+    with pytest.raises(KeyboardInterrupt):
+        bot.run_polling("token", "https://api.example.com", "tok", "hmac")
+
+    assert send_message.call_count == 1
+    text = send_message.call_args.args[2]
+    assert "Статистика за последние 7 дней" in text
+    assert "Найдено подходящих проектов: 42" in text
+    assert "Показано вам: 12" in text
+    assert "Отфильтровано по бюджету: 18" in text
+
+
+def test_run_polling_stats_requires_start(bot, monkeypatch):
+    updates = [
+        (
+            [
+                {"update_id": 1, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "/stats"}},
+            ],
+            2,
+            True,
+        )
+    ]
+
+    send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
+    monkeypatch.setattr(bot, "post_users", MagicMock(return_value=None))
+    monkeypatch.setattr(bot, "send_message", send_message)
+
+    with pytest.raises(KeyboardInterrupt):
+        bot.run_polling("token", "https://api.example.com", "tok", "hmac")
+
+    assert send_message.call_count == 1
+    assert "Сначала отправьте /start" in send_message.call_args.args[2]
 
 
 def test_run_polling_skips_duplicate_update_id(bot, monkeypatch):

@@ -40,6 +40,15 @@ class PostgresUserRepository(PooledPostgresRepository, UserRepository):
                 (user_id,) = cur.fetchone()
                 return user_id
 
+    def list_matchable_users(self) -> list[User]:
+        with self._conn() as conn:
+            try:
+                rows = self._fetch_matchable_users_with_preferences(conn)
+            except UndefinedTable:
+                conn.rollback()
+                rows = self._fetch_matchable_users_without_preferences(conn)
+        return [self._row_to_matchable_user(row) for row in rows]
+
     def get_by_id(self, user_id: int) -> User | None:
         with self._conn() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -108,6 +117,62 @@ class PostgresUserRepository(PooledPostgresRepository, UserRepository):
             preferences=self._load_preferences(conn, row["id"]),
             tag_affinity=self._load_tag_affinity(conn, row["id"]),
         )
+
+    def _row_to_matchable_user(self, row: dict[str, Any]) -> User:
+        return User(
+            id=row["id"],
+            telegram_id=row["telegram_id"],
+            profile_text=row.get("profile_text"),
+            embedding=None,
+            preferences=UserPreferences(
+                include_keywords=tuple(self._normalize_text_values(row.get("include_keywords"))),
+                exclude_keywords=tuple(self._normalize_text_values(row.get("exclude_keywords"))),
+                min_budget=float(row["min_budget"]) if row.get("min_budget") is not None else None,
+                max_budget=float(row["max_budget"]) if row.get("max_budget") is not None else None,
+                preferred_sources=tuple(self._normalize_text_values(row.get("preferred_sources"))),
+            ),
+        )
+
+    @staticmethod
+    def _fetch_matchable_users_with_preferences(conn: Any) -> list[dict[str, Any]]:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    u.id,
+                    u.telegram_id,
+                    COALESCE(u.profile_text, '') AS profile_text,
+                    COALESCE(up.include_keywords, '{}') AS include_keywords,
+                    COALESCE(up.exclude_keywords, '{}') AS exclude_keywords,
+                    up.min_budget,
+                    up.max_budget,
+                    COALESCE(up.preferred_sources, '{}') AS preferred_sources
+                FROM users u
+                LEFT JOIN user_preferences up ON up.user_id = u.id
+                WHERE u.embedding IS NOT NULL
+                """
+            )
+            return list(cur.fetchall())
+
+    @staticmethod
+    def _fetch_matchable_users_without_preferences(conn: Any) -> list[dict[str, Any]]:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    u.id,
+                    u.telegram_id,
+                    COALESCE(u.profile_text, '') AS profile_text,
+                    ARRAY[]::text[] AS include_keywords,
+                    ARRAY[]::text[] AS exclude_keywords,
+                    NULL::numeric AS min_budget,
+                    NULL::numeric AS max_budget,
+                    ARRAY[]::text[] AS preferred_sources
+                FROM users u
+                WHERE u.embedding IS NOT NULL
+                """
+            )
+            return list(cur.fetchall())
 
     def _load_preferences(self, conn: Any, user_id: int) -> UserPreferences:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:

@@ -23,16 +23,19 @@ func NewUserRepository(pool *pgxpool.Pool) *UserRepository {
 	return &UserRepository{pool: pool}
 }
 
-// Save создаёт пользователя по telegram_id. При дубликате возвращает существующий id.
-func (r *UserRepository) Save(ctx context.Context, telegramID int64) (int64, error) {
-	var id int64
+// Save создаёт пользователя по telegram_id. При дубликате возвращает существующий id и created=false.
+func (r *UserRepository) Save(ctx context.Context, telegramID int64) (int64, bool, error) {
+	var (
+		id      int64
+		created bool
+	)
 	err := r.pool.QueryRow(ctx, `
-		INSERT INTO users (telegram_id)
+		INSERT INTO users (telegram_id, updated_at)
 		VALUES ($1)
 		ON CONFLICT (telegram_id) DO UPDATE SET updated_at = NOW()
-		RETURNING id
-	`, telegramID).Scan(&id)
-	return id, err
+		RETURNING id, (xmax = 0) AS created
+	`, telegramID).Scan(&id, &created)
+	return id, created, err
 }
 
 // GetByID возвращает пользователя по id. nil если не найден.

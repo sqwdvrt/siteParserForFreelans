@@ -1,0 +1,75 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1772913800117,
+  "projectRoot": "/Users/sqwdvrt/VS Code/siteParserForFreelans/telegram-bot",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Python",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "pyproject.toml"
+        ]
+      }
+    ],
+    "frameworks": [
+      {
+        "name": "pytest",
+        "version": null,
+        "category": "testing"
+      }
+    ],
+    "packageManager": null,
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": "pytest",
+    "lintCommand": "ruff check",
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "tests"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "__pycache__": {
+      "path": "__pycache__",
+      "purpose": null,
+      "fileCount": 2,
+      "lastAccessed": 1772913800102,
+      "keyFiles": [
+        "main.cpython-311.pyc",
+        "main.cpython-314.pyc"
+      ]
+    },
+    "tests": {
+      "path": "tests",
+      "purpose": "Test files",
+      "fileCount": 8,
+      "lastAccessed": 1772913800102,
+      "keyFiles": [
+        "conftest.py",
+        "test_api_helpers.py",
+        "test_cache.py",
+        "test_http_retry.py",
+        "test_main_entrypoint.py"
+      ]
+    }
+  },
+  "hotPaths": [],
+  "userDirectives": []
+}

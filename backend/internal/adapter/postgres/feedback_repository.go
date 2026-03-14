@@ -62,6 +62,22 @@ func (r *FeedbackRepository) StatsRecent(ctx context.Context, userID int64, with
 	return stats, nil
 }
 
+// GlobalStatsRecent возвращает счётчики good/bad по всем пользователям за последний период within.
+func (r *FeedbackRepository) GlobalStatsRecent(ctx context.Context, within time.Duration) (port.FeedbackStats, error) {
+	const q = `
+		SELECT
+			COUNT(*) FILTER (WHERE feedback = 'good') AS good_count,
+			COUNT(*) FILTER (WHERE feedback = 'bad')  AS bad_count
+		FROM user_feedback
+		WHERE created_at >= NOW() - $1::interval`
+	row := r.pool.QueryRow(ctx, q, fmt.Sprintf("%f seconds", within.Seconds()))
+	var stats port.FeedbackStats
+	if err := row.Scan(&stats.GoodCount, &stats.BadCount); err != nil {
+		return port.FeedbackStats{}, fmt.Errorf("global stats recent: %w", err)
+	}
+	return stats, nil
+}
+
 func (r *FeedbackRepository) rebuildTagAffinity(ctx context.Context, tx pgxTx, userID int64) error {
 	const upsertAffinitySQL = `
 		WITH aggregated AS (

@@ -6,6 +6,10 @@ import importlib.util
 import threading
 from pathlib import Path
 
+import pytest
+
+from ai_service.util import fallback_metrics
+
 
 def _load_ac_consumer_main_module():
     module_path = Path(__file__).resolve().parents[1] / "cmd" / "ac_consumer" / "main.py"
@@ -68,6 +72,52 @@ def test_schedule_pending_batches_respects_min_jobs() -> None:
     assert queue.messages[0].trace_id == "trace-20"
     assert pending_repo.list_calls == [600]
     assert pending_repo.claim_calls == [(10, 20, 600, 2), (20, 20, 600, 2), (30, 20, 600, 2)]
+
+
+def test_observe_pending_job_table_metrics_exports_total_and_unprocessed() -> None:
+    module = _load_ac_consumer_main_module()
+    fallback_metrics.reset_counters_for_tests()
+
+    class FakePendingRepo:
+        def count_rows(self) -> int:
+            return 13
+
+        def count_unprocessed_rows(self) -> int:
+            return 5
+
+    module._observe_pending_job_table_metrics(FakePendingRepo())
+
+    rendered = fallback_metrics.render_prometheus_text()
+    assert 'ai_pending_ac_jobs_rows{state="total"} 13.0' in rendered
+    assert 'ai_pending_ac_jobs_rows{state="unprocessed"} 5.0' in rendered
+
+
+def test_cleanup_old_pending_rows_increments_cleanup_counter() -> None:
+    module = _load_ac_consumer_main_module()
+    fallback_metrics.reset_counters_for_tests()
+
+    class FakePendingRepo:
+        def delete_processed_older_than(self, older_than_days: int) -> int:
+            assert older_than_days == 14
+            return 4
+
+    deleted = module._cleanup_old_pending_rows(FakePendingRepo(), older_than_days=14)
+
+    assert deleted == 4
+    rendered = fallback_metrics.render_prometheus_text()
+    assert "ai_pending_ac_jobs_cleanup_total 4.0" in rendered
+
+
+def test_main_exits_on_invalid_llm_provider(monkeypatch, tmp_path: Path) -> None:
+    module = _load_ac_consumer_main_module()
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("LLM_PROVIDER", "claude")
+    monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
+
+    with pytest.raises(SystemExit):
+        module.main()
 
 
 def test_schedule_pending_batches_passes_custom_lease_timeout() -> None:
@@ -142,6 +192,7 @@ def test_main_forces_requeue_on_shutdown_timeout(monkeypatch, tmp_path: Path) ->
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
     monkeypatch.setenv(module.SHUTDOWN_GRACE_SEC_ENV, "0.05")
     monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
     monkeypatch.setenv("AC_BATCH_INTERVAL_SEC", "3600")
@@ -177,15 +228,12 @@ def test_main_forces_requeue_on_shutdown_timeout(monkeypatch, tmp_path: Path) ->
     monkeypatch.setattr(module, "PostgresUserRepository", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "PostgresJobRepository", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "PostgresPendingJobsRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresFeedbackRepository", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "RedisMatchNotifyQueue", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "RedisACBatchQueueConsumer", lambda *_args, **_kwargs: queue_obj)
     monkeypatch.setattr(module, "OllamaActorAgent", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "RuleBasedActorAgent", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "FallbackActorAgent", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(module, "OllamaCriticAgent", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(module, "RuleBasedCriticAgent", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(module, "FallbackCriticAgent", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(module, "ActorCriticLoop", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "_schedule_pending_batches", lambda **_kwargs: 0)
 
     handlers: dict[int, object] = {}
@@ -222,6 +270,7 @@ def test_main_requeues_batch_if_shutdown_happens_after_pop(monkeypatch, tmp_path
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
     monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
     monkeypatch.setenv("AC_BATCH_INTERVAL_SEC", "3600")
 
@@ -269,15 +318,12 @@ def test_main_requeues_batch_if_shutdown_happens_after_pop(monkeypatch, tmp_path
     monkeypatch.setattr(module, "PostgresUserRepository", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "PostgresJobRepository", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "PostgresPendingJobsRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresFeedbackRepository", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "RedisMatchNotifyQueue", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "RedisACBatchQueueConsumer", lambda *_args, **_kwargs: queue_obj)
     monkeypatch.setattr(module, "OllamaActorAgent", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "RuleBasedActorAgent", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "FallbackActorAgent", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(module, "OllamaCriticAgent", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(module, "RuleBasedCriticAgent", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(module, "FallbackCriticAgent", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(module, "ActorCriticLoop", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "_schedule_pending_batches", lambda **_kwargs: 0)
     monkeypatch.setattr(module, "ProcessACBatchUseCase", lambda *_args, **_kwargs: FakeProcessBatch())
     monkeypatch.setattr(module.signal, "signal", fake_signal)
@@ -287,3 +333,56 @@ def test_main_requeues_batch_if_shutdown_happens_after_pop(monkeypatch, tmp_path
     assert queue_obj.nacked == [10]
     assert process_calls == []
     assert queue_obj.nack_all_inflight_calls == 1
+
+
+def test_main_retries_reclaim_error(monkeypatch, tmp_path: Path) -> None:
+    module = _load_ac_consumer_main_module()
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.setenv("AI_QUEUE_RETRY_DELAY_SEC", "0")
+    monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
+    monkeypatch.setenv("AC_BATCH_INTERVAL_SEC", "3600")
+
+    handlers: dict[int, object] = {}
+
+    def fake_signal(sig, handler):
+        handlers[sig] = handler
+
+    class FakeQueue:
+        def __init__(self) -> None:
+            self.reclaim_calls = 0
+
+        def reclaim_stuck(self) -> None:
+            self.reclaim_calls += 1
+            if self.reclaim_calls == 1:
+                raise RuntimeError("redis temporary error")
+
+        def pop_blocking(self, timeout_sec: int = 1):
+            _ = timeout_sec
+            handlers[module.signal.SIGTERM](module.signal.SIGTERM, None)
+            return None
+
+        def nack_all_inflight(self) -> int:
+            return 0
+
+    queue_obj = FakeQueue()
+    monkeypatch.setattr(module, "start_metrics_server_from_env", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "probe_ollama", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(module, "PostgresUserRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresJobRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresPendingJobsRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresFeedbackRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RedisMatchNotifyQueue", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RedisACBatchQueueConsumer", lambda *_args, **_kwargs: queue_obj)
+    monkeypatch.setattr(module, "OllamaActorAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RuleBasedActorAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "FallbackActorAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "_schedule_pending_batches", lambda **_kwargs: 0)
+    monkeypatch.setattr(module, "ProcessACBatchUseCase", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module.signal, "signal", fake_signal)
+
+    module.main()
+
+    assert queue_obj.reclaim_calls == 2

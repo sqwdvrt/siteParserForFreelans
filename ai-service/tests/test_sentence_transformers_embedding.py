@@ -25,8 +25,16 @@ class _FakeSentenceTransformer:
         return _FakeVector(self._values)
 
 
+class _FakeCrossEncoder:
+    def __init__(self, model_name: str) -> None:
+        self.model_name = model_name
+
+
 def _load_embedding_module():
-    fake_mod = types.SimpleNamespace(SentenceTransformer=_FakeSentenceTransformer)
+    fake_mod = types.SimpleNamespace(
+        SentenceTransformer=_FakeSentenceTransformer,
+        CrossEncoder=_FakeCrossEncoder,
+    )
     sys.modules["sentence_transformers"] = fake_mod
     return importlib.reload(
         importlib.import_module("ai_service.adapter.sentence_transformers.embedding")

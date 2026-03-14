@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 
-from ai_service.domain.ranked_job import RankedJob
 from ai_service.port.match_notify_queue import MatchNotifyQueue
 from ai_service.port.match_repository import MatchRepository
 from ai_service.port.user_repository import UserRepository
@@ -66,28 +65,12 @@ class ProcessUserRematchUseCase:
                 len(candidates),
             )
 
-        enqueue_batch = getattr(self._match_notify_queue, "enqueue_batch", None)
-        if len(candidates) > 1 and callable(enqueue_batch):
-            ranked_jobs = [
-                RankedJob(
-                    job_id=c.job_id,
-                    title="",
-                    why_it_fits=c.why_it_fits,
-                    rank=idx + 1,
-                    actor_confidence=max(0.0, min(1.0, c.match_score)),
-                    final_score=c.final_score if c.final_score > 0 else c.match_score,
-                )
-                for idx, c in enumerate(candidates)
-            ]
-            avg_score = sum(item.final_score for item in ranked_jobs) / len(ranked_jobs)
-            enqueue_batch(
-                user_id=user_id,
-                ranked_jobs=ranked_jobs,
-                critic_score=round(avg_score * 10, 2),
-            )
+        enqueue_many = getattr(self._match_notify_queue, "enqueue_many", None)
+        if callable(enqueue_many):
+            enqueue_many(candidates)
             return len(candidates)
 
-        for c in candidates:
-            self._match_notify_queue.enqueue(c)
+        for candidate in candidates:
+            self._match_notify_queue.enqueue(candidate)
 
         return len(candidates)

@@ -6,7 +6,7 @@ Browser Render Service — рендерит JS-страницы через Playw
   GET /render?url=<url> — возвращает {"html": "...", "url": "..."} с полностью
                           отрендеренным HTML (после networkidle)
 """
-import asyncio
+from contextlib import asynccontextmanager
 import logging
 import os
 from urllib.parse import urlparse
@@ -24,15 +24,12 @@ _TIMEOUT_MS = int(os.getenv("BROWSER_TIMEOUT_MS", "60000"))
 _KWORK_READY_SELECTOR = os.getenv("KWORK_READY_SELECTOR", ".want-card,.wants-list__item,article[data-id]")
 _MAX_BODY = 10 * 1024 * 1024  # 10 MB
 
-app = FastAPI(title="Browser Render Service", version="1.0.0")
-
 _playwright: Playwright | None = None
 _browser: Browser | None = None
-_lock = asyncio.Lock()
 
 
-@app.on_event("startup")
-async def _startup() -> None:
+@asynccontextmanager
+async def lifespan(_: FastAPI):
     global _playwright, _browser
     log.info("launching Playwright Chromium")
     _playwright = await async_playwright().start()
@@ -46,15 +43,17 @@ async def _startup() -> None:
         ],
     )
     log.info("browser ready")
+    try:
+        yield
+    finally:
+        if _browser:
+            await _browser.close()
+        if _playwright:
+            await _playwright.stop()
+        log.info("browser stopped")
 
 
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    if _browser:
-        await _browser.close()
-    if _playwright:
-        await _playwright.stop()
-    log.info("browser stopped")
+app = FastAPI(title="Browser Render Service", version="1.0.0", lifespan=lifespan)
 
 
 @app.get("/healthz")
@@ -75,18 +74,20 @@ async def render(url: str = Query(..., description="URL страницы для 
     if _browser is None:
         raise HTTPException(status_code=503, detail="browser not ready")
 
-    # Каждый запрос получает изолированный контекст браузера (инкогнито-подобный),
-    # чтобы куки/сессии не перетекали между запросами.
-    context = await _browser.new_context(
-        user_agent=(
-            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        ),
-        locale="ru-RU",
-        timezone_id="Europe/Moscow",
-    )
-    page = await context.new_page()
+    context = None
+    page = None
     try:
+        # Каждый запрос получает изолированный контекст браузера (инкогнито-подобный),
+        # чтобы куки/сессии не перетекали между запросами.
+        context = await _browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ),
+            locale="ru-RU",
+            timezone_id="Europe/Moscow",
+        )
+        page = await context.new_page()
         log.info("render start url=%s", url)
 
         # Шаг 1: грузим страницу до DOMContentLoaded — это быстро.
@@ -119,5 +120,7 @@ async def render(url: str = Query(..., description="URL страницы для 
         log.warning("render failed url=%s err=%s", url, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
-        await page.close()
-        await context.close()
+        if page is not None:
+            await page.close()
+        if context is not None:
+            await context.close()

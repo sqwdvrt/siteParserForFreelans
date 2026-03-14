@@ -7,6 +7,7 @@ import logging
 from ai_service.port.embedding import EmbeddingService
 from ai_service.port.user_rematch_queue import UserRematchQueue
 from ai_service.port.user_repository import UserRepository
+from ai_service.util.profile_structurer import build_structured_profile_text
 from ai_service.util.trace_context import get_trace_id
 
 logger = logging.getLogger(__name__)
@@ -37,7 +38,7 @@ class ProcessUserEmbedUseCase:
             return False
 
         profile_text = user.profile_text or ""
-        text = profile_text.strip()
+        text = build_structured_profile_text(profile_text).strip()
         if not text:
             if trace_id:
                 logger.debug("empty profile_text, skip: %s trace_id=%s", user_id, trace_id)

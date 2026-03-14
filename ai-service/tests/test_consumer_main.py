@@ -26,12 +26,11 @@ def test_shutdown_grace_sec_invalid_env_fallback(monkeypatch) -> None:
     assert module._shutdown_grace_sec() == module.DEFAULT_SHUTDOWN_GRACE_SEC
 
 
-def test_main_exits_on_invalid_llm_provider(monkeypatch, tmp_path: Path) -> None:
+def test_main_exits_on_missing_database_url(monkeypatch, tmp_path: Path) -> None:
     module = _load_consumer_main_module()
 
-    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.setenv("LLM_PROVIDER", "claude")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
 
     with pytest.raises(SystemExit):
@@ -43,7 +42,6 @@ def test_main_forces_requeue_on_shutdown_timeout(monkeypatch, tmp_path: Path) ->
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.setenv("LLM_PROVIDER", "ollama")
     monkeypatch.setenv(module.SHUTDOWN_GRACE_SEC_ENV, "0.05")
     monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
 
@@ -57,14 +55,15 @@ def test_main_forces_requeue_on_shutdown_timeout(monkeypatch, tmp_path: Path) ->
 
     queue_obj = FakeQueue()
     monkeypatch.setattr(module, "PostgresJobRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresUserRepository", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "PostgresMatchRepository", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "PostgresPendingJobsRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresFeedbackRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresFilterEventRepository", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "AccumulateMatchesUseCase", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "SentenceTransformerEmbedding", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "CrossEncoderReranker", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "_warmup_embedding", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(module, "OllamaClassifier", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(module, "RuleBasedClassifier", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(module, "FallbackClassifier", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "ProcessJobUseCase", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "RedisQueueConsumer", lambda *_args, **_kwargs: queue_obj)
 
@@ -104,7 +103,6 @@ def test_main_requeues_inflight_messages_on_clean_shutdown(monkeypatch, tmp_path
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.setenv("LLM_PROVIDER", "ollama")
     monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
 
     class FakeQueue:
@@ -117,14 +115,15 @@ def test_main_requeues_inflight_messages_on_clean_shutdown(monkeypatch, tmp_path
 
     queue_obj = FakeQueue()
     monkeypatch.setattr(module, "PostgresJobRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresUserRepository", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "PostgresMatchRepository", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "PostgresPendingJobsRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresFeedbackRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresFilterEventRepository", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "AccumulateMatchesUseCase", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "SentenceTransformerEmbedding", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "CrossEncoderReranker", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "_warmup_embedding", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(module, "OllamaClassifier", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(module, "RuleBasedClassifier", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(module, "FallbackClassifier", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "ProcessJobUseCase", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "RedisQueueConsumer", lambda *_args, **_kwargs: queue_obj)
     monkeypatch.setattr(module.signal, "signal", lambda *_args, **_kwargs: None)
@@ -140,7 +139,6 @@ def test_main_passes_postgres_pool_settings_to_repositories(monkeypatch, tmp_pat
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
-    monkeypatch.setenv("LLM_PROVIDER", "ollama")
     monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
     monkeypatch.setenv("PG_POOL_MIN_CONNS", "0")
     monkeypatch.setenv("PG_POOL_MAX_CONNS", "1")
@@ -155,6 +153,11 @@ def test_main_passes_postgres_pool_settings_to_repositories(monkeypatch, tmp_pat
     )
     monkeypatch.setattr(
         module,
+        "PostgresUserRepository",
+        lambda *_args, **kwargs: repo_calls.append(("user", kwargs)) or object(),
+    )
+    monkeypatch.setattr(
+        module,
         "PostgresMatchRepository",
         lambda *_args, **kwargs: repo_calls.append(("match", kwargs)) or object(),
     )
@@ -163,12 +166,20 @@ def test_main_passes_postgres_pool_settings_to_repositories(monkeypatch, tmp_pat
         "PostgresPendingJobsRepository",
         lambda *_args, **kwargs: repo_calls.append(("pending", kwargs)) or object(),
     )
+    monkeypatch.setattr(
+        module,
+        "PostgresFeedbackRepository",
+        lambda *_args, **kwargs: repo_calls.append(("feedback", kwargs)) or object(),
+    )
+    monkeypatch.setattr(
+        module,
+        "PostgresFilterEventRepository",
+        lambda *_args, **kwargs: repo_calls.append(("filter_events", kwargs)) or object(),
+    )
     monkeypatch.setattr(module, "AccumulateMatchesUseCase", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "SentenceTransformerEmbedding", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "CrossEncoderReranker", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "_warmup_embedding", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(module, "OllamaClassifier", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(module, "RuleBasedClassifier", lambda *_args, **_kwargs: object())
-    monkeypatch.setattr(module, "FallbackClassifier", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "ProcessJobUseCase", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module, "RedisQueueConsumer", lambda *_args, **_kwargs: object())
     monkeypatch.setattr(module.signal, "signal", lambda *_args, **_kwargs: None)
@@ -178,6 +189,9 @@ def test_main_passes_postgres_pool_settings_to_repositories(monkeypatch, tmp_pat
 
     assert repo_calls == [
         ("job", {"minconn": 0, "maxconn": 1, "statement_timeout_ms": 2500}),
+        ("user", {"minconn": 0, "maxconn": 1, "statement_timeout_ms": 2500}),
         ("match", {"minconn": 0, "maxconn": 1, "statement_timeout_ms": 2500}),
         ("pending", {"minconn": 0, "maxconn": 1, "statement_timeout_ms": 2500}),
+        ("feedback", {"minconn": 0, "maxconn": 1, "statement_timeout_ms": 2500}),
+        ("filter_events", {"minconn": 0, "maxconn": 1, "statement_timeout_ms": 2500}),
     ]

@@ -159,11 +159,33 @@ func TestNotifierEnvParsing_MaxPerDayFallsBackWhenProInvalid(t *testing.T) {
 	}
 }
 
+func TestResolveTelegramBotToken_PrefersLocalOutsideProduction(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "prod-token")
+	t.Setenv(localTelegramTokenEnv, "local-token")
+
+	got, source := resolveTelegramBotToken(false)
+	if got != "local-token" || source != localTelegramTokenEnv {
+		t.Fatalf("resolveTelegramBotToken(false) = (%q, %q), want (%q, %q)", got, source, "local-token", localTelegramTokenEnv)
+	}
+}
+
+func TestResolveTelegramBotToken_UsesPrimaryInProduction(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "prod-token")
+	t.Setenv(localTelegramTokenEnv, "local-token")
+
+	got, source := resolveTelegramBotToken(true)
+	if got != "prod-token" || source != "TELEGRAM_BOT_TOKEN" {
+		t.Fatalf("resolveTelegramBotToken(true) = (%q, %q), want (%q, %q)", got, source, "prod-token", "TELEGRAM_BOT_TOKEN")
+	}
+}
+
 type stubUserRepo struct {
 	getByID func(ctx context.Context, userID int64) (*domain.User, error)
 }
 
-func (s *stubUserRepo) Save(ctx context.Context, telegramID int64) (int64, error) { return 0, nil }
+func (s *stubUserRepo) Save(ctx context.Context, telegramID int64) (int64, bool, error) {
+	return 0, false, nil
+}
 func (s *stubUserRepo) GetByID(ctx context.Context, userID int64) (*domain.User, error) {
 	if s.getByID != nil {
 		return s.getByID(ctx, userID)
@@ -215,6 +237,9 @@ func (s *stubJobRepo) GetByIDs(ctx context.Context, ids []int64) (map[int64]*dom
 	return result, nil
 }
 func (s *stubJobRepo) ExistsByURL(ctx context.Context, url string) (bool, error) { return false, nil }
+func (s *stubJobRepo) GetUnembeddedIDs(ctx context.Context, limit int) ([]int64, error) {
+	return nil, nil
+}
 
 type captureNotifier struct {
 	send func(ctx context.Context, telegramID int64, p port.NotifyPayload) error
@@ -331,8 +356,8 @@ func TestSendBatchNotification_BuildsBatchPayload(t *testing.T) {
 		context.Background(),
 		sendNotif,
 		port.MatchNotifyPayload{
-			UserID:      1,
-			CriticScore: 8.2,
+			UserID:     1,
+			BatchScore: 8.2,
 			Jobs: []port.BatchJobItem{
 				{JobID: 1, Title: "Payload title", WhyItFits: "Why", Rank: 1},
 			},
@@ -344,8 +369,8 @@ func TestSendBatchNotification_BuildsBatchPayload(t *testing.T) {
 	if len(gotPayload.Batch) != 1 {
 		t.Fatalf("batch items=%d, want 1", len(gotPayload.Batch))
 	}
-	if gotPayload.CriticScore != 8.2 {
-		t.Fatalf("critic score=%.1f, want 8.2", gotPayload.CriticScore)
+	if gotPayload.BatchScore != 8.2 {
+		t.Fatalf("batch score=%.1f, want 8.2", gotPayload.BatchScore)
 	}
 	if gotPayload.Batch[0].Job == nil || gotPayload.Batch[0].Job.Title != "Payload title" {
 		t.Fatalf("job title override failed, got %+v", gotPayload.Batch[0].Job)

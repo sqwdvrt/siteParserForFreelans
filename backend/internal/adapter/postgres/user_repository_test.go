@@ -36,12 +36,15 @@ func TestUserRepository_Save(t *testing.T) {
 	// Уникальный telegram_id для изоляции
 	telegramID := int64(9000000000 + (os.Getpid() % 100000))
 
-	id, err := repo.Save(ctx, telegramID)
+	id, created, err := repo.Save(ctx, telegramID)
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	if id <= 0 {
 		t.Errorf("want positive id, got %d", id)
+	}
+	if !created {
+		t.Errorf("created = false, want true")
 	}
 }
 
@@ -52,16 +55,22 @@ func TestUserRepository_Save_Dedup(t *testing.T) {
 
 	telegramID := int64(9000000001 + (os.Getpid() % 100000))
 
-	id1, err := repo.Save(ctx, telegramID)
+	id1, created1, err := repo.Save(ctx, telegramID)
 	if err != nil {
 		t.Fatalf("Save 1: %v", err)
 	}
-	id2, err := repo.Save(ctx, telegramID)
+	id2, created2, err := repo.Save(ctx, telegramID)
 	if err != nil {
 		t.Fatalf("Save 2: %v", err)
 	}
 	if id1 != id2 {
 		t.Errorf("dedup: want same id %d, got %d", id1, id2)
+	}
+	if !created1 {
+		t.Errorf("created1 = false, want true")
+	}
+	if created2 {
+		t.Errorf("created2 = true, want false")
 	}
 }
 
@@ -80,7 +89,7 @@ func TestUserRepository_GetByTelegramID(t *testing.T) {
 		t.Fatalf("GetByTelegramID: want nil for non-existent user, got %+v", u)
 	}
 
-	id, err := repo.Save(ctx, telegramID)
+	id, _, err := repo.Save(ctx, telegramID)
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -114,7 +123,7 @@ func TestUserRepository_UpdateProfile(t *testing.T) {
 	ctx := context.Background()
 
 	telegramID := int64(9000000003 + (os.Getpid() % 100000))
-	id, err := repo.Save(ctx, telegramID)
+	id, _, err := repo.Save(ctx, telegramID)
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -139,7 +148,7 @@ func TestUserRepository_UpdateNotifyHourScoped(t *testing.T) {
 	ctx := context.Background()
 
 	telegramID := int64(9000000004 + (os.Getpid() % 100000))
-	id, err := repo.Save(ctx, telegramID)
+	id, _, err := repo.Save(ctx, telegramID)
 	if err != nil {
 		t.Fatalf("Save: %v", err)
 	}

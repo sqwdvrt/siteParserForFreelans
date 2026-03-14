@@ -22,4 +22,8 @@ type FeedbackRepository interface {
 	// StatsRecent возвращает агрегированные счётчики good/bad для пользователя
 	// за последний период within.
 	StatsRecent(ctx context.Context, userID int64, within time.Duration) (FeedbackStats, error)
+
+	// GlobalStatsRecent возвращает агрегированные счётчики good/bad по всем
+	// пользователям за последний период within.
+	GlobalStatsRecent(ctx context.Context, within time.Duration) (FeedbackStats, error)
 }

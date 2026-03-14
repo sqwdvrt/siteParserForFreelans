@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 from unittest.mock import MagicMock
 
+import pytest
+
 from ai_service.usecase.process_user_rematch import ProcessUserRematchUseCase
 
 
@@ -25,6 +27,18 @@ def test_shutdown_grace_sec_invalid_env_fallback(monkeypatch) -> None:
     monkeypatch.setenv(module.SHUTDOWN_GRACE_SEC_ENV, "bad-value")
 
     assert module._shutdown_grace_sec() == module.DEFAULT_SHUTDOWN_GRACE_SEC
+
+
+def test_main_rejects_missing_redis_url_in_production(monkeypatch, tmp_path: Path) -> None:
+    module = _load_user_rematch_consumer_main_module()
+
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db?sslmode=require")
+    monkeypatch.delenv("REDIS_URL", raising=False)
+    monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
+
+    with pytest.raises(SystemExit):
+        module.main()
 
 
 def test_run_consumer_requeues_message_if_shutdown_happens_after_pop() -> None:
@@ -62,6 +76,35 @@ def test_run_consumer_requeues_message_if_shutdown_happens_after_pop() -> None:
     process.execute.assert_not_called()
     assert queue.acked == []
     assert queue.nacked == [42]
+
+
+def test_run_consumer_retries_reclaim_error(monkeypatch) -> None:
+    module = _load_user_rematch_consumer_main_module()
+    process = MagicMock(spec=ProcessUserRematchUseCase)
+    stop = threading.Event()
+
+    monkeypatch.setenv("AI_QUEUE_RETRY_DELAY_SEC", "0")
+
+    class FakeQueue:
+        def __init__(self) -> None:
+            self.reclaim_calls = 0
+
+        def reclaim_stuck(self) -> None:
+            self.reclaim_calls += 1
+            if self.reclaim_calls == 1:
+                raise RuntimeError("redis temporary error")
+
+        def pop_blocking(self, timeout_sec: int = 5) -> int | None:
+            _ = timeout_sec
+            stop.set()
+            return None
+
+    queue = FakeQueue()
+
+    module._run_consumer(queue, process, timeout_sec=1, stop_event=stop)
+
+    assert queue.reclaim_calls == 2
+    process.execute.assert_not_called()
 
 
 def test_main_forces_requeue_on_shutdown_timeout(monkeypatch, tmp_path: Path) -> None:

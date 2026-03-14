@@ -23,9 +23,19 @@ type MatchNotifyPayload struct {
 	ReasonCodes   []string       `json:"reason_codes,omitempty"`
 	WhyItFits     string         `json:"why_it_fits,omitempty"`
 	Jobs          []BatchJobItem `json:"jobs,omitempty"`
+	BatchScore    float64        `json:"batch_score,omitempty"`
 	CriticScore   float64        `json:"critic_score,omitempty"`
 	TraceID       string         `json:"trace_id,omitempty"`
 	Traceparent   string         `json:"traceparent,omitempty"`
+}
+
+// EffectiveBatchScore returns the canonical batch score while remaining
+// compatible with older payloads that still use critic_score.
+func (p MatchNotifyPayload) EffectiveBatchScore() float64 {
+	if p.BatchScore != 0 || p.CriticScore == 0 {
+		return p.BatchScore
+	}
+	return p.CriticScore
 }
 
 // MatchNotifyMessage — доставленное сообщение из match-notify.

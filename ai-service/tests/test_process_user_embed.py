@@ -38,13 +38,24 @@ def test_execute_skips_when_profile_empty() -> None:
 def test_execute_saves_embedding_and_enqueues_rematch() -> None:
     user_repo = MagicMock()
     user_repo.get_by_id.return_value = User(
-        id=1, telegram_id=123, profile_text="I am a developer", embedding=None
+        id=1,
+        telegram_id=123,
+        profile_text=(
+            "Специализация: Backend-разработка. "
+            "Уровень опыта: Senior (5+ лет). "
+            "Навыки: Python, PostgreSQL."
+        ),
+        embedding=None,
     )
     embedding = MagicMock()
     embedding.encode.return_value = [0.1] * 384
     rematch_queue = MagicMock()
     uc = ProcessUserEmbedUseCase(user_repo, embedding, rematch_queue)
     assert uc.execute(1) is True
-    embedding.encode.assert_called_once_with("I am a developer")
+    embedding.encode.assert_called_once()
+    encoded_text = embedding.encode.call_args.args[0]
+    assert "Тип работы: web" in encoded_text
+    assert "Опыт (лет): 6.0" in encoded_text
+    assert "Стек: python, postgresql" in encoded_text
     user_repo.save_embedding.assert_called_once_with(1, [0.1] * 384)
     rematch_queue.enqueue.assert_called_once_with(1)

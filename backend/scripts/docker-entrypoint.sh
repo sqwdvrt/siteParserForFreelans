@@ -4,7 +4,8 @@ set -e
 
 MIGRATION_RETRY_ATTEMPTS="${MIGRATION_RETRY_ATTEMPTS:-30}"
 MIGRATION_RETRY_DELAY_SEC="${MIGRATION_RETRY_DELAY_SEC:-2}"
-RUN_MIGRATIONS="${RUN_MIGRATIONS:-0}"
+RUN_MIGRATIONS="${RUN_MIGRATIONS:-1}"
+MIGRATIONS_DIR="${MIGRATIONS_DIR:-}"
 
 case "$MIGRATION_RETRY_ATTEMPTS" in
   ''|*[!0-9]*)
@@ -60,6 +61,26 @@ run_migration_with_retry() {
   return 1
 }
 
+resolve_migrations_dir() {
+  if [ -n "$MIGRATIONS_DIR" ]; then
+    if [ -d "$MIGRATIONS_DIR" ]; then
+      printf '%s\n' "$MIGRATIONS_DIR"
+      return 0
+    fi
+    echo "MIGRATIONS_DIR is set but does not exist: $MIGRATIONS_DIR"
+    exit 1
+  fi
+
+  for candidate in /app/migrations ./migrations migrations; do
+    if [ -d "$candidate" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
 if [ -z "${API_ADDR:-}" ] && [ -n "${PORT:-}" ]; then
   export API_ADDR=":${PORT}"
   echo "API_ADDR is not set; using PORT=${PORT}"
@@ -69,17 +90,18 @@ if should_run_migrations; then
   # DATABASE_MIGRATE_URL используется для миграций (session mode pooler — нужен pg_advisory_lock).
   # Если не задан — fallback на DATABASE_URL.
   _MIGRATE_URL="${DATABASE_MIGRATE_URL:-${DATABASE_URL:-}}"
+  _RESOLVED_MIGRATIONS_DIR="$(resolve_migrations_dir || true)"
   if [ -z "$_MIGRATE_URL" ]; then
     echo "RUN_MIGRATIONS is enabled but DATABASE_URL (and DATABASE_MIGRATE_URL) is empty"
     exit 1
   fi
-  if [ ! -d /app/migrations ]; then
-    echo "RUN_MIGRATIONS is enabled but /app/migrations does not exist"
+  if [ -z "$_RESOLVED_MIGRATIONS_DIR" ]; then
+    echo "RUN_MIGRATIONS is enabled but migrations directory was not found"
     exit 1
   fi
 
   echo "Running migrations (attempts=${MIGRATION_RETRY_ATTEMPTS}, delay=${MIGRATION_RETRY_DELAY_SEC}s)..."
-  for f in $(ls /app/migrations/*.sql | sort); do
+  for f in $(ls "$_RESOLVED_MIGRATIONS_DIR"/*.sql | sort); do
     [ -f "$f" ] || continue
     echo "  Applying $(basename "$f")..."
     # Переопределяем DATABASE_URL для psql внутри функции
@@ -88,4 +110,5 @@ if should_run_migrations; then
   echo "Migrations complete."
 fi
 
+export BACKEND_ENTRYPOINT_ACTIVE=1
 exec "$@"

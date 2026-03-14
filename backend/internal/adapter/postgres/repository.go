@@ -95,6 +95,33 @@ func (r *JobRepository) ExistsByURL(ctx context.Context, url string) (bool, erro
 	return exists, err
 }
 
+// GetUnembeddedIDs returns IDs of jobs without a job_embeddings entry (orphaned jobs).
+func (r *JobRepository) GetUnembeddedIDs(ctx context.Context, limit int) ([]int64, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := r.pool.Query(ctx, `
+		SELECT j.id FROM jobs j
+		LEFT JOIN job_embeddings je ON je.job_id = j.id
+		WHERE je.job_id IS NULL
+		ORDER BY j.created_at DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 func nullIfEmpty(s string) *string {
 	if s == "" {
 		return nil

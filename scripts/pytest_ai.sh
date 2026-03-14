@@ -103,6 +103,11 @@ if [[ "${PYTEST_AI_AUTO_INSTALL:-0}" == "1" ]]; then
   "$PY_BIN" -m pip install -r requirements.txt
 else
   echo "Found Python $(python_version "$PY_BIN") at '${PY_BIN}', but pytest is not installed for this interpreter." >&2
+  echo "Bootstrap a local ai-service venv once:" >&2
+  echo "  ./scripts/bootstrap_ai_venv.sh" >&2
+  echo "Then run:" >&2
+  echo "  ./scripts/pytest_ai.sh -q" >&2
+  echo "Or install dependencies into the current interpreter:" >&2
   echo "Install dependencies and retry:" >&2
   echo "  ${PY_BIN} -m pip install -r requirements.txt" >&2
   echo "Or run once with auto-install:" >&2

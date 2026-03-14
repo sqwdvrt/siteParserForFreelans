@@ -40,7 +40,17 @@ const (
 	defaultBreakerOpenInterval     = 30 * time.Second
 	defaultBreakerOpenJitter       = 0.2
 	defaultQueueDepthSamplePeriod  = 10 * time.Second
+	localTelegramTokenEnv          = "LOCAL_TELEGRAM_BOT_TOKEN"
 )
+
+func resolveTelegramBotToken(isProd bool) (token string, source string) {
+	if !isProd {
+		if local := strings.TrimSpace(os.Getenv(localTelegramTokenEnv)); local != "" {
+			return local, localTelegramTokenEnv
+		}
+	}
+	return strings.TrimSpace(os.Getenv("TELEGRAM_BOT_TOKEN")), "TELEGRAM_BOT_TOKEN"
+}
 
 func main() {
 	_ = godotenv.Load()
@@ -66,6 +76,10 @@ func main() {
 
 	redisURL := os.Getenv("REDIS_URL")
 	if redisURL == "" {
+		if isProd {
+			slog.Error("REDIS_URL not set")
+			os.Exit(1)
+		}
 		redisURL = "redis://localhost:6379/0"
 	}
 	if isProd {
@@ -75,13 +89,13 @@ func main() {
 		}
 	}
 
-	token := os.Getenv("TELEGRAM_BOT_TOKEN")
+	token, tokenSource := resolveTelegramBotToken(isProd)
 	if token == "" {
-		slog.Error("TELEGRAM_BOT_TOKEN not set")
+		slog.Error("telegram bot token not set", "checked", []string{localTelegramTokenEnv, "TELEGRAM_BOT_TOKEN"})
 		os.Exit(1)
 	}
-	if err := security.ValidateSecret("TELEGRAM_BOT_TOKEN", token, 20); err != nil {
-		slog.Error("invalid TELEGRAM_BOT_TOKEN secret policy", "err", err)
+	if err := security.ValidateSecret(tokenSource, token, 20); err != nil {
+		slog.Error("invalid telegram bot token secret policy", "source", tokenSource, "err", err)
 		os.Exit(1)
 	}
 
@@ -165,6 +179,7 @@ func main() {
 	notifRepo := postgres.NewNotificationRepository(pool)
 	userRepo := postgres.NewUserRepository(pool)
 	jobRepo := postgres.NewJobRepository(pool)
+	productEventRepo := postgres.NewProductEventRepository(pool)
 	notifier := telegram.NewNotifier(token)
 	notifier.Configure(telegram.Config{
 		MaxRetries:              notifierMaxRetries,
@@ -173,9 +188,11 @@ func main() {
 		BreakerOpenInterval:     breakerOpenInterval,
 		BreakerOpenJitter:       breakerOpenJitter,
 	})
-	sendNotif := usecase.NewSendNotification(notifRepo, userRepo, jobRepo, notifier, rateLimit, maxPerDay)
+	sendNotif := usecase.NewSendNotification(notifRepo, userRepo, jobRepo, notifier, rateLimit, maxPerDay).
+		WithProductEventRepo(productEventRepo)
 
-	dailyDigest := usecase.NewDailyDigest(userRepo, notifRepo, jobRepo, notifier, maxPerDay)
+	dailyDigest := usecase.NewDailyDigest(userRepo, notifRepo, jobRepo, notifier, maxPerDay).
+		WithProductEventRepo(productEventRepo)
 	digestCronSpec := os.Getenv("DIGEST_CRON")
 	if digestCronSpec == "" {
 		digestCronSpec = "0 * * * *" // каждый час; notifyHour по МСК выбирает нужных пользователей
@@ -386,7 +403,7 @@ func sendBatchNotification(
 	if sendNotif == nil {
 		return fmt.Errorf("send notification usecase is nil")
 	}
-	return sendNotif.ExecuteBatch(ctx, p.UserID, p.Jobs, p.CriticScore)
+	return sendNotif.ExecuteBatch(ctx, p.UserID, p.Jobs, p.EffectiveBatchScore())
 }
 
 func nextPopErrorBackoff(current time.Duration) time.Duration {

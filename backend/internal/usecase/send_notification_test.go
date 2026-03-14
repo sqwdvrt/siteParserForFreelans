@@ -69,7 +69,9 @@ func (m *mockUserRepo) GetByID(ctx context.Context, userID int64) (*domain.User,
 	return &domain.User{ID: 1, TelegramID: 123456}, nil
 }
 
-func (m *mockUserRepo) Save(ctx context.Context, telegramID int64) (int64, error) { return 1, nil }
+func (m *mockUserRepo) Save(ctx context.Context, telegramID int64) (int64, bool, error) {
+	return 1, true, nil
+}
 func (m *mockUserRepo) GetByTelegramID(ctx context.Context, telegramID int64) (*domain.User, error) {
 	return nil, nil
 }
@@ -117,6 +119,9 @@ func (m *mockJobRepo) GetByIDs(ctx context.Context, ids []int64) (map[int64]*dom
 
 func (m *mockJobRepo) Save(ctx context.Context, job *domain.Job) (int64, error)  { return 1, nil }
 func (m *mockJobRepo) ExistsByURL(ctx context.Context, url string) (bool, error) { return false, nil }
+func (m *mockJobRepo) GetUnembeddedIDs(ctx context.Context, limit int) ([]int64, error) {
+	return nil, nil
+}
 
 type mockNotifier struct {
 	sendFunc func(ctx context.Context, telegramID int64, p port.NotifyPayload) error
@@ -125,6 +130,19 @@ type mockNotifier struct {
 func (m *mockNotifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayload) error {
 	if m.sendFunc != nil {
 		return m.sendFunc(ctx, telegramID, p)
+	}
+	return nil
+}
+
+type mockProductEventRepo struct {
+	recordFunc func(ctx context.Context, event port.ProductEvent) error
+	events     []port.ProductEvent
+}
+
+func (m *mockProductEventRepo) Record(ctx context.Context, event port.ProductEvent) error {
+	m.events = append(m.events, event)
+	if m.recordFunc != nil {
+		return m.recordFunc(ctx, event)
 	}
 	return nil
 }
@@ -289,6 +307,46 @@ func TestSendNotification_Execute_Success(t *testing.T) {
 	}
 	if !markSentCalled {
 		t.Error("must call MarkSent after successful send")
+	}
+}
+
+func TestSendNotification_Execute_RecordsProductEvent(t *testing.T) {
+	eventRepo := &mockProductEventRepo{}
+	uc := NewSendNotification(
+		&mockNotifRepo{
+			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
+				return true, true, nil
+			},
+			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
+			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
+		},
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 888}, nil
+		}},
+		&mockJobRepo{getByIDFunc: func(context.Context, int64) (*domain.Job, error) {
+			return &domain.Job{ID: 1, Source: "kwork", Title: "T", URL: "https://kwork.ru/p/1"}, nil
+		}},
+		&mockNotifier{},
+		5*time.Minute,
+		5,
+	).WithProductEventRepo(eventRepo)
+
+	err := uc.Execute(context.Background(), 1, 1, 0.85, 0.9, "v3", []string{"top_match"}, "")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(eventRepo.events) != 1 {
+		t.Fatalf("events len = %d, want 1", len(eventRepo.events))
+	}
+	event := eventRepo.events[0]
+	if event.Type != port.ProductEventNotificationSent {
+		t.Fatalf("event type = %q, want %q", event.Type, port.ProductEventNotificationSent)
+	}
+	if event.Source != "kwork" {
+		t.Fatalf("event source = %q, want kwork", event.Source)
+	}
+	if got := event.Properties["delivery_mode"]; got != "single" {
+		t.Fatalf("delivery_mode = %v, want single", got)
 	}
 }
 

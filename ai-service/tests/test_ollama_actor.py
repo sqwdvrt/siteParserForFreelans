@@ -106,3 +106,35 @@ def test_circuit_breaker_skips_repeated_timeouts(mock_open) -> None:
 
     assert result == []
     assert mock_open.call_count == 2
+
+
+@patch("ai_service.adapter.actor.ollama_actor._safe_open")
+def test_explain_batch_returns_explanations_in_order(mock_open) -> None:
+    _mock_response(
+        mock_open,
+        {
+            "response": json.dumps(
+                {
+                    "explanations": [
+                        "Python match",
+                        "Django match",
+                    ]
+                }
+            )
+        },
+    )
+    actor = OllamaActorAgent(base_url="http://ollama:11434", model="llama3.2:3b")
+
+    result = actor.explain_batch(_user(), _jobs()[:2])
+
+    assert result == ["Python match", "Django match"]
+
+
+@patch("ai_service.adapter.actor.ollama_actor._safe_open")
+def test_explain_batch_invalid_length_returns_empty(mock_open) -> None:
+    _mock_response(mock_open, {"response": json.dumps({"explanations": ["only one"]})})
+    actor = OllamaActorAgent(base_url="http://ollama:11434", model="llama3.2:3b")
+
+    result = actor.explain_batch(_user(), _jobs()[:2])
+
+    assert result == []

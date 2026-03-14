@@ -21,7 +21,10 @@ class Job:
     posted_at: datetime | None = None
     created_at: datetime | None = None
     match_score: float = 0.0
+    rerank_score: float = 0.0
     raw_similarity: float = 0.0
+    feedback_bonus: float = 0.0
+    preference_multiplier: float = 1.0
     final_score: float = 0.0
     ranker_version: str = ""
     reason_codes: list[str] | None = None

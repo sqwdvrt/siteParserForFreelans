@@ -4,6 +4,7 @@ FROM python:3.11-slim@sha256:0b23cfb7425d065008b778022a17b1551c82f8b4866ee5a7a20
 
 ARG TORCH_VERSION=2.8.0
 ARG EMBEDDING_MODEL=all-MiniLM-L6-v2
+ARG RERANK_MODEL=BAAI/bge-reranker-base
 ENV VENV_PATH=/opt/venv
 ENV PIP_NO_CACHE_DIR=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -20,24 +21,33 @@ COPY requirements.runtime.lock .
 RUN "${VENV_PATH}/bin/pip" install --index-url https://download.pytorch.org/whl/cpu "torch==${TORCH_VERSION}" && \
     "${VENV_PATH}/bin/pip" install -r requirements.runtime.lock
 
-# Preload default embedding model into image to avoid runtime cold-start downloads.
+# Preload default embedding and rerank models into image to avoid runtime cold-start downloads.
 # Use isolated HF cache in build step to avoid stale lock waits across interrupted builds.
 RUN rm -rf /tmp/hf-build && mkdir -p /tmp/hf-build && \
     HF_HOME=/tmp/hf-build \
     HF_HUB_DISABLE_XET=1 \
     TRANSFORMERS_CACHE=/tmp/hf-build/transformers \
     SENTENCE_TRANSFORMERS_HOME=/tmp/hf-build/sentence-transformers \
-    EMBEDDING_MODEL="${EMBEDDING_MODEL}" "${VENV_PATH}/bin/python" -u - <<'PY'
+    EMBEDDING_MODEL="${EMBEDDING_MODEL}" \
+    RERANK_MODEL="${RERANK_MODEL}" \
+    "${VENV_PATH}/bin/python" -u - <<'PY'
 import os
 from pathlib import Path
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import CrossEncoder, SentenceTransformer
 
-model_name = os.environ["EMBEDDING_MODEL"]
-dst = Path("/opt/models") / model_name
-dst.parent.mkdir(parents=True, exist_ok=True)
-model = SentenceTransformer(model_name, cache_folder="/tmp/hf-build/sentence-transformers")
-model.save(str(dst))
-print(f"Preloaded embedding model '{model_name}' to '{dst}'")
+embedding_name = os.environ["EMBEDDING_MODEL"]
+embedding_dst = Path("/opt/models") / embedding_name
+embedding_dst.parent.mkdir(parents=True, exist_ok=True)
+embedding_model = SentenceTransformer(embedding_name, cache_folder="/tmp/hf-build/sentence-transformers")
+embedding_model.save(str(embedding_dst))
+print(f"Preloaded embedding model '{embedding_name}' to '{embedding_dst}'")
+
+rerank_name = os.environ["RERANK_MODEL"]
+rerank_dst = Path("/opt/models") / rerank_name
+rerank_dst.parent.mkdir(parents=True, exist_ok=True)
+rerank_model = CrossEncoder(rerank_name, cache_folder="/tmp/hf-build/sentence-transformers")
+rerank_model.save(str(rerank_dst))
+print(f"Preloaded rerank model '{rerank_name}' to '{rerank_dst}'")
 PY
 
 # Runtime stage: copy prebuilt venv with runtime deps only.

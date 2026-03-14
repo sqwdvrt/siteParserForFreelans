@@ -7,6 +7,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 )
 
@@ -17,12 +18,13 @@ const (
 
 // SendNotification проверяет rate limit, лимит в день и дедупликацию, записывает в notifications, отправляет.
 type SendNotification struct {
-	notifRepo port.NotificationRepository
-	userRepo  port.UserRepository
-	jobRepo   port.JobRepository
-	notifier  port.Notifier
-	rateLimit time.Duration
-	maxPerDay int
+	notifRepo        port.NotificationRepository
+	userRepo         port.UserRepository
+	jobRepo          port.JobRepository
+	notifier         port.Notifier
+	productEventRepo port.ProductEventRepository
+	rateLimit        time.Duration
+	maxPerDay        int
 }
 
 type batchDeliveryItem struct {
@@ -54,6 +56,11 @@ func NewSendNotification(
 		rateLimit: rateLimit,
 		maxPerDay: maxPerDay,
 	}
+}
+
+func (u *SendNotification) WithProductEventRepo(repo port.ProductEventRepository) *SendNotification {
+	u.productEventRepo = repo
+	return u
 }
 
 // Execute обрабатывает кандидата: EnsurePending → rate limit (только для новых) → Send → MarkSent.
@@ -158,7 +165,9 @@ func (u *SendNotification) Execute(
 	if err := u.notifRepo.MarkSent(ctx, userID, jobID); err != nil {
 		slog.Error("send notification: mark sent failed", "user_id", userID, "job_id", jobID, "err", err)
 		// Уведомление доставлено — не возвращаем ошибку, только логируем
+		return nil
 	}
+	u.recordNotificationSent(ctx, userID, job, effectiveFinalScore, rankerVersion, "single", reasonCodes)
 	slog.Info("notification sent", "user_id", userID, "job_id", jobID)
 	return nil
 }
@@ -170,7 +179,7 @@ func (u *SendNotification) ExecuteBatch(
 	ctx context.Context,
 	userID int64,
 	jobs []port.BatchJobItem,
-	criticScore float64,
+	batchScore float64,
 ) error {
 	user, err := u.userRepo.GetByID(ctx, userID)
 	if err != nil {
@@ -290,8 +299,8 @@ func (u *SendNotification) ExecuteBatch(
 	)
 
 	payload := port.NotifyPayload{
-		Batch:       make([]port.BatchNotifyItem, 0, len(deliverable)),
-		CriticScore: criticScore,
+		Batch:      make([]port.BatchNotifyItem, 0, len(deliverable)),
+		BatchScore: batchScore,
 	}
 	for _, item := range deliverable {
 		payload.Batch = append(payload.Batch, item.payload)
@@ -307,6 +316,18 @@ func (u *SendNotification) ExecuteBatch(
 	for _, item := range deliverable {
 		if err := u.notifRepo.MarkSent(ctx, userID, item.jobID); err != nil {
 			slog.Error("send batch notification: mark sent failed", "user_id", userID, "job_id", item.jobID, "err", err)
+			continue
+		}
+		if item.payload.Job != nil {
+			u.recordNotificationSent(
+				ctx,
+				userID,
+				item.payload.Job,
+				item.payload.FinalScore,
+				item.payload.RankerVersion,
+				"batch",
+				item.payload.ReasonCodes,
+			)
 		}
 	}
 	slog.Info("batch notification sent", "user_id", userID, "jobs", len(deliverable))
@@ -382,6 +403,34 @@ func cloneStrings(items []string) []string {
 	out := make([]string, len(items))
 	copy(out, items)
 	return out
+}
+
+func (u *SendNotification) recordNotificationSent(
+	ctx context.Context,
+	userID int64,
+	job *domain.Job,
+	finalScore float64,
+	rankerVersion string,
+	deliveryMode string,
+	reasonCodes []string,
+) {
+	if u.productEventRepo == nil || job == nil {
+		return
+	}
+	if err := u.productEventRepo.Record(ctx, port.ProductEvent{
+		Type:   port.ProductEventNotificationSent,
+		UserID: userID,
+		JobID:  job.ID,
+		Source: job.Source,
+		Properties: map[string]any{
+			"delivery_mode":  deliveryMode,
+			"final_score":    finalScore,
+			"ranker_version": rankerVersion,
+			"reason_codes":   cloneStrings(reasonCodes),
+		},
+	}); err != nil {
+		slog.Warn("send notification: record product event failed", "user_id", userID, "job_id", job.ID, "event_type", port.ProductEventNotificationSent, "err", err)
+	}
 }
 
 func (u *SendNotification) applyBatchLimits(

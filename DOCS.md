@@ -53,7 +53,7 @@
        │                │                    ▲             │
 ┌──────▼──────┐  ┌──────▼──────┐            │             │
 │  browser-   │  │  ai-ac-     │────────────┘             │
-│  service    │  │  consumer   │  (Actor-Critic batch)     │
+│  service    │  │  consumer   │  (final scoring batch)    │
 │ (Playwright)│  │             │                          │
 └─────────────┘  └─────┬───────┘                          │
                         │                                  │
@@ -64,9 +64,13 @@
                                                           │
                     ai-user-embed ◄───────────────────────┘
                     (profile embeddings)
+                           │
+                           ▼
+                    ai-user-rematch
+                  (replay existing jobs)
 ```
 
-**Принцип:** все сервисы общаются через PostgreSQL + Redis-очереди. Прямого HTTP между Go и Python нет — только через БД/очереди.
+**Принцип:** основной межсервисный обмен идёт через PostgreSQL + Redis-очереди. Исключение: `backend-crawler` обращается к `browser-service` по HTTP (`/render`) для JS-рендеринга страниц.
 
 ---
 
@@ -84,6 +88,7 @@
 - Принимает 👍/👎 фидбек → пишет в `user_feedback`
 - Хранит и отдаёт пользовательские предпочтения (ключевые слова, бюджет, источники)
 - Управляет часом дайджеста (`notify_hour`) для Pro-пользователей
+- Пишет продуктовые события в `product_events` для SQL-аналитики Grafana
 - Отдаёт метрики Prometheus, healthz/readyz
 
 **Безопасность:** Bearer token + HMAC-SHA256 подпись каждого запроса (защита от CSRF/replay).
@@ -123,35 +128,34 @@
 BRPOP ai-process
     → загрузить job из БД
     → sentence-transformers: generate embedding (384-dim)
-    → pgvector HNSW: найти пользователей с косинусным сходством > threshold
-    → для каждого пользователя:
-        * Ollama LLM: "Подходит ли этот проект для профиля пользователя?"
-        * Если yes: сохранить в pending_ac_jobs
+    → pgvector HNSW: top-N пользователей по cosine similarity
+    → cross-encoder rerank: (profile_text, job.title + job.description)
+    → filter: rerank_score >= RERANK_THRESHOLD
+    → сохранить top-K в pending_ac_jobs
     → накопить batch → LPUSH ac-batch
 ```
 
 **Модель:** `all-MiniLM-L6-v2` (sentence-transformers, 384 dim)
-**LLM:** `llama3.2:3b-instruct-q4_K_M` через Ollama (fallback: rule-based scoring)
+**Reranker:** `BAAI/bge-reranker-base`
 **Индекс:** pgvector HNSW (cosine distance), probes=10
 
 ---
 
-### 2.4 ai-ac-consumer (Python, Actor-Critic)
+### 2.4 ai-ac-consumer (Python, final scoring)
 
-**Роль:** финальный отбор и ранжирование батча проектов для пользователя.
+**Роль:** финальный отбор и ранжирование батча проектов для пользователя с одним LLM-вызовом только на `why_it_fits`.
 
 **Алгоритм:**
 1. Собирает `pending_ac_jobs` за интервал (`AC_BATCH_INTERVAL_SEC`)
-2. **Actor** (LLM): выбирает топ-N проектов для пользователя, объясняет почему (`why_it_fits`)
-3. **Critic** (LLM): ставит оценку качества подборки (0–10)
-4. Если оценка ≥ `AC_SCORE_THRESHOLD`:
-   - `INSERT INTO notifications (status='pending', why_it_fits=...)`
-   - `LPUSH match-notify`
-5. Учитывает фидбек пользователя (👍/👎) через `FeedbackSignal`
+2. Считает `final_score` как мультипликативный скор от `rerank_score` с учётом `feedback_bonus`, `preference_multiplier`, `time_decay_multiplier`, `competition_multiplier`
+3. Фильтрует кандидатов по `rerank_score >= RERANK_THRESHOLD`, берёт top-5 по `final_score`
+4. **Actor** (LLM): одним batched-запросом генерирует `why_it_fits` для выбранных проектов
+5. `INSERT INTO notifications (status='pending', why_it_fits=...)`
+6. `LPUSH match-notify`
 
-**adjust_candidates:** перед отправкой в Actor применяется корректировка скоров на основе истории фидбека:
-- `good_ratio` / `bad_ratio` по навыкам пользователя за 30 дней
-- Блендинг 50/50 с глобальным сигналом
+Корректировка по фидбеку применяется в двух местах:
+- в `ai-service` (при job→user матчинге) через `adjust_candidates`;
+- в `ai-ac-consumer` как `feedback_bonus` при финальном скоринге.
 
 ---
 
@@ -184,8 +188,8 @@ BRPOP user-embed
 BRPOP user-rematch
     → загрузить user.embedding
     → pgvector: найти топ-K проектов за последние N дней
-    → для каждого job: запустить Ollama classifier
-    → сохранить pending_ac_jobs
+    → скорректировать кандидатов сигналом пользовательского фидбека
+    → LPUSH match-notify (single-candidate payloads)
 ```
 
 ---
@@ -228,9 +232,14 @@ BRPOP match-notify
 | Команда | Действие |
 |---------|----------|
 | `/start` | POST /users → регистрация |
-| `/profile <текст>` | PUT /users/:id/profile → обновление профиля |
+| `/profile` или `/profile <текст>` | PUT /users/:id/profile → обновление профиля (с поддержкой двухшагового ввода) |
 | `/notify_hour <0-23>` | PUT /users/:id/notify-hour → час дайджеста (Pro) |
 | `/help` | Список команд |
+
+**UX ошибок `/profile`:**
+- Если пользователь отправил `/profile` без текста, бот переводит диалог в режим ожидания профиля и присылает инструкцию.
+- Если в этом режиме пришёл пустой текст, бот отвечает, что пустой профиль не сохраняется.
+- Если backend временно недоступен (`network/5xx`), бот отправляет явное сообщение о временной ошибке и предлагает повторить позже.
 
 **Callbacks:**
 - 👍 / 👎 на inline-кнопках → POST /users/:id/feedback
@@ -270,20 +279,21 @@ BRPOP match-notify
     ─────────
     ai-service consumer (BRPOP ai-process)
         → embed(job.title + job.description)
-        → pgvector ANN: SELECT users WHERE cosine_sim > 0.7
-        → Ollama: "relevant?" для каждого (user, job) pair
+        → pgvector ANN: top-N пользователей по cosine similarity
+        → cross-encoder rerank: (profile_text, job.title + job.description)
+        → filter: rerank_score >= threshold
         → INSERT INTO pending_ac_jobs
         → LPUSH ac-batch {user_id, job_ids[]}
 
-[3] ACTOR-CRITIC РАНЖИРОВАНИЕ
-    ──────────────────────────
+[3] FINAL SCORING
+    ─────────────
     ai-ac-consumer (BRPOP ac-batch)
-        → adjust_candidates: корректировка скоров по фидбеку пользователя
-        → Actor LLM: выбрать топ-5, сгенерировать why_it_fits
-        → Critic LLM: оценить подборку (0–10)
-        → если score ≥ threshold:
-            INSERT INTO notifications (status='pending', why_it_fits)
-            LPUSH match-notify {user_id, job_ids[], critic_score}
+        → final_score = rerank_score * (1+feedback_bonus) * preference_multiplier * time_decay_multiplier * competition_multiplier
+        → filter rerank_score >= threshold
+        → top-5 по final_score
+        → Actor LLM: одним вызовом сгенерировать why_it_fits
+        → INSERT INTO notifications (status='pending', why_it_fits)
+        → LPUSH match-notify {user_id, jobs[], batch_score}
 
 [4a] ДОСТАВКА (Free-пользователи)
     ────────────────────────────
@@ -317,6 +327,32 @@ BRPOP match-notify
 ---
 
 ## 4. База данных
+
+### 4.1 Product Analytics Events
+
+Для базовой продуктовой аналитики используется таблица `product_events`.
+
+Назначение:
+- считать регистрации и заполнение профиля без опоры на технические метрики Prometheus;
+- строить SQL-дашборды в Grafana поверх PostgreSQL;
+- связывать отправленные уведомления с фидбеком и источником проекта.
+
+Текущие event types:
+- `user_registered`
+- `profile_updated`
+- `profile_completed`
+- `preferences_updated`
+- `notify_hour_updated`
+- `feedback_submitted`
+- `notification_sent`
+
+Ключевые поля события:
+- `event_type`
+- `user_id`
+- `job_id`
+- `source`
+- `properties jsonb`
+- `created_at`
 
 ### Схема (ключевые таблицы)
 
@@ -376,7 +412,7 @@ id             BIGSERIAL PK
 user_id        BIGINT FK users.id
 job_id         BIGINT FK jobs.id
 match_score    FLOAT          -- косинусное сходство (0–1)
-final_score    FLOAT          -- скор после Actor-Critic
+final_score    FLOAT          -- итоговый скор после rerank + embedding + feedback
 ranker_version TEXT
 reason_codes   TEXT[]
 why_it_fits    TEXT           -- объяснение от Actor LLM
@@ -430,8 +466,16 @@ trace_id       TEXT
 | `014_...` | Таблица user_tag_affinity (аффинность к навыкам) |
 | `015_...` | pending_sent_at для дайджеста |
 | `016_...` | why_it_fits в notifications |
+| `017_notifications_pending_partial_index.sql` | Частичный индекс pending-уведомлений для retry/digest путей |
+| `017_rerank_score.sql` | Колонка `rerank_score` в `pending_ac_jobs` |
+| `018_hnsw_index_params.sql` | Явные HNSW-параметры индексов для `job_embeddings` и `users.embedding` |
+| `019_pending_embed_dispatch.sql` | Outbox-таблицы `pending_user_embeds`/`pending_job_embeds` для deferred Redis dispatch |
+| `020_pending_ac_jobs_score_components.sql` | Компоненты скоринга в `pending_ac_jobs` (`feedback_bonus`, `preference_multiplier`) |
+| `021_user_job_filter_events.sql` | Таблица `user_job_filter_events` для explainable matching stats |
+| `022_product_events.sql` | Таблица `product_events` для продуктовой SQL-аналитики |
 
 **Применение:** `make migrate` (запускает `backend-migrate` контейнер с advisory lock).
+Нюанс: в репозитории исторически есть два файла с префиксом `017_*`; это ожидаемо для текущего набора миграций.
 
 ---
 
@@ -443,8 +487,9 @@ trace_id       TEXT
 |---------|----------|----------|-----------|
 | `ai-process` | backend-crawler | ai-service | `{job_id}` |
 | `user-embed` | backend-api | ai-user-embed | `{user_id}` |
+| `user-rematch` | ai-user-embed | ai-user-rematch | `{user_id}` |
 | `ac-batch` | ai-service | ai-ac-consumer | `{user_id, job_ids[]}` |
-| `match-notify` | ai-ac-consumer | backend-notifier | `{user_id, job_ids[], critic_score, traceparent}` |
+| `match-notify` | ai-ac-consumer, ai-user-rematch | backend-notifier | single: `{user_id, job_id, match_score, ...}` или batch: `{user_id, jobs[], batch_score, traceparent}` |
 | `{queue}:processing` | consumer | consumer | In-flight messages |
 | `{queue}:dlq` | consumer (после N retry) | manual | Dead-letter |
 
@@ -461,13 +506,13 @@ trace_id       TEXT
 
 **Аутентификация:** все пользовательские эндпоинты требуют:
 1. `Authorization: Bearer <API_AUTH_TOKEN>`
-2. Заголовки `X-Telegram-ID`, `X-Timestamp`, `X-Nonce`, `X-Request-Signature`
+2. Заголовки `X-Telegram-ID`, `X-Request-Timestamp`, `X-Request-Nonce`, `X-Request-Signature`
 
 **Подпись запроса (HMAC-SHA256):**
 ```
 signature = HMAC-SHA256(
     key   = API_USER_HMAC_SECRET,
-    data  = "{method}\n{path}\n{body}\n{telegram_id}\n{timestamp}\n{nonce}"
+    data  = "{method}\n{path}\n{telegram_id}\n{timestamp}\n{nonce}\n{sha256(body)}"
 )
 ```
 
@@ -475,7 +520,7 @@ signature = HMAC-SHA256(
 
 | Метод | Путь | Тело | Ответ | Описание |
 |-------|------|------|-------|----------|
-| POST | `/users` | `{telegram_id}` | `{id}` | Регистрация |
+| POST | `/users` | `{telegram_id}` | `{user_id}` | Регистрация |
 | PUT | `/users/{id}/profile` | `{profile_text}` | 204 | Обновить профиль + trigger embed |
 | PUT | `/users/{id}/notify-hour` | `{hour: 9}` | 204 / 403 | Установить час дайджеста (Pro) |
 | GET | `/users/{id}/preferences` | — | `{...prefs}` | Получить предпочтения |
@@ -583,13 +628,14 @@ signature = HMAC-SHA256(
 | `OLLAMA_TIMEOUT_SEC` | `30` | Таймаут запроса к LLM |
 | `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Модель эмбеддингов |
 | `SIMILARITY_THRESHOLD` | `0.7` | Порог косинусного сходства |
-| `MAX_MATCHES_PER_JOB` | `20` | Макс. пользователей на задание |
+| `MAX_MATCHES_PER_JOB` | `50` | Размер ANN candidate pool до rerank |
+| `RERANK_THRESHOLD` | `0.55` | Мин. cross-encoder score для downstream scoring |
+| `RERANK_TOP_K` | `10` | Сколько кандидатов оставить после cross-encoder rerank |
 | `AI_QUEUE` | `ai-process` | Входная очередь |
-| `AC_BATCH_QUEUE` | `ac-batch` | Очередь Actor-Critic |
+| `AC_BATCH_QUEUE` | `ac-batch` | Очередь финального batch scoring |
 | `AC_BATCH_INTERVAL_SEC` | `300` | Окно накопления батча |
 | `AC_BATCH_MIN_JOBS` | `1` | Мин. заданий в батче |
 | `AC_BATCH_MAX_JOBS` | `20` | Макс. заданий в батче |
-| `AC_SCORE_THRESHOLD` | `5.0` | Мин. оценка Critic для отправки |
 
 ### Telegram Bot
 
@@ -612,8 +658,9 @@ signature = HMAC-SHA256(
 cp .env.example .env
 # Заполнить DATABASE_URL, REDIS_URL, TELEGRAM_BOT_TOKEN, API_AUTH_TOKEN, API_USER_HMAC_SECRET
 
-make up-dev          # Все сервисы кроме telegram-bot
-                     # (если Railway уже держит бота)
+make start           # Все сервисы кроме локального telegram-bot
+make start-all       # Если нужен локальный telegram-bot
+make doctor          # Health-check всего локального стека
 make migrate         # Применить все миграции
 make logs            # Посмотреть логи
 make logs SERVICE=backend-api   # Логи конкретного сервиса
@@ -623,25 +670,42 @@ make logs SERVICE=backend-api   # Логи конкретного сервиса
 
 | Команда | Описание |
 |---------|----------|
-| `make up` | Все сервисы |
-| `make up-dev` | Все кроме telegram-bot (Railway держит бота) |
-| `make down` | Остановить всё |
-| `make restart` | Перезапустить |
+| `make start` | Канонический локальный старт без telegram-bot |
+| `make start-all` | Канонический локальный старт вместе с telegram-bot |
+| `make stop` | Каноническая остановка локального стека |
+| `make status` | Канонический статус контейнеров |
+| `make doctor` | Канонический health-check локального стека |
+| `make queues` | Канонический просмотр Redis-очередей |
+| `make up` | Совместимый alias для `make start-all` |
+| `make up-dev` | Совместимый alias для `make start` |
+| `make down` | Базовая остановка локального стека |
+| `make restart` | Перезапуск core/workers/monitoring без telegram-bot |
 | `make logs` | Логи (можно `SERVICE=xxx`) |
 | `make migrate` | Применить миграции |
-| `make test-all` | Все тесты (Go + Python) |
+| `make test` | Основные unit/config проверки: backend, ai-service, browser-service, telegram-bot, monitoring |
+| `make test-all` | Полный локальный gate-run: workflow lint + unit + browser-service + coverage + monitoring + security |
 | `make test-go` | Go unit tests |
 | `make test-ai` | Python pytest |
-| `make coverage` | Отчёт покрытия |
+| `make test-browser` | Python pytest для browser-service |
+| `make test-bot` | Python pytest для telegram-bot |
+| `make test-monitoring` | Проверка Prometheus/Alertmanager/compose конфигов |
+| `make test-fast` | Быстрый набор: backend + ai-service без coverage |
+| `make coverage` | Coverage gate: backend/internal + ai-service + telegram-bot |
 | `make shell-api` | bash внутри backend-api |
 | `make shell-db` | psql |
 | `make shell-redis` | redis-cli |
-| `make dlq-retry` | Повторить сообщения из DLQ |
+| `make smoke-e2e` | Полный локальный E2E smoke |
 | `make backup` | Дамп БД |
 | `make restore` | Восстановить из дампа |
+| `make backup-smoke` | Smoke backup/restore для локальной compose-БД |
+| `make queue-status` | Подробный статус очередей, включая `user-rematch` и DLQ |
+| `make dlq-status` | Только DLQ-очереди |
+| `make up-monitoring` | Поднять monitoring-стек |
+| `make mon-up` | Совместимый alias для `make up-monitoring` |
 | `make clean-all` | Остановить + удалить тома + образы |
-| `make rollback TAG=v1.2.3` | Откат на предыдущий образ |
-| `make mon-up` | Запустить Prometheus + Alertmanager |
+| `make help` | Показать полный список доступных команд |
+
+`rollback` и DLQ reprocess не оформлены отдельными make-целями: используйте runbook из `docs/operations.md` и прямые команды `redis-cli`/restore-скрипты.
 
 ### Production (Railway)
 
@@ -716,8 +780,8 @@ UPDATE users SET is_pro = TRUE WHERE telegram_id = 123456789;
 2. Отправляет `/profile Я Python-разработчик, специализируюсь на Django...` → профиль сохраняется, генерируется эмбеддинг
 3. Crawler находит новые проекты на Kwork
 4. AI-сервис сравнивает эмбеддинг проекта с эмбеддингом профиля
-5. При сходстве > 0.7 — Ollama проверяет релевантность
-6. Actor-Critic формирует подборку + объяснение
+5. Cross-encoder reranker отсеивает слабые кандидаты и оставляет top-K
+6. Финальный scorer считает top-5 и Actor генерирует объяснение
 7. Notifier отправляет в Telegram с кнопками 👍/👎
 
 ### Дедупликация уведомлений
@@ -776,23 +840,15 @@ adjust_candidates:
 
 Результат: проекты с навыками, на которые пользователь реагировал 👍, получают бонус к скору. Проекты с «плохими» навыками — штраф.
 
-### Actor-Critic алгоритм
+### Final Scoring алгоритм
 
-**Actor (LLM prompt):**
-```
-Пользователь: {profile_text}
-Кандидаты: [{title, description, budget, skills}]
-Выбери топ-5, объясни почему каждый подходит (why_it_fits).
-```
-
-**Critic (LLM prompt):**
-```
-Пользователь: {profile_text}
-Подборка Actor: [{title, why_it_fits}]
-Оцени качество подборки от 0 до 10.
-```
-
-Если Critic score < threshold (5.0) → подборка не отправляется, pending_ac_jobs остаются для следующего батча.
+1. `pgvector ANN` выбирает top-N кандидатов по cosine similarity.
+2. `cross-encoder rerank` считает `rerank_score` для пар `(profile_text, job_text)`.
+3. Оставляются только кандидаты с `rerank_score >= RERANK_THRESHOLD`.
+4. Для каждого кандидата считается мультипликативный `final_score`:
+   `rerank_score * (1 + feedback_bonus) * preference_multiplier * time_decay_multiplier * competition_multiplier`.
+5. Берутся top-5 по `final_score`.
+6. Actor LLM одним batched-запросом возвращает `why_it_fits` для выбранных проектов.
 
 ### Изоляция данных (RLS)
 

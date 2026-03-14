@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 )
 
@@ -12,11 +13,12 @@ const moscowLocation = "Europe/Moscow"
 
 // DailyDigest отправляет pro-пользователям накопленные pending-уведомления в заданный час.
 type DailyDigest struct {
-	userRepo  port.UserRepository
-	notifRepo port.NotificationRepository
-	jobRepo   port.JobRepository
-	notifier  port.Notifier
-	maxPerDay int
+	userRepo         port.UserRepository
+	notifRepo        port.NotificationRepository
+	jobRepo          port.JobRepository
+	notifier         port.Notifier
+	productEventRepo port.ProductEventRepository
+	maxPerDay        int
 }
 
 // NewDailyDigest создаёт use case дайджеста.
@@ -37,6 +39,11 @@ func NewDailyDigest(
 		notifier:  notifier,
 		maxPerDay: maxPerDay,
 	}
+}
+
+func (d *DailyDigest) WithProductEventRepo(repo port.ProductEventRepository) *DailyDigest {
+	d.productEventRepo = repo
+	return d
 }
 
 // Execute запускает дайджест для pro-пользователей с notify_hour = текущий московский час.
@@ -118,9 +125,9 @@ func (d *DailyDigest) sendDigestForUser(ctx context.Context, userID int64) error
 			continue
 		}
 		items = append(items, port.BatchNotifyItem{
-			Job:       job,
-			WhyItFits: p.WhyItFits,
-			Rank:      i + 1,
+			Job:        job,
+			WhyItFits:  p.WhyItFits,
+			Rank:       i + 1,
 			FinalScore: p.MatchScore,
 		})
 		delivered = append(delivered, p.JobID)
@@ -138,8 +145,29 @@ func (d *DailyDigest) sendDigestForUser(ctx context.Context, userID int64) error
 	for _, jobID := range delivered {
 		if err := d.notifRepo.MarkSent(ctx, userID, jobID); err != nil {
 			slog.Error("daily digest: mark sent failed", "user_id", userID, "job_id", jobID, "err", err)
+			continue
+		}
+		if job, ok := jobsMap[jobID]; ok {
+			if err := d.recordNotificationSent(ctx, userID, job, "digest"); err != nil {
+				slog.Warn("daily digest: record product event failed", "user_id", userID, "job_id", jobID, "event_type", port.ProductEventNotificationSent, "err", err)
+			}
 		}
 	}
 	slog.Info("daily digest: sent", "user_id", userID, "jobs", len(delivered))
 	return nil
+}
+
+func (d *DailyDigest) recordNotificationSent(ctx context.Context, userID int64, job *domain.Job, deliveryMode string) error {
+	if d.productEventRepo == nil || job == nil {
+		return nil
+	}
+	return d.productEventRepo.Record(ctx, port.ProductEvent{
+		Type:   port.ProductEventNotificationSent,
+		UserID: userID,
+		JobID:  job.ID,
+		Source: job.Source,
+		Properties: map[string]any{
+			"delivery_mode": deliveryMode,
+		},
+	})
 }

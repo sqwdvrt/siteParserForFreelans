@@ -19,23 +19,23 @@
 ## Требования
 
 - **Python:** `>=3.11` (для `ai-service`).
-- **Go (security baseline):** `>=1.25.7` (рекомендуется запускать команды через `GOTOOLCHAIN=go1.25.7`).
+- **Go (security baseline):** `>=1.25.8` (рекомендуется запускать команды через `GOTOOLCHAIN=go1.25.8`).
 
 ## Локальный Toolchain
 
-- В `backend/go.mod` зафиксирован `toolchain go1.25.7`, поэтому для повторяемых запусков используйте `GOTOOLCHAIN=go1.25.7`.
+- В `backend/go.mod` зафиксирован `toolchain go1.25.8`, поэтому для повторяемых запусков используйте `GOTOOLCHAIN=go1.25.8`.
 - Для `ai-service` и проверок (`pytest`, `pip-audit`, coverage) нужен Python `>=3.11`.
 
 Быстрая проверка локального окружения:
 ```bash
 go version
-GOTOOLCHAIN=go1.25.7 go version
+GOTOOLCHAIN=go1.25.8 go version
 python3.11 --version
 ```
 
 Рекомендуемые переменные окружения для локальной работы:
 ```bash
-export GOTOOLCHAIN=go1.25.7
+export GOTOOLCHAIN=go1.25.8
 export PYTHON_BIN=python3.11
 ```
 
@@ -45,6 +45,7 @@ export PYTHON_BIN=python3.11
 # 1. Скопировать конфиг и задать переменные
 cp .env.example .env
 # Отредактировать .env: POSTGRES_PASSWORD, DATABASE_URL, REDIS_URL, API_AUTH_TOKEN, API_USER_HMAC_SECRET, TELEGRAM_BOT_TOKEN
+# Если production webhook уже использует этот token, задайте LOCAL_TELEGRAM_BOT_TOKEN для локального polling/smoke.
 
 # 2. Запустить core (always-on: PostgreSQL, Redis, backend-migrate, API)
 docker compose up -d
@@ -59,13 +60,40 @@ docker compose --profile workers up -d
 # (опционально) точечно включить только user-embed consumer
 docker compose --profile ai-user-embed up -d ai-user-embed
 
+# user-rematch теперь входит в compose по умолчанию; при необходимости можно перезапустить его отдельно
+docker compose up -d ai-user-rematch
+
 # 3. Написать боту в Telegram: /start → /profile Ваш профиль
 # Project-уведомления идут в chat_id пользователя из таблицы users.
 # TELEGRAM_ID из .env нужен для локальных smoke/e2e-проверок и fallback Alertmanager,
 # если не задан ALERTMANAGER_TELEGRAM_CHAT_ID.
+#
+# UX команды /profile:
+# - /profile без текста переводит в двухшаговый режим: бот просит прислать профиль следующим сообщением.
+# - пустое follow-up сообщение не игнорируется: бот отвечает, что пустой профиль не сохранится.
+# - при недоступном backend бот явно сообщает о временной недоступности и просит повторить позже.
 
 # 4. E2E-проверка (опционально)
 ./scripts/e2e_test.sh
+```
+
+Если нужен локальный pytest для `telegram-bot` без системной установки пакетов:
+```bash
+./scripts/bootstrap_telegram_bot_venv.sh
+./scripts/pytest_telegram_bot.sh -q
+```
+
+Если нужен локальный pytest для `browser-service` и dockerized smoke:
+```bash
+./scripts/bootstrap_browser_service_venv.sh
+./scripts/pytest_browser_service.sh -q
+./scripts/browser_service_integration_smoke.sh
+```
+
+Если нужен локальный pytest для `ai-service` без системной установки пакетов:
+```bash
+./scripts/bootstrap_ai_venv.sh
+./scripts/pytest_ai.sh -q
 ```
 
 Миграции применяются автоматически отдельным one-shot сервисом `backend-migrate` (остальные backend-сервисы стартуют с `RUN_MIGRATIONS=0`). Подробнее: `docs/e2e.md`.
@@ -73,8 +101,10 @@ docker compose --profile ai-user-embed up -d ai-user-embed
 ## Operations
 
 - Monitoring, alerts, incident runbook, DR/backup/restore: `docs/operations.md`
+- Release checklist: `docs/operations.md` (`0) Release Checklist`)
 - Monitoring stack (Prometheus + Alertmanager + Redis/Postgres exporters): `docker-compose.monitoring.yml`
 - Monitoring config and alert rules: `monitoring/prometheus/prometheus.yml`, `monitoring/prometheus/alerts.yml`
+- Product analytics dashboard: `monitoring/grafana/dashboards/product-analytics.json`
 - Backup script: `scripts/backup_postgres.sh`
 - Restore script: `scripts/restore_postgres.sh`
 
@@ -83,8 +113,9 @@ docker compose --profile ai-user-embed up -d ai-user-embed
 - `docker-compose.yml` — локальный dev-профиль (включает локальные PostgreSQL/Redis и допускает `sslmode=disable`, `redis://`, `http://`).
   Вторичные воркеры (`backend-crawler`, `backend-notifier`, `ai-service`, `ai-ac-consumer`) вынесены в profile `workers` и запускаются on-demand.
   Локальный `telegram-bot` вынесен в profile `bot`; если бот уже живет отдельно, например на Railway, этот profile локально можно не запускать.
-  Для точечного запуска `ai-user-embed` доступен отдельный profile `ai-user-embed`.
+  Для точечного запуска отдельный profile сохранён только у `ai-user-embed`.
 - `docker-compose.prod.yml` — production-профиль (только внешние TLS endpoints, `APP_ENV=production`).
+  `ai-user-embed`, `ai-user-rematch` и `ai-ac-consumer` входят в production compose по умолчанию.
 - `docker-compose.monitoring.yml` — профиль мониторинга (Prometheus + Alertmanager, profile `monitoring`).
 
 ### Monitoring (Docker Compose)
@@ -106,11 +137,34 @@ docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile 
 
 # Alertmanager UI
 # http://127.0.0.1:9093
+
+# Grafana UI
+# http://127.0.0.1:3000
 ```
 
 Опционально можно переопределить источники exporter-метрик:
 - `REDIS_EXPORTER_REDIS_ADDR` (по умолчанию `redis://redis:6379`)
-- `REDIS_EXPORTER_CHECK_KEYS` (по умолчанию ключи очередей `ai-process/user-embed/ac-batch/match-notify` + `:processing/:dlq`)
+- `REDIS_EXPORTER_CHECK_KEYS` (по умолчанию ключи очередей `ai-process/user-embed/user-rematch/ac-batch/match-notify` + `:processing/:dlq`)
+
+После старта monitoring-профиля в Grafana автоматически появляются:
+- Prometheus datasource
+- PostgreSQL datasource `Product Analytics Postgres`
+- SQL dashboard `SiteParser — Product Analytics`
+
+Дашборд отвечает на базовые продуктовые вопросы:
+- сколько пользователей зарегистрировалось сегодня;
+- какой процент пользователей заполнил профиль;
+- какая конверсия из `notification_sent` в `feedback_submitted`;
+- какая биржа даёт лучшие матчи по фидбеку.
+
+Источником для этих панелей служит таблица `product_events`, которая заполняется backend API и notifier. Сейчас пишутся события:
+- `user_registered`
+- `profile_updated`
+- `profile_completed`
+- `preferences_updated`
+- `notify_hour_updated`
+- `feedback_submitted`
+- `notification_sent`
 
 ### Production (Docker Compose)
 
@@ -122,12 +176,9 @@ cp .env.production.example .env.production
 
 # 2. Запуск production-профиля
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
-
-# (опционально) включить user-embed consumer
-docker compose --env-file .env.production -f docker-compose.prod.yml --profile ai-user-embed up -d ai-user-embed
 ```
 
-`ai-ac-consumer` входит в production compose по умолчанию (без отдельного profile).
+`ai-user-embed`, `ai-user-rematch` и `ai-ac-consumer` входят в production compose по умолчанию (без отдельного profile).
 
 В production compose **не** поднимает локальные PostgreSQL/Redis контейнеры: используются внешние managed endpoints.
 
@@ -139,9 +190,21 @@ docker compose --env-file .env.production -f docker-compose.prod.yml --profile a
 
 Без этого Railpack анализирует корень репо, не находит `go.mod` и падает с «could not determine how to build». Конфиг сборки и старта — в `backend/railpack.json`. Watch paths можно задать `backend/**`, чтобы деплой триггерился только при изменениях в backend.
 
-### Deploy Pipeline: Secrets for Staging Smoke/E2E Gate
+Railway backend теперь стартует через `backend/scripts/railway-start.sh`, который прогоняет тот же migration-aware entrypoint, что и Docker image. Для production держите `RUN_MIGRATIONS=1`; если `DATABASE_URL` смотрит в transaction-pooler, задайте отдельный `DATABASE_MIGRATE_URL` на session/direct connection.
 
-Для workflow `.github/workflows/deploy.yml` (job `staging-smoke-e2e-gate`) нужны:
+### Deploy Pipeline: Preflight + Staging Smoke/E2E Gate
+
+Workflow `.github/workflows/deploy.yml` теперь сначала гоняет быстрый job `release-preflight-gate`, который валидирует production compose/config contract и backend smoke contract ещё до `deploy-staging`.
+
+Перед production release используйте явный checklist из `docs/operations.md` (`0) Release Checklist`): compose config, env validation, staging smoke, health checks, queue drain, rollback drill.
+
+Локально тот же fail-fast набор можно запустить так:
+
+```bash
+./scripts/release_preflight_gate.sh
+```
+
+Для staging smoke/e2e job `staging-smoke-e2e-gate` нужны:
 
 - `STAGING_SSH_HOST` (обязателен)
 - `STAGING_SSH_USER` (обязателен)
@@ -189,7 +252,9 @@ cd backend && go run ./cmd/crawler
 | `API_ALLOW_REDIS_DEGRADED` | Явный opt-in запуска backend API без Redis (`1=true`) только для development. По умолчанию `0`: при недоступном Redis API завершится с ошибкой (fail-closed). В `APP_ENV=production` значение `1` запрещено |
 | `API_TRUSTED_PROXY_CIDRS` | CIDR-allowlist доверенных reverse-proxy (через запятую). Заголовки `X-Forwarded-For`/`X-Real-IP` учитываются только если `RemoteAddr` попадает в этот список |
 | `API_TLS_CERT_FILE`/`API_TLS_KEY_FILE` | Путь к TLS-сертификату и ключу API (обязательны в `APP_ENV=production`) |
-| `TELEGRAM_BOT_TOKEN` | Токен Telegram-бота для notifier / smoke / Alertmanager fallback |
+| `TELEGRAM_BOT_TOKEN` | Основной токен Telegram-бота для production webhook / notifier / Alertmanager fallback |
+| `LOCAL_TELEGRAM_BOT_TOKEN` | Dev-only override для локального polling и notifier smoke, чтобы не конфликтовать с production webhook |
+| `POLLING_ACTIVE_WEBHOOK_POLICY` | Поведение локального polling при активном webhook на токене: `standby` (по умолчанию) или `ignore` |
 | `TELEGRAM_ID` | Личный chat_id для локальных smoke/e2e-проверок и fallback Alertmanager, если `ALERTMANAGER_TELEGRAM_CHAT_ID` не задан |
 | `ALERTMANAGER_TELEGRAM_BOT_TOKEN` | Отдельный токен бота для Alertmanager (опционально; иначе используется `TELEGRAM_BOT_TOKEN`) |
 | `ALERTMANAGER_TELEGRAM_CHAT_ID` | Отдельный chat_id канала/ops-чата для monitoring alerts (рекомендуется) |
@@ -211,21 +276,27 @@ cd backend && go run ./cmd/crawler
 | `AI_METRICS_BIND` | Bind-address для `/metrics` endpoint AI-consumer процессов (по умолчанию `0.0.0.0`) |
 | `AI_CONSUMER_METRICS_PORT` | Порт `/metrics` для `ai-service` consumer (по умолчанию `9108`, `0` = выключить exporter) |
 | `AI_AC_CONSUMER_METRICS_PORT` | Порт `/metrics` для `ai-ac-consumer` (по умолчанию `9109`, `0` = выключить exporter) |
-| `AC_BATCH_QUEUE` | Redis-очередь batch-задач Actor-Critic (по умолчанию `ac-batch`) |
+| `AI_USER_EMBED_METRICS_PORT` | Порт `/metrics` для `ai-user-embed` (по умолчанию `9110`, `0` = выключить exporter) |
+| `USER_REMATCH_QUEUE` | Redis-очередь повторного матчинга пользователей (по умолчанию `user-rematch`) |
+| `REMATCH_JOBS_DAYS_BACK`/`REMATCH_MAX_JOBS` | Окно поиска и лимит проектов для `ai-user-rematch` (по умолчанию `7` дней и `5` jobs) |
+| `AI_USER_REMATCH_HEALTH_PORT` | Внутренний health-port `ai-user-rematch` (по умолчанию `8092`) |
+| `AC_BATCH_QUEUE` | Redis-очередь batch-задач финального ранжирования (по умолчанию `ac-batch`) |
 | `AC_BATCH_INTERVAL_SEC` | Интервал планировщика batch в `ai-ac-consumer` (по умолчанию `300`) |
 | `AC_BATCH_MIN_JOBS`/`AC_BATCH_MAX_JOBS` | Границы размера batch из pending-совпадений (по умолчанию `1` и `20`) |
-| `AC_SCORE_THRESHOLD` | Порог Critic (0..10) для отправки batch-нотификации (по умолчанию `5.0`) |
-| `AC_MAX_ATTEMPTS` | Максимум итераций Actor-Critic loop на один batch (по умолчанию `3`) |
-| `AC_MAX_JOBS_PER_SELECTION` | Сколько объявлений Actor возвращает за итерацию (по умолчанию `5`) |
-| `ACTOR_OLLAMA_MODEL`/`CRITIC_OLLAMA_MODEL` | Модели Ollama для Actor/Critic (по умолчанию `llama3.2:3b-instruct-q4_K_M`) |
-| `ACTOR_OLLAMA_TIMEOUT_SEC`/`CRITIC_OLLAMA_TIMEOUT_SEC` | Таймауты запросов Actor/Critic к Ollama (по умолчанию `45` и `30`) |
+| `MAX_MATCHES_PER_JOB` | Размер ANN candidate pool до rerank (по умолчанию `50`) |
+| `RERANK_THRESHOLD` | Минимальный score cross-encoder rerank для downstream scoring (по умолчанию `0.55`) |
+| `RERANK_TOP_K` | Сколько кандидатов оставить после cross-encoder rerank (по умолчанию `10`) |
+| `AC_MAX_ATTEMPTS` | Legacy env из старого Actor-Critic pipeline; текущим scorer не используется |
+| `AC_MAX_JOBS_PER_SELECTION` | Legacy env из старого Actor-Critic pipeline; текущим scorer не используется |
+| `ACTOR_OLLAMA_MODEL` | Модель Ollama для batch explanation generation (по умолчанию `llama3.2:3b-instruct-q4_K_M`) |
+| `ACTOR_OLLAMA_TIMEOUT_SEC` | Таймаут запросов Actor к Ollama (по умолчанию `45`) |
 
 Полный список: `.env.example`. Документация: `docs/env_setup.md`.
 
 ## Тесты
 
 ```bash
-# Полный локальный прогон gate'ов (workflow lint + unit + coverage + monitoring + security)
+# Полный локальный прогон gate'ов (workflow lint + unit + browser-service + coverage + monitoring + security)
 make test-all
 
 # Backend (Go) — покрытие ≥70% по internal/

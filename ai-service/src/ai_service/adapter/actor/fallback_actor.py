@@ -57,3 +57,33 @@ class FallbackActorAgent(ActorAgent):
             max_jobs=max_jobs,
             critique=critique,
         )
+
+    def explain_batch(
+        self,
+        user: User,
+        candidates: list[Job],
+    ) -> list[str]:
+        try:
+            explanations = self._primary.explain_batch(
+                user=user,
+                candidates=candidates,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("primary actor failed during explain_batch: %s", exc)
+            fallback_metrics.record_primary_outcome("actor", "error")
+            fallback_metrics.record_fallback("actor", "primary_error")
+            return self._fallback.explain_batch(
+                user=user,
+                candidates=candidates,
+            )
+
+        if len(explanations) == len(candidates) and all(str(item).strip() for item in explanations):
+            fallback_metrics.record_primary_outcome("actor", "success")
+            return explanations
+        fallback_metrics.record_primary_outcome("actor", "empty")
+        fallback_metrics.record_fallback("actor", "primary_empty")
+
+        return self._fallback.explain_batch(
+            user=user,
+            candidates=candidates,
+        )

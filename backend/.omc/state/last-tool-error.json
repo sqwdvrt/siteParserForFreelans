@@ -1,0 +1,7 @@
+{
+  "tool_name": "Bash",
+  "tool_input_preview": "{\"command\":\"find \\\"/Users/sqwdvrt/VS Code/siteParserForFreelans/backend/internal/adapter/postgres\\\" -name \\\"*.go\\\" | grep -i job && grep -n \\\"func.*Save\\\" \\\"/Users/sqwdvrt/VS Code/siteParserForFreelan...",
+  "error": "Exit code 1",
+  "timestamp": "2026-03-08T09:53:24.692Z",
+  "retry_count": 1
+}

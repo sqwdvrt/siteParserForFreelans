@@ -8,7 +8,7 @@ import (
 
 // UserRepository — репозиторий пользователей.
 type UserRepository interface {
-	Save(ctx context.Context, telegramID int64) (int64, error)
+	Save(ctx context.Context, telegramID int64) (userID int64, created bool, err error)
 	GetByID(ctx context.Context, userID int64) (*domain.User, error)
 	GetByTelegramID(ctx context.Context, telegramID int64) (*domain.User, error)
 	GetPreferencesScoped(ctx context.Context, userID int64) (*domain.UserPreferences, error)

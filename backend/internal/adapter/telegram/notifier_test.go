@@ -616,3 +616,107 @@ func TestCircuitBreaker_HalfOpenInFlight_UsesPositiveJitterOnWait(t *testing.T) 
 		t.Fatalf("wait = %v, want 15s", wait)
 	}
 }
+
+func TestFormatJobAge_JustNow(t *testing.T) {
+	now := time.Now()
+	posted := now.Add(-30 * time.Second)
+	job := &domain.Job{PostedAt: &posted}
+	got := formatJobAge(job, now)
+	if !strings.Contains(got, "🟢") || !strings.Contains(got, "только что") {
+		t.Errorf("want 🟢 только что, got %q", got)
+	}
+}
+
+func TestFormatJobAge_Minutes(t *testing.T) {
+	now := time.Now()
+	posted := now.Add(-12 * time.Minute)
+	job := &domain.Job{PostedAt: &posted}
+	got := formatJobAge(job, now)
+	if !strings.Contains(got, "🟢") || !strings.Contains(got, "12 мин назад") {
+		t.Errorf("want 🟢 12 мин назад, got %q", got)
+	}
+}
+
+func TestFormatJobAge_Hours_Yellow(t *testing.T) {
+	now := time.Now()
+	posted := now.Add(-3 * time.Hour)
+	job := &domain.Job{PostedAt: &posted}
+	got := formatJobAge(job, now)
+	if !strings.Contains(got, "🟡") || !strings.Contains(got, "3 ч назад") {
+		t.Errorf("want 🟡 3 ч назад, got %q", got)
+	}
+}
+
+func TestFormatJobAge_Hours_Orange(t *testing.T) {
+	now := time.Now()
+	posted := now.Add(-8 * time.Hour)
+	job := &domain.Job{PostedAt: &posted}
+	got := formatJobAge(job, now)
+	if !strings.Contains(got, "🟠") || !strings.Contains(got, "8 ч назад") {
+		t.Errorf("want 🟠 8 ч назад, got %q", got)
+	}
+}
+
+func TestFormatJobAge_Days(t *testing.T) {
+	now := time.Now()
+	posted := now.Add(-49 * time.Hour)
+	job := &domain.Job{PostedAt: &posted}
+	got := formatJobAge(job, now)
+	if !strings.Contains(got, "🔴") || !strings.Contains(got, "2 дн назад") {
+		t.Errorf("want 🔴 2 дн назад, got %q", got)
+	}
+}
+
+func TestFormatJobAge_FallbackToCreatedAt(t *testing.T) {
+	now := time.Now()
+	job := &domain.Job{PostedAt: nil, CreatedAt: now.Add(-5 * time.Minute)}
+	got := formatJobAge(job, now)
+	if !strings.Contains(got, "🟢") || !strings.Contains(got, "5 мин назад") {
+		t.Errorf("want 🟢 5 мин назад from CreatedAt, got %q", got)
+	}
+}
+
+func TestFormatJobAge_ZeroCreatedAt_ReturnsEmpty(t *testing.T) {
+	job := &domain.Job{PostedAt: nil}
+	got := formatJobAge(job, time.Now())
+	if got != "" {
+		t.Errorf("want empty string for zero time, got %q", got)
+	}
+}
+
+func TestFormatMessage_ContainsAge(t *testing.T) {
+	now := time.Now()
+	posted := now.Add(-20 * time.Minute)
+	job := &domain.Job{
+		ID:          1,
+		Title:       "Python разработчик",
+		Description: "Нужен Python backend разработчик.",
+		Budget:      "5000₽",
+		URL:         "https://kwork.ru/projects/1",
+		PostedAt:    &posted,
+	}
+	text := formatMessage(port.NotifyPayload{Job: job, Score: 0.85})
+	if !strings.Contains(text, "🟢") || !strings.Contains(text, "мин назад") {
+		t.Errorf("formatMessage should contain age indicator, got:\n%s", text)
+	}
+}
+
+func TestFormatBatchMessage_ContainsAge(t *testing.T) {
+	now := time.Now()
+	posted := now.Add(-2 * time.Hour)
+	job := &domain.Job{
+		ID:       1,
+		Title:    "Go разработчик",
+		URL:      "https://kwork.ru/projects/1",
+		PostedAt: &posted,
+	}
+	text := formatBatchMessage(port.NotifyPayload{
+		CriticScore: 7.5,
+		Batch: []port.BatchNotifyItem{
+			{Job: job, WhyItFits: "Отличное совпадение", Rank: 1},
+		},
+	})
+	if !strings.Contains(text, "🟡") || !strings.Contains(text, "ч назад") {
+		t.Errorf("formatBatchMessage should contain age indicator, got:\n%s", text)
+	}
+}

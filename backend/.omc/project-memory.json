@@ -1,0 +1,174 @@
+{
+  "version": "1.0.0",
+  "lastScanned": 1772962756500,
+  "projectRoot": "/Users/sqwdvrt/VS Code/siteParserForFreelans/backend",
+  "techStack": {
+    "languages": [
+      {
+        "name": "Go",
+        "version": null,
+        "confidence": "high",
+        "markers": [
+          "go.mod"
+        ]
+      }
+    ],
+    "frameworks": [],
+    "packageManager": "go",
+    "runtime": null
+  },
+  "build": {
+    "buildCommand": null,
+    "testCommand": null,
+    "lintCommand": null,
+    "devCommand": null,
+    "scripts": {}
+  },
+  "conventions": {
+    "namingStyle": null,
+    "importStyle": null,
+    "testPattern": null,
+    "fileOrganization": null
+  },
+  "structure": {
+    "isMonorepo": false,
+    "workspaces": [],
+    "mainDirectories": [
+      "docs",
+      "scripts"
+    ],
+    "gitBranches": null
+  },
+  "customNotes": [],
+  "directoryMap": {
+    "cmd": {
+      "path": "cmd",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1772962756486,
+      "keyFiles": []
+    },
+    "docs": {
+      "path": "docs",
+      "purpose": "Documentation",
+      "fileCount": 1,
+      "lastAccessed": 1772962756486,
+      "keyFiles": [
+        "kwork_selectors.md"
+      ]
+    },
+    "internal": {
+      "path": "internal",
+      "purpose": null,
+      "fileCount": 0,
+      "lastAccessed": 1772962756486,
+      "keyFiles": []
+    },
+    "migrations": {
+      "path": "migrations",
+      "purpose": "Database migrations",
+      "fileCount": 18,
+      "lastAccessed": 1772962756486,
+      "keyFiles": [
+        "001_init.sql",
+        "002_notifications_job_user_index.sql",
+        "003_notifications_status.sql",
+        "004_pending_ac_jobs.sql",
+        "005_pending_ac_jobs_trace_id.sql"
+      ]
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 1,
+      "lastAccessed": 1772962756486,
+      "keyFiles": [
+        "docker-entrypoint.sh"
+      ]
+    },
+    "testdata": {
+      "path": "testdata",
+      "purpose": null,
+      "fileCount": 4,
+      "lastAccessed": 1772962756486,
+      "keyFiles": [
+        "kwork_detail.html",
+        "kwork_detail_rendered.html",
+        "kwork_list.html",
+        "kwork_list_rendered.html"
+      ]
+    },
+    "cmd/api": {
+      "path": "cmd/api",
+      "purpose": "API routes",
+      "fileCount": 2,
+      "lastAccessed": 1772962756486,
+      "keyFiles": [
+        "main.go",
+        "main_test.go"
+      ]
+    },
+    "internal/api": {
+      "path": "internal/api",
+      "purpose": "API routes",
+      "fileCount": 7,
+      "lastAccessed": 1772962756487,
+      "keyFiles": [
+        "admin_handlers.go",
+        "handlers.go",
+        "handlers_test.go"
+      ]
+    }
+  },
+  "hotPaths": [
+    {
+      "path": "internal/usecase/crawl_projects_test.go",
+      "accessCount": 3,
+      "lastAccessed": 1772964298856,
+      "type": "file"
+    },
+    {
+      "path": "internal/usecase/send_notification_test.go",
+      "accessCount": 2,
+      "lastAccessed": 1772964320140,
+      "type": "file"
+    },
+    {
+      "path": "cmd/notifier/main_test.go",
+      "accessCount": 2,
+      "lastAccessed": 1772964356255,
+      "type": "file"
+    },
+    {
+      "path": "internal/usecase/crawl_projects.go",
+      "accessCount": 1,
+      "lastAccessed": 1772962766953,
+      "type": "file"
+    },
+    {
+      "path": "internal/adapter/redis/queue.go",
+      "accessCount": 1,
+      "lastAccessed": 1772962780324,
+      "type": "file"
+    },
+    {
+      "path": "internal/adapter/postgres/repository.go",
+      "accessCount": 1,
+      "lastAccessed": 1772963646153,
+      "type": "file"
+    },
+    {
+      "path": "internal/adapter/browser/fetcher.go",
+      "accessCount": 1,
+      "lastAccessed": 1772963646326,
+      "type": "file"
+    },
+    {
+      "path": "cmd/crawler/main.go",
+      "accessCount": 1,
+      "lastAccessed": 1772963668905,
+      "type": "file"
+    }
+  ],
+  "userDirectives": []
+}

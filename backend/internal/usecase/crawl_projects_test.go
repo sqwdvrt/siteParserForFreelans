@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 )
 
 type mockFetcher struct {
@@ -29,9 +31,9 @@ func (m *mockFetcher) Fetch(ctx context.Context, url string) ([]byte, error) {
 }
 
 type mockExtractor struct {
-	listURLs []string
-	listErr  error
-	detail   *domain.Job
+	listURLs  []string
+	listErr   error
+	detail    *domain.Job
 	detailErr error
 }
 
@@ -79,12 +81,39 @@ func (m *mockRepo) ExistsByURL(ctx context.Context, url string) (bool, error) {
 	return m.exists[url], nil
 }
 
-type mockQueue struct {
-	enqueueErr error
+func (m *mockRepo) GetUnembeddedIDs(ctx context.Context, limit int) ([]int64, error) {
+	return nil, nil
 }
 
-func (m *mockQueue) Enqueue(ctx context.Context, jobID int64) error {
-	return m.enqueueErr
+type mockDispatchRepo struct {
+	saveAndStageFunc func(ctx context.Context, job *domain.Job, trace port.QueueDispatchTrace) (int64, bool, error)
+	stageJobFunc     func(ctx context.Context, jobID int64, trace port.QueueDispatchTrace) error
+}
+
+func (m *mockDispatchRepo) SaveAndStageJobForEmbedding(ctx context.Context, job *domain.Job, trace port.QueueDispatchTrace) (int64, bool, error) {
+	if m.saveAndStageFunc != nil {
+		return m.saveAndStageFunc(ctx, job, trace)
+	}
+	return 0, false, nil
+}
+
+func (m *mockDispatchRepo) StageJobForEmbedding(ctx context.Context, jobID int64, trace port.QueueDispatchTrace) error {
+	if m.stageJobFunc != nil {
+		return m.stageJobFunc(ctx, jobID, trace)
+	}
+	return nil
+}
+
+func (m *mockDispatchRepo) ClaimPendingJobEmbeds(ctx context.Context, limit int, lease time.Duration) ([]port.PendingJobEmbed, error) {
+	return nil, nil
+}
+
+func (m *mockDispatchRepo) DeletePendingJobEmbeds(ctx context.Context, jobIDs []int64) error {
+	return nil
+}
+
+func (m *mockDispatchRepo) ReleasePendingJobEmbeds(ctx context.Context, jobIDs []int64) error {
+	return nil
 }
 
 func TestCrawlProjects_Execute_Success(t *testing.T) {
@@ -100,9 +129,13 @@ func TestCrawlProjects_Execute_Success(t *testing.T) {
 		exists: map[string]bool{"https://kwork.ru/projects/2/view": true},
 		saveID: 42,
 	}
-	queue := &mockQueue{}
+	stager := &mockDispatchRepo{
+		saveAndStageFunc: func(ctx context.Context, job *domain.Job, trace port.QueueDispatchTrace) (int64, bool, error) {
+			return 42, true, nil
+		},
+	}
 
-	uc := NewCrawlProjects(fetcher, ext, repo, queue)
+	uc := NewCrawlProjects(fetcher, ext, repo, stager)
 	saved, err := uc.Execute(context.Background(), "https://kwork.ru/projects")
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -148,7 +181,7 @@ func TestCrawlProjects_Execute_EmptyList(t *testing.T) {
 	}
 }
 
-func TestCrawlProjects_Execute_WithNilQueue(t *testing.T) {
+func TestCrawlProjects_Execute_WithNilStager(t *testing.T) {
 	ext := &mockExtractor{
 		listURLs: []string{"https://kwork.ru/projects/1/view"},
 		detail:   &domain.Job{Title: "Job", Source: "kwork"},
@@ -164,7 +197,7 @@ func TestCrawlProjects_Execute_WithNilQueue(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if saved != 1 {
-		t.Errorf("want saved=1, got %d", saved)
+	if saved != 0 {
+		t.Errorf("want saved=0, got %d", saved)
 	}
 }

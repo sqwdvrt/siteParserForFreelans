@@ -19,10 +19,11 @@ WORKDIR /app
 
 COPY --from=builder /app/api /app/crawler /app/notifier .
 COPY migrations ./migrations
+COPY scripts ./scripts
 COPY scripts/docker-entrypoint.sh /docker-entrypoint.sh
 RUN addgroup -S app && adduser -S -D -h /home/app -s /sbin/nologin -G app app && \
     mkdir -p /home/app /tmp && \
-    chmod +x /docker-entrypoint.sh && \
+    chmod +x /docker-entrypoint.sh /app/scripts/railway-start.sh && \
     chown -R app:app /app /home/app /tmp
 
 ENV HOME=/home/app

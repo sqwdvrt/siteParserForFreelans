@@ -78,14 +78,23 @@ order: ## Показать рекомендуемый порядок запус�
 .PHONY: start
 start: up-full ## Самая простая команда: запустить проект целиком без локального telegram-bot
 
+.PHONY: up-dev
+up-dev: start ## Совместимость: полный локальный запуск без локального telegram-bot
+
 .PHONY: start-all
 start-all: up-full-with-bot ## Запустить проект целиком вместе с локальным telegram-bot
+
+.PHONY: up
+up: start-all ## Совместимость: полный локальный запуск вместе с локальным telegram-bot
 
 .PHONY: start-bot
 start-bot: up-bot ## Поднять только локальный telegram-bot
 
 .PHONY: stop
 stop: down ## Самая простая команда: остановить проект
+
+.PHONY: restart
+restart: restart-core restart-workers restart-monitoring ## Совместимость: перезапустить локальный стек без telegram-bot
 
 .PHONY: status
 status: ps ## Самая простая команда: показать состояние контейнеров
@@ -116,6 +125,9 @@ up-monitoring: check-deps check-env ## Поднять monitoring: prometheus, al
 	$(DC_MON) --profile monitoring up -d $(MONITORING_SERVICES)
 	$(call ok,Monitoring запущен)
 
+.PHONY: mon-up
+mon-up: up-monitoring ## Совместимость: поднять monitoring-стек
+
 .PHONY: up-full
 up-full: up-core up-workers up-monitoring ## Полный локальный запуск без локального telegram-bot
 	$(call ok,Полный локальный запуск завершен)
@@ -141,7 +153,7 @@ restart-core: ## Перезапустить core
 
 .PHONY: restart-workers
 restart-workers: ## Перезапустить workers
-	$(DC) restart browser-service backend-crawler backend-notifier ai-service ai-ac-consumer ai-user-embed ollama
+	$(DC) restart browser-service backend-crawler backend-notifier ai-service ai-ac-consumer ai-user-embed ai-user-rematch ollama
 	$(call ok,Workers перезапущены)
 
 .PHONY: restart-bot
@@ -246,7 +258,7 @@ migrate: check-deps check-env ## Прогнать миграции вручну�
 	$(call ok,Миграции применены)
 
 .PHONY: test
-test: test-go test-ai test-bot test-monitoring ## Все основные тесты и config gate
+test: test-go test-ai test-browser test-bot test-monitoring ## Все основные unit/config проверки
 	$(call ok,Все тесты завершены)
 
 .PHONY: test-go
@@ -259,9 +271,14 @@ test-ai: ## Python тесты ai-service
 	./scripts/pytest_ai.sh -q
 	$(call ok,AI тесты прошли)
 
+.PHONY: test-browser
+test-browser: ## Python тесты browser-service
+	./scripts/pytest_browser_service.sh -q
+	$(call ok,Browser-service тесты прошли)
+
 .PHONY: test-bot
 test-bot: ## Python тесты telegram-bot
-	cd telegram-bot && python3 -m pytest -q
+	./scripts/pytest_telegram_bot.sh -q
 	$(call ok,Telegram-bot тесты прошли)
 
 .PHONY: test-monitoring
@@ -269,10 +286,21 @@ test-monitoring: ## Проверка monitoring-конфигов
 	./scripts/monitoring_config_check.sh
 	$(call ok,Monitoring config прошел)
 
+.PHONY: coverage
+coverage: ## Coverage gate: backend/internal + ai-service + telegram-bot
+	./scripts/check_coverage.sh
+	$(call ok,Coverage gate прошел)
+
 .PHONY: test-fast
 test-fast: ## Быстрый набор: backend + ai без coverage
 	$(MAKE) test-go
 	$(MAKE) test-ai
+
+.PHONY: test-all
+test-all: ## Полный локальный прогон gate'ов: workflow lint + unit + browser-service + coverage + monitoring + security
+	./scripts/full_check.sh
+	$(MAKE) test-browser
+	$(call ok,Полный набор gate'ов прошел)
 
 .PHONY: smoke-e2e
 smoke-e2e: check-deps check-env ## Полный E2E smoke
@@ -293,11 +321,11 @@ backup-smoke: ## Smoke backup/restore на локальной compose-БД
 
 .PHONY: queue-status
 queue-status: ## Показать размеры основных очередей Redis
-	$(DC) exec -T redis sh -lc 'for k in ai-process ai-process:processing ai-process:dlq user-embed user-embed:processing user-embed:dlq ac-batch ac-batch:processing ac-batch:dlq match-notify match-notify:processing match-notify:dlq; do printf "%s=%s\n" "$$k" "$$(redis-cli LLEN "$$k")"; done'
+	$(DC) exec -T redis sh -lc 'for k in ai-process ai-process:processing ai-process:dlq user-embed user-embed:processing user-embed:dlq user-rematch user-rematch:processing user-rematch:dlq ac-batch ac-batch:processing ac-batch:dlq match-notify match-notify:processing match-notify:dlq; do printf "%s=%s\n" "$$k" "$$(redis-cli LLEN "$$k")"; done'
 
 .PHONY: dlq-status
 dlq-status: ## Показать только DLQ очереди
-	$(DC) exec -T redis sh -lc 'for k in ai-process:dlq user-embed:dlq ac-batch:dlq match-notify:dlq; do printf "%s=%s\n" "$$k" "$$(redis-cli LLEN "$$k")"; done'
+	$(DC) exec -T redis sh -lc 'for k in ai-process:dlq user-embed:dlq user-rematch:dlq ac-batch:dlq match-notify:dlq; do printf "%s=%s\n" "$$k" "$$(redis-cli LLEN "$$k")"; done'
 
 .PHONY: clean
 clean: ## Остановить стек и удалить контейнеры/сети/анонимные volume

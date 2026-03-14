@@ -42,7 +42,8 @@ class RedisMatchNotifyQueue(MatchNotifyQueue):
         *,
         user_id: int,
         ranked_jobs: list[RankedJob],
-        critic_score: float,
+        batch_score: float | None = None,
+        critic_score: float | None = None,
         trace_id: str = "",
     ) -> None:
         if not ranked_jobs:
@@ -50,6 +51,7 @@ class RedisMatchNotifyQueue(MatchNotifyQueue):
         payload = self._serialize_batch(
             user_id=user_id,
             ranked_jobs=ranked_jobs,
+            batch_score=batch_score,
             critic_score=critic_score,
             trace_id=trace_id,
         )
@@ -77,13 +79,18 @@ class RedisMatchNotifyQueue(MatchNotifyQueue):
         *,
         user_id: int,
         ranked_jobs: list[RankedJob],
-        critic_score: float,
+        batch_score: float | None = None,
+        critic_score: float | None = None,
         trace_id: str = "",
     ) -> str:
+        # `critic_score` remains as a temporary compatibility alias for older
+        # queued payloads; `batch_score` is the canonical field.
+        if batch_score is None:
+            batch_score = critic_score if critic_score is not None else 0.0
         normalized_trace = (trace_id or get_trace_id()).strip()[:128]
         payload: dict = {
             "user_id": user_id,
-            "critic_score": round(float(critic_score), 2),
+            "batch_score": round(float(batch_score), 2),
             "jobs": [
                 {
                     "job_id": item.job_id,
@@ -94,6 +101,8 @@ class RedisMatchNotifyQueue(MatchNotifyQueue):
                 for item in ranked_jobs
             ],
         }
+        if critic_score is not None:
+            payload["critic_score"] = round(float(critic_score), 2)
         if normalized_trace:
             payload["trace_id"] = normalized_trace
         traceparent = inject_context(None)

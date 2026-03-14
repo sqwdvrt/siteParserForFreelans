@@ -45,6 +45,21 @@ def test_render_prometheus_text_contains_primary_and_fallback_counters() -> None
     assert 'ai_ollama_fallback_total{pipeline="classifier",reason="primary_error"} 1' in rendered
 
 
+def test_render_prometheus_text_contains_custom_metrics() -> None:
+    fallback_metrics.reset_counters_for_tests()
+    fallback_metrics.set_gauge("ai_pending_ac_jobs_rows", "Pending AC rows.", 12, labels={"state": "total"})
+    fallback_metrics.increment_counter("ai_pending_ac_jobs_cleanup_total", "Cleanup total.", 3)
+
+    rendered = fallback_metrics.render_prometheus_text()
+
+    assert "# HELP ai_pending_ac_jobs_rows Pending AC rows." in rendered
+    assert "# TYPE ai_pending_ac_jobs_rows gauge" in rendered
+    assert 'ai_pending_ac_jobs_rows{state="total"} 12.0' in rendered
+    assert "# HELP ai_pending_ac_jobs_cleanup_total Cleanup total." in rendered
+    assert "# TYPE ai_pending_ac_jobs_cleanup_total counter" in rendered
+    assert "ai_pending_ac_jobs_cleanup_total 3.0" in rendered
+
+
 def test_classifier_primary_error_records_fallback_metric() -> None:
     fallback_metrics.reset_counters_for_tests()
     primary = MagicMock()

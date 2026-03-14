@@ -81,6 +81,29 @@ def test_get_user_is_pro_returns_none_when_flag_missing(bot, monkeypatch):
     assert bot.get_user_is_pro("https://api.example.com", 1, 123, "tok", "hmac") is None
 
 
+def test_get_user_stats_returns_payload(bot, monkeypatch):
+    monkeypatch.setattr(
+        bot,
+        "_http_get",
+        lambda *args, **kwargs: {
+            "period_days": 7,
+            "projects_found": 42,
+            "projects_shown": 12,
+            "projects_filtered_other": 30,
+            "projects_filtered_by_budget": 18,
+            "budget_filter_active": True,
+        },
+    )
+    stats = bot.get_user_stats("https://api.example.com", 1, 123, "tok", "hmac")
+    assert isinstance(stats, dict)
+    assert stats["projects_found"] == 42
+
+
+def test_get_user_stats_returns_none_on_failure(bot, monkeypatch):
+    monkeypatch.setattr(bot, "_http_get", lambda *args, **kwargs: None)
+    assert bot.get_user_stats("https://api.example.com", 1, 123, "tok", "hmac") is None
+
+
 def test_get_updates_returns_next_offset(bot, monkeypatch):
     monkeypatch.setattr(
         bot,
@@ -218,6 +241,27 @@ def test_handle_callback_calls_post_feedback_with_correct_ids(bot, monkeypatch):
     assert called_telegram_id == 987654, f"telegram_id должен быть Telegram ID (987654), получили {called_telegram_id}"
     assert job_id == 7
     assert feedback == "good"
+
+
+def test_handle_callback_manual_onboarding_switches_to_edit_mode(bot, monkeypatch):
+    edits = []
+    monkeypatch.setattr(bot, "answer_callback_query", lambda *a, **kw: None)
+    monkeypatch.setattr(bot, "edit_message_text", lambda *a, **kw: edits.append(a))
+
+    callback = {
+        "id": "cb2",
+        "data": "ob:manual",
+        "from": {"id": 987654},
+        "message": {
+            "chat": {"id": 123},
+            "message_id": 55,
+        },
+    }
+    bot.handle_callback(callback, "token", "https://api.example.com", "tok", "hmac")
+
+    assert bot._parse_onboarding_state(bot._get_conversation_state(987654)) == {"step": "edit"}
+    assert edits
+    assert "Отправьте текст профиля" in edits[0][3]
 
 
 def test_render_metrics_contains_counters_and_ready_gauge(bot):

@@ -7,15 +7,17 @@ import threading
 
 from ai_service.port.user_embed_queue import UserEmbedQueueConsumer
 from ai_service.usecase.process_user_embed import ProcessUserEmbedUseCase
+from ai_service.util.queue_retry import reclaim_with_retry, wait_before_retry
 from ai_service.util.trace_context import reset_trace_id, set_trace_id
 
 logger = logging.getLogger(__name__)
 
 
-def _maybe_reclaim(queue: UserEmbedQueueConsumer) -> None:
+def _maybe_reclaim(queue: UserEmbedQueueConsumer):
     reclaim = getattr(queue, "reclaim_stuck", None)
     if callable(reclaim):
-        reclaim()
+        return reclaim
+    return None
 
 
 def _maybe_ack(queue: UserEmbedQueueConsumer, user_id: int) -> None:
@@ -58,12 +60,25 @@ def run_user_embed_consumer(
 ) -> None:
     """Цикл: BRPOP user-embed → ProcessUserEmbed. Выход по stop_event.set()."""
     stop = stop_event or threading.Event()
-    _maybe_reclaim(queue)
+    if not reclaim_with_retry(
+        reclaim=_maybe_reclaim(queue),
+        stop_event=stop,
+        logger=logger,
+        operation="user-embed queue reclaim",
+    ):
+        logger.info("user-embed consumer loop stopped before reclaim completed")
+        return
     while not stop.is_set():
         try:
             user_id = queue.pop_blocking(timeout_sec=timeout_sec)
         except Exception as e:
-            logger.exception("user-embed queue pop failed: %s", e)
+            if wait_before_retry(
+                stop_event=stop,
+                logger=logger,
+                operation="user-embed queue pop",
+                exc=e,
+            ):
+                break
             continue
         if user_id is not None:
             if _maybe_shutdown_requeue(queue, user_id, stop):

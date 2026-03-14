@@ -68,6 +68,17 @@ class ReclaimQueueConsumer(ReliableFakeQueueConsumer):
         self.reclaimed = True
 
 
+class FlakyReclaimQueueConsumer(ReliableFakeQueueConsumer):
+    def __init__(self, job_ids: list[int]) -> None:
+        super().__init__(job_ids)
+        self.reclaim_calls = 0
+
+    def reclaim_stuck(self) -> None:
+        self.reclaim_calls += 1
+        if self.reclaim_calls == 1:
+            raise RuntimeError("redis temporary error")
+
+
 class ShutdownAfterPopQueueConsumer(ReliableFakeQueueConsumer):
     def __init__(self, job_ids: list[int], stop_event: threading.Event) -> None:
         super().__init__(job_ids)
@@ -167,12 +178,37 @@ def test_run_consumer_nacks_on_process_error() -> None:
 
 
 def test_run_consumer_calls_reclaim_if_available() -> None:
+    import time
+
     process_job = MagicMock(spec=ProcessJobUseCase)
     queue = ReclaimQueueConsumer([])
     stop = threading.Event()
+
+    t = threading.Thread(target=lambda: run_consumer(queue, process_job, timeout_sec=1, stop_event=stop))
+    t.start()
+    time.sleep(0.1)
     stop.set()
-    run_consumer(queue, process_job, timeout_sec=1, stop_event=stop)
+    t.join(timeout=3)
+
     assert queue.reclaimed is True
+
+
+def test_run_consumer_retries_reclaim_error(monkeypatch) -> None:
+    process_job = MagicMock(spec=ProcessJobUseCase)
+    queue = FlakyReclaimQueueConsumer([42])
+    stop = threading.Event()
+
+    monkeypatch.setenv("AI_QUEUE_RETRY_DELAY_SEC", "0")
+
+    def _execute(job_id: int) -> None:
+        stop.set()
+
+    process_job.execute.side_effect = _execute
+
+    run_consumer(queue, process_job, timeout_sec=1, stop_event=stop)
+
+    assert queue.reclaim_calls == 2
+    process_job.execute.assert_called_once_with(42)
 
 
 def test_run_consumer_continues_when_ack_raises() -> None:
