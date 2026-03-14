@@ -115,6 +115,78 @@ groups:
           summary: "Crawler scraped unusually few jobs"
           description: "crawler_jobs_scraped_total increased by fewer than 10 jobs over the last 24 hours."
 
+      - alert: SiteParserCrawlerFailureRatioHigh
+        expr: |
+          siteparser:crawler_failure_ratio:increase36h > 0.50
+        for: 30m
+        labels:
+          severity: warning
+          service: backend-crawler
+        annotations:
+          summary: "Crawler failure ratio is high"
+          description: "More than 50% of crawler runs failed over the last 36 hours."
+
+      - alert: SiteParserCrawlerInterruptedRatioHigh
+        expr: |
+          siteparser:crawler_interrupted_ratio:increase36h > 0.30
+        for: 30m
+        labels:
+          severity: warning
+          service: backend-crawler
+        annotations:
+          summary: "Crawler interrupted ratio is high"
+          description: "More than 30% of crawler runs were interrupted over the last 36 hours."
+
+      - alert: SiteParserCrawlerNoSuccessfulRuns
+        expr: |
+          siteparser:crawler_successful_runs:increase36h < 1
+        for: 30m
+        labels:
+          severity: critical
+          service: backend-crawler
+        annotations:
+          summary: "Crawler has no successful runs"
+          description: "backend-crawler did not complete a successful run during the last 36 hours."
+
+      - alert: SiteParserCrawlerNoJobsScraped
+        expr: |
+          siteparser:crawler_jobs_scraped:increase36h < 1
+        for: 30m
+        labels:
+          severity: warning
+          service: backend-crawler
+        annotations:
+          summary: "Crawler scraped no jobs"
+          description: "siteparser_crawler_jobs_scraped_total did not increase during the last 36 hours."
+
+      - alert: SiteParserNotifierFailureRatioHigh
+        expr: |
+          siteparser:notifier_failure_ratio:rate5m > 0.20
+          and
+          siteparser:notifier_failure_ratio:rate15m > 0.10
+        for: 10m
+        labels:
+          severity: warning
+          service: backend-notifier
+        annotations:
+          summary: "Notifier failure ratio is high"
+          description: "Notifier failed more than 10% of delivery attempts over 15 minutes, with a 5-minute spike above 20%."
+
+      - alert: SiteParserNotifierNoSuccessfulDeliveriesWithBacklog
+        expr: |
+          sum(siteparser_notifier_queue_depth{job="backend-notifier",state=~"ready|processing"}) > 100
+          and
+          (
+            siteparser:notifier_sent_rate:rate15m == 0
+          )
+        for: 15m
+        labels:
+          severity: warning
+          service: backend-notifier
+        annotations:
+          summary: "Notifier backlog is not draining"
+          description: "Notifier queue backlog stays above 100 while successful delivery rate remains at zero for 15 minutes."
+
       - alert: SiteParserFeedbackPositiveRatioLow
         expr: |
           siteparser_feedback_recent_total{job="backend-api"} >= 10

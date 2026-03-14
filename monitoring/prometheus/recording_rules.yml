@@ -11,6 +11,48 @@
 
 groups:
   # -------------------------------------------------------------------------
+  # Worker health ratios  — crawler windows are wide because default cron is
+  # daily; notifier windows are short because it runs continuously.
+  # -------------------------------------------------------------------------
+  - name: siteparser-worker-recording
+    rules:
+      - record: siteparser:crawler_failure_ratio:increase36h
+        expr: |
+          sum(increase(siteparser_crawler_runs_total{job="backend-crawler",status="failed"}[36h]))
+          /
+          clamp_min(sum(increase(siteparser_crawler_runs_total{job="backend-crawler"}[36h])), 1)
+
+      - record: siteparser:crawler_interrupted_ratio:increase36h
+        expr: |
+          sum(increase(siteparser_crawler_runs_total{job="backend-crawler",status="interrupted"}[36h]))
+          /
+          clamp_min(sum(increase(siteparser_crawler_runs_total{job="backend-crawler"}[36h])), 1)
+
+      - record: siteparser:crawler_successful_runs:increase36h
+        expr: |
+          sum(increase(siteparser_crawler_runs_total{job="backend-crawler",status="success"}[36h]))
+
+      - record: siteparser:crawler_jobs_scraped:increase36h
+        expr: |
+          sum(increase(siteparser_crawler_jobs_scraped_total{job="backend-crawler"}[36h]))
+
+      - record: siteparser:notifier_failure_ratio:rate5m
+        expr: |
+          sum(rate(siteparser_notifier_notifications_total{job="backend-notifier",status="failed"}[5m]))
+          /
+          clamp_min(sum(rate(siteparser_notifier_notifications_total{job="backend-notifier"}[5m])), 0.001)
+
+      - record: siteparser:notifier_failure_ratio:rate15m
+        expr: |
+          sum(rate(siteparser_notifier_notifications_total{job="backend-notifier",status="failed"}[15m]))
+          /
+          clamp_min(sum(rate(siteparser_notifier_notifications_total{job="backend-notifier"}[15m])), 0.001)
+
+      - record: siteparser:notifier_sent_rate:rate15m
+        expr: |
+          sum(rate(siteparser_notifier_notifications_total{job="backend-notifier",status="sent"}[15m]))
+
+  # -------------------------------------------------------------------------
   # Error ratio  — fraction of 5xx responses out of all responses
   # -------------------------------------------------------------------------
   - name: siteparser-slo-error-recording
