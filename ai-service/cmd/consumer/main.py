@@ -35,6 +35,7 @@ from ai_service.usecase.process_job import ProcessJobUseCase
 from ai_service.util.fallback_metrics import start_metrics_server_from_env
 from ai_service.util.postgres_pool_config import load_postgres_pool_settings
 from ai_service.util.runtime_env import require_env, resolve_redis_url
+from ai_service.util.shutdown import cap_blocking_pop_timeout
 from ai_service.util.transport_security import (
     is_production_env,
     validate_postgres_tls_for_production,
@@ -55,6 +56,8 @@ WARMUP_ENABLED_ENV = "AI_WARMUP_ENABLED"
 DEFAULT_WARMUP_ENABLED = True
 SHUTDOWN_GRACE_SEC_ENV = "AI_SHUTDOWN_GRACE_SEC"
 DEFAULT_SHUTDOWN_GRACE_SEC = 20.0
+POP_TIMEOUT_SEC_ENV = "AI_PROCESS_POP_TIMEOUT_SEC"
+DEFAULT_POP_TIMEOUT_SEC = 60
 
 
 def _cleanup_ready_file(ready_file: str) -> None:
@@ -109,6 +112,29 @@ def _shutdown_grace_sec() -> float:
     return value
 
 
+def _pop_timeout_sec() -> int:
+    raw = os.getenv(POP_TIMEOUT_SEC_ENV, str(DEFAULT_POP_TIMEOUT_SEC))
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "invalid %s=%r, fallback to %ds",
+            POP_TIMEOUT_SEC_ENV,
+            raw,
+            DEFAULT_POP_TIMEOUT_SEC,
+        )
+        return DEFAULT_POP_TIMEOUT_SEC
+    if value <= 0:
+        logger.warning(
+            "non-positive %s=%r, fallback to %ds",
+            POP_TIMEOUT_SEC_ENV,
+            raw,
+            DEFAULT_POP_TIMEOUT_SEC,
+        )
+        return DEFAULT_POP_TIMEOUT_SEC
+    return value
+
+
 def _nack_inflight_messages(queue: object) -> int:
     nack_all_inflight = getattr(queue, "nack_all_inflight", None)
     if not callable(nack_all_inflight):
@@ -156,6 +182,14 @@ def main() -> None:
     rerank_top_k = int(os.getenv("RERANK_TOP_K", "10"))
     threshold = float(os.getenv("SIMILARITY_THRESHOLD", "0.7"))
     max_matches = int(os.getenv("MAX_MATCHES_PER_JOB", "50"))
+    grace_sec = _shutdown_grace_sec()
+    pop_timeout_sec = cap_blocking_pop_timeout(
+        _pop_timeout_sec(),
+        grace_sec,
+        logger=logger,
+        timeout_name=POP_TIMEOUT_SEC_ENV,
+        grace_name=SHUTDOWN_GRACE_SEC_ENV,
+    )
 
     repo = PostgresJobRepository(db_url, **pg_pool_kwargs)
     user_repo = PostgresUserRepository(db_url, **pg_pool_kwargs)
@@ -191,7 +225,6 @@ def main() -> None:
 
     stop_event = threading.Event()
     consumer_stopped = threading.Event()
-    grace_sec = _shutdown_grace_sec()
     force_exit_lock = threading.Lock()
     force_exit_started = False
 
@@ -230,9 +263,9 @@ def main() -> None:
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
-    logger.info("consumer started, queue=%s", queue_name)
+    logger.info("consumer started, queue=%s pop_timeout_sec=%d", queue_name, pop_timeout_sec)
     try:
-        run_consumer(queue, process_job, timeout_sec=5, stop_event=stop_event)
+        run_consumer(queue, process_job, timeout_sec=pop_timeout_sec, stop_event=stop_event)
     finally:
         requeued = _nack_inflight_messages(queue)
         if requeued > 0:

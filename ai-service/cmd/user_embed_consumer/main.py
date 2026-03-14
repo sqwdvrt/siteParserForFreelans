@@ -27,6 +27,7 @@ from ai_service.usecase.user_embed_consumer_loop import run_user_embed_consumer
 from ai_service.util.fallback_metrics import start_metrics_server_from_env
 from ai_service.util.postgres_pool_config import load_postgres_pool_settings
 from ai_service.util.runtime_env import require_env, resolve_redis_url
+from ai_service.util.shutdown import cap_blocking_pop_timeout
 from ai_service.util.transport_security import (
     is_production_env,
     validate_postgres_tls_for_production,
@@ -47,6 +48,8 @@ WARMUP_ENABLED_ENV = "AI_WARMUP_ENABLED"
 DEFAULT_WARMUP_ENABLED = True
 SHUTDOWN_GRACE_SEC_ENV = "AI_SHUTDOWN_GRACE_SEC"
 DEFAULT_SHUTDOWN_GRACE_SEC = 20.0
+POP_TIMEOUT_SEC_ENV = "AI_USER_EMBED_POP_TIMEOUT_SEC"
+DEFAULT_POP_TIMEOUT_SEC = 60
 
 
 class _TrackedProcessUserEmbed:
@@ -116,6 +119,29 @@ def _shutdown_grace_sec() -> float:
     return value
 
 
+def _pop_timeout_sec() -> int:
+    raw = os.getenv(POP_TIMEOUT_SEC_ENV, str(DEFAULT_POP_TIMEOUT_SEC))
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning(
+            "invalid %s=%r, fallback to %ds",
+            POP_TIMEOUT_SEC_ENV,
+            raw,
+            DEFAULT_POP_TIMEOUT_SEC,
+        )
+        return DEFAULT_POP_TIMEOUT_SEC
+    if value <= 0:
+        logger.warning(
+            "non-positive %s=%r, fallback to %ds",
+            POP_TIMEOUT_SEC_ENV,
+            raw,
+            DEFAULT_POP_TIMEOUT_SEC,
+        )
+        return DEFAULT_POP_TIMEOUT_SEC
+    return value
+
+
 def _nack_inflight_messages(queue: object) -> int:
     nack_all_inflight = getattr(queue, "nack_all_inflight", None)
     if not callable(nack_all_inflight):
@@ -161,6 +187,14 @@ def main() -> None:
     queue_name = os.getenv("USER_EMBED_QUEUE", "user-embed")
     rematch_queue_name = os.getenv("USER_REMATCH_QUEUE", "user-rematch")
     model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    grace_sec = _shutdown_grace_sec()
+    pop_timeout_sec = cap_blocking_pop_timeout(
+        _pop_timeout_sec(),
+        grace_sec,
+        logger=logger,
+        timeout_name=POP_TIMEOUT_SEC_ENV,
+        grace_name=SHUTDOWN_GRACE_SEC_ENV,
+    )
 
     user_repo = PostgresUserRepository(db_url, **pg_pool_kwargs)
     embedding = SentenceTransformerEmbedding(model_name)
@@ -177,7 +211,6 @@ def main() -> None:
     consumer_stopped = threading.Event()
     inflight_drained = threading.Event()
     inflight_drained.set()
-    grace_sec = _shutdown_grace_sec()
     force_exit_lock = threading.Lock()
     force_exit_started = False
     tracked_process_user_embed = _TrackedProcessUserEmbed(process_user_embed, inflight_drained)
@@ -226,9 +259,14 @@ def main() -> None:
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
-    logger.info("user-embed consumer started, queue=%s", queue_name)
+    logger.info("user-embed consumer started, queue=%s pop_timeout_sec=%d", queue_name, pop_timeout_sec)
     try:
-        run_user_embed_consumer(queue, tracked_process_user_embed, timeout_sec=5, stop_event=stop_event)
+        run_user_embed_consumer(
+            queue,
+            tracked_process_user_embed,
+            timeout_sec=pop_timeout_sec,
+            stop_event=stop_event,
+        )
     finally:
         requeued = _nack_inflight_messages(queue)
         if requeued > 0:

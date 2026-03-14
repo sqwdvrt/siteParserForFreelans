@@ -187,6 +187,53 @@ def test_shutdown_grace_sec_invalid_env_fallback(monkeypatch) -> None:
     assert module._shutdown_grace_sec() == module.DEFAULT_SHUTDOWN_GRACE_SEC
 
 
+def test_main_caps_pop_timeout_to_shutdown_grace(monkeypatch, tmp_path: Path) -> None:
+    module = _load_ac_consumer_main_module()
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("LLM_PROVIDER", "ollama")
+    monkeypatch.setenv(module.SHUTDOWN_GRACE_SEC_ENV, "20")
+    monkeypatch.setenv(module.POP_TIMEOUT_SEC_ENV, "30")
+    monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
+    monkeypatch.setenv("AC_BATCH_INTERVAL_SEC", "3600")
+
+    monkeypatch.setattr(module, "start_metrics_server_from_env", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "probe_ollama", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(module, "PostgresUserRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresJobRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresPendingJobsRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresFeedbackRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RedisMatchNotifyQueue", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RedisACBatchQueueConsumer", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "OllamaActorAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RuleBasedActorAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "FallbackActorAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "_schedule_pending_batches", lambda **_kwargs: 0)
+    monkeypatch.setattr(module, "ProcessACBatchUseCase", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module.signal, "signal", lambda *_args, **_kwargs: None)
+
+    seen_timeout: list[int] = []
+
+    class StopAfterOnePopQueue:
+        def reclaim_stuck(self) -> None:
+            return None
+
+        def pop_blocking(self, timeout_sec: int = 1):
+            seen_timeout.append(timeout_sec)
+            raise SystemExit
+
+        def nack_all_inflight(self) -> int:
+            return 0
+
+    monkeypatch.setattr(module, "RedisACBatchQueueConsumer", lambda *_args, **_kwargs: StopAfterOnePopQueue())
+
+    with pytest.raises(SystemExit):
+        module.main()
+
+    assert seen_timeout == [19]
+
+
 def test_main_forces_requeue_on_shutdown_timeout(monkeypatch, tmp_path: Path) -> None:
     module = _load_ac_consumer_main_module()
 

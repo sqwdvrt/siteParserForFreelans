@@ -26,6 +26,42 @@ def test_shutdown_grace_sec_invalid_env_fallback(monkeypatch) -> None:
     assert module._shutdown_grace_sec() == module.DEFAULT_SHUTDOWN_GRACE_SEC
 
 
+def test_main_caps_pop_timeout_to_shutdown_grace(monkeypatch, tmp_path: Path) -> None:
+    module = _load_consumer_main_module()
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv(module.SHUTDOWN_GRACE_SEC_ENV, "20")
+    monkeypatch.setenv(module.POP_TIMEOUT_SEC_ENV, "60")
+    monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
+
+    monkeypatch.setattr(module, "PostgresJobRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresUserRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresMatchRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresPendingJobsRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresFeedbackRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresFilterEventRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "AccumulateMatchesUseCase", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "SentenceTransformerEmbedding", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "CrossEncoderReranker", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "_warmup_embedding", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "ProcessJobUseCase", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RedisQueueConsumer", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module.signal, "signal", lambda *_args, **_kwargs: None)
+
+    seen_timeout: list[int] = []
+
+    def fake_run_consumer(_queue, _process_job, *, timeout_sec: int, stop_event) -> None:
+        _ = stop_event
+        seen_timeout.append(timeout_sec)
+
+    monkeypatch.setattr(module, "run_consumer", fake_run_consumer)
+
+    module.main()
+
+    assert seen_timeout == [19]
+
+
 def test_main_exits_on_missing_database_url(monkeypatch, tmp_path: Path) -> None:
     module = _load_consumer_main_module()
 

@@ -37,6 +37,7 @@ from ai_service.util.ollama_probe import probe_ollama
 from ai_service.util.postgres_pool_config import load_postgres_pool_settings
 from ai_service.util.queue_retry import reclaim_with_retry, wait_before_retry
 from ai_service.util.runtime_env import require_env, resolve_llm_provider, resolve_redis_url
+from ai_service.util.shutdown import cap_blocking_pop_timeout
 from ai_service.util.trace_context import reset_trace_id, set_trace_id
 from ai_service.util.transport_security import (
     is_production_env,
@@ -70,6 +71,8 @@ PENDING_CLEANUP_INTERVAL_SEC_ENV = "AC_PENDING_CLEANUP_INTERVAL_SEC"
 DEFAULT_PENDING_CLEANUP_INTERVAL_SEC = 3600
 PENDING_METRICS_REFRESH_SEC_ENV = "AC_PENDING_METRICS_REFRESH_SEC"
 DEFAULT_PENDING_METRICS_REFRESH_SEC = 30
+POP_TIMEOUT_SEC_ENV = "AI_AC_BATCH_POP_TIMEOUT_SEC"
+DEFAULT_POP_TIMEOUT_SEC = 30
 
 
 def _cleanup_ready_file(ready_file: str) -> None:
@@ -244,6 +247,14 @@ def main() -> None:
         PENDING_METRICS_REFRESH_SEC_ENV,
         DEFAULT_PENDING_METRICS_REFRESH_SEC,
     )
+    grace_sec = _shutdown_grace_sec()
+    pop_timeout_sec = cap_blocking_pop_timeout(
+        _read_positive_int_env(POP_TIMEOUT_SEC_ENV, DEFAULT_POP_TIMEOUT_SEC),
+        grace_sec,
+        logger=logger,
+        timeout_name=POP_TIMEOUT_SEC_ENV,
+        grace_name=SHUTDOWN_GRACE_SEC_ENV,
+    )
 
     rerank_threshold = float(os.getenv("RERANK_THRESHOLD", "0.55"))
     max_jobs_to_send = 5
@@ -306,7 +317,6 @@ def main() -> None:
     _mark_ready(ready_file)
 
     consumer_stopped = threading.Event()
-    grace_sec = _shutdown_grace_sec()
     force_exit_lock = threading.Lock()
     force_exit_started = False
 
@@ -350,7 +360,7 @@ def main() -> None:
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
 
-    logger.info("ac consumer started, queue=%s", ac_batch_queue_name)
+    logger.info("ac consumer started, queue=%s pop_timeout_sec=%d", ac_batch_queue_name, pop_timeout_sec)
     next_schedule_at = 0.0
     next_pending_metrics_at = 0.0
     next_pending_cleanup_at = 0.0
@@ -383,7 +393,7 @@ def main() -> None:
                 next_schedule_at = now + max(1, batch_interval)
 
             try:
-                message = ac_batch_queue.pop_blocking(timeout_sec=1)
+                message = ac_batch_queue.pop_blocking(timeout_sec=pop_timeout_sec)
             except Exception as exc:  # noqa: BLE001
                 if wait_before_retry(
                     stop_event=stop_event,
