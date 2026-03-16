@@ -6,13 +6,53 @@ on:
     branches:
       - main
       - develop
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to check"
+        required: true
+        default: main
+
+permissions:
+  contents: read
+  statuses: write
 
 jobs:
+  resolve-target:
+    runs-on: ubuntu-latest
+    outputs:
+      target_sha: ${{ steps.resolve.outputs.target_sha }}
+    steps:
+      - name: Resolve target SHA
+        id: resolve
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if (context.eventName === "workflow_dispatch") {
+              const ref = context.payload.inputs.ref;
+              const { data } = await github.rest.repos.getCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref,
+              });
+              core.setOutput("target_sha", data.sha);
+              return;
+            }
+
+            if (context.eventName === "pull_request") {
+              core.setOutput("target_sha", context.payload.pull_request.head.sha);
+              return;
+            }
+
+            core.setOutput("target_sha", context.sha);
+
   workflow-lint:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
 
       - name: Run actionlint
         uses: rhysd/actionlint@v1
@@ -22,6 +62,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
 
       - name: Validate docker-compose.yml
         run: docker compose --env-file .env.example -f docker-compose.yml --profile workers --profile ai-user-embed --profile ai-user-rematch config -q
@@ -37,6 +79,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -63,6 +107,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -93,6 +139,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -118,6 +166,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -148,6 +198,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -165,6 +217,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -255,6 +309,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -310,6 +366,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -382,6 +440,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
 
       - name: Prepare CI env file
         # Use .env.example values as-is: passwords are ≥16 chars and match
@@ -490,3 +550,73 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  publish-gate-status:
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs:
+      - resolve-target
+      - workflow-lint
+      - compose-validate
+      - backend-unit
+      - ai-unit
+      - browser-service-tests
+      - telegram-bot-unit
+      - go-lint
+      - python-lint
+      - performance-gate
+      - coverage-gate
+      - integration
+      - e2e-compose
+    steps:
+      - name: Publish gate status for target SHA
+        uses: actions/github-script@v7
+        env:
+          TARGET_SHA: ${{ needs.resolve-target.outputs.target_sha }}
+        with:
+          script: |
+            const requiredJobs = [
+              "workflow-lint",
+              "compose-validate",
+              "backend-unit",
+              "ai-unit",
+              "browser-service-tests",
+              "telegram-bot-unit",
+              "go-lint",
+              "python-lint",
+              "performance-gate",
+              "coverage-gate",
+              "integration",
+              "e2e-compose",
+            ];
+
+            const results = {
+              "workflow-lint": "${{ needs.workflow-lint.result }}",
+              "compose-validate": "${{ needs.compose-validate.result }}",
+              "backend-unit": "${{ needs.backend-unit.result }}",
+              "ai-unit": "${{ needs.ai-unit.result }}",
+              "browser-service-tests": "${{ needs.browser-service-tests.result }}",
+              "telegram-bot-unit": "${{ needs.telegram-bot-unit.result }}",
+              "go-lint": "${{ needs.go-lint.result }}",
+              "python-lint": "${{ needs.python-lint.result }}",
+              "performance-gate": "${{ needs.performance-gate.result }}",
+              "coverage-gate": "${{ needs.coverage-gate.result }}",
+              "integration": "${{ needs.integration.result }}",
+              "e2e-compose": "${{ needs.e2e-compose.result }}",
+            };
+
+            const failedJobs = requiredJobs.filter((job) => results[job] !== "success");
+            const state = failedJobs.length === 0 ? "success" : "failure";
+            const description = failedJobs.length === 0
+              ? "All Test Gate jobs passed."
+              : `Failed jobs: ${failedJobs.join(", ")}`.slice(0, 140);
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: process.env.TARGET_SHA,
+              state,
+              context: context.workflow,
+              description,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });

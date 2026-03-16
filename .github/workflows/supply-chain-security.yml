@@ -6,23 +6,59 @@ on:
     branches:
       - main
       - develop
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to check"
+        required: true
+        default: main
 
 permissions:
   contents: read
   security-events: write
   id-token: write
+  statuses: write
 
 env:
   GRYPE_VERSION: v0.75.0
   SYFT_VERSION: v1.0.1
 
 jobs:
+  resolve-target:
+    runs-on: ubuntu-latest
+    outputs:
+      target_sha: ${{ steps.resolve.outputs.target_sha }}
+    steps:
+      - name: Resolve target SHA
+        id: resolve
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if (context.eventName === "workflow_dispatch") {
+              const ref = context.payload.inputs.ref;
+              const { data } = await github.rest.repos.getCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref,
+              });
+              core.setOutput("target_sha", data.sha);
+              return;
+            }
+
+            if (context.eventName === "pull_request") {
+              core.setOutput("target_sha", context.payload.pull_request.head.sha);
+              return;
+            }
+
+            core.setOutput("target_sha", context.sha);
+
   secret-scan:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
           fetch-depth: 0
 
       - name: Run gitleaks
@@ -124,6 +160,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
 
       - name: Download Anchore tools
         uses: actions/download-artifact@v4
@@ -204,3 +242,45 @@ jobs:
             sbom-${{ matrix.service }}.bundle
             sbom-${{ matrix.service }}.sig.note.txt
           if-no-files-found: ignore
+
+  publish-gate-status:
+    runs-on: ubuntu-latest
+    if: ${{ always() }}
+    needs:
+      - resolve-target
+      - secret-scan
+      - prepare-anchore-tools
+      - image-scan-sbom-sign
+    steps:
+      - name: Publish gate status for target SHA
+        uses: actions/github-script@v7
+        env:
+          TARGET_SHA: ${{ needs.resolve-target.outputs.target_sha }}
+        with:
+          script: |
+            const requiredJobs = [
+              "secret-scan",
+              "prepare-anchore-tools",
+              "image-scan-sbom-sign",
+            ];
+            const results = {
+              "secret-scan": "${{ needs.secret-scan.result }}",
+              "prepare-anchore-tools": "${{ needs.prepare-anchore-tools.result }}",
+              "image-scan-sbom-sign": "${{ needs.image-scan-sbom-sign.result }}",
+            };
+
+            const failedJobs = requiredJobs.filter((job) => results[job] !== "success");
+            const state = failedJobs.length === 0 ? "success" : "failure";
+            const description = failedJobs.length === 0
+              ? "Supply Chain Security passed."
+              : `Failed jobs: ${failedJobs.join(", ")}`.slice(0, 140);
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: process.env.TARGET_SHA,
+              state,
+              context: context.workflow,
+              description,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });
