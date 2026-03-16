@@ -14,6 +14,7 @@ backend/.gocache*
 backend/.gomodcache*
 rules/
 .cursor/
+.claude/worktrees/
 __pycache__/
 .venv/
 .venv*/
