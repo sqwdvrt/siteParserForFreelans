@@ -3,14 +3,19 @@ services:
     image: prom/prometheus:v2.54.1
     profiles:
       - monitoring
-    command:
-      - --config.file=/etc/prometheus/prometheus.yml
-      - --storage.tsdb.path=/prometheus
-      - --web.enable-lifecycle
+    environment:
+      BACKEND_API_METRICS_TARGET: "${BACKEND_API_METRICS_TARGET:-backend-api:8080}"
+      BACKEND_API_METRICS_SCHEME: "${BACKEND_API_METRICS_SCHEME:-http}"
+      BACKEND_API_METRICS_TLS_INSECURE_SKIP_VERIFY: "${BACKEND_API_METRICS_TLS_INSECURE_SKIP_VERIFY:-false}"
+    entrypoint:
+      - /bin/sh
+      - /usr/local/bin/prometheus-entrypoint.sh
     volumes:
-      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/prometheus.yml.tmpl:/etc/prometheus/prometheus.yml.tmpl:ro
       - ./monitoring/prometheus/recording_rules.yml:/etc/prometheus/recording_rules.yml:ro
       - ./monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - ./monitoring/prometheus/render_config.sh:/usr/local/bin/render-prometheus-config.sh:ro
+      - ./monitoring/prometheus/docker-entrypoint.sh:/usr/local/bin/prometheus-entrypoint.sh:ro
       - prometheus_data:/prometheus
     ports:
       - "${PROMETHEUS_BIND_IP:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090"
@@ -81,10 +86,7 @@ services:
     profiles:
       - monitoring
     environment:
-      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
-    depends_on:
-      postgres:
-        condition: service_healthy
+      DATA_SOURCE_NAME: ${POSTGRES_EXPORTER_DATA_SOURCE_NAME:-postgresql://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:-site_parser}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable}
     deploy:
       resources:
         limits:
@@ -105,7 +107,10 @@ services:
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/api-overview.json
       POSTGRES_DB: "${POSTGRES_DB:-site_parser}"
       POSTGRES_USER: "${POSTGRES_USER:-site_parser}"
-      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}"
+      POSTGRES_PASSWORD: "${GRAFANA_POSTGRES_PASSWORD:-${POSTGRES_PASSWORD:-site_parser}}"
+      GRAFANA_POSTGRES_HOST: "${GRAFANA_POSTGRES_HOST:-postgres}"
+      GRAFANA_POSTGRES_PORT: "${GRAFANA_POSTGRES_PORT:-5432}"
+      GRAFANA_POSTGRES_SSLMODE: "${GRAFANA_POSTGRES_SSLMODE:-disable}"
     volumes:
       - ./monitoring/grafana/datasources:/etc/grafana/provisioning/datasources:ro
       - ./monitoring/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
@@ -114,7 +119,6 @@ services:
       - "${GRAFANA_BIND_IP:-127.0.0.1}:${GRAFANA_PORT:-3000}:3000"
     depends_on:
       - prometheus
-      - postgres
     deploy:
       resources:
         limits:

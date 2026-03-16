@@ -7,11 +7,20 @@ TMP_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 echo "[monitoring] promtool check config"
+BACKEND_API_METRICS_TARGET="${BACKEND_API_METRICS_TARGET:-backend-api:8080}" \
+BACKEND_API_METRICS_SCHEME="${BACKEND_API_METRICS_SCHEME:-http}" \
+BACKEND_API_METRICS_TLS_INSECURE_SKIP_VERIFY="${BACKEND_API_METRICS_TLS_INSECURE_SKIP_VERIFY:-false}" \
+  sh "${ROOT_DIR}/monitoring/prometheus/render_config.sh" \
+  "${ROOT_DIR}/monitoring/prometheus/prometheus.yml.tmpl" \
+  "${TMP_DIR}/prometheus.yml"
+
 docker run --rm \
   --entrypoint promtool \
-  -v "${ROOT_DIR}/monitoring/prometheus:/etc/prometheus:ro" \
+  -v "${ROOT_DIR}/monitoring/prometheus/recording_rules.yml:/etc/prometheus/recording_rules.yml:ro" \
+  -v "${ROOT_DIR}/monitoring/prometheus/alerts.yml:/etc/prometheus/alerts.yml:ro" \
+  -v "${TMP_DIR}:/tmp/prometheus:ro" \
   prom/prometheus:v2.54.1 \
-  check config /etc/prometheus/prometheus.yml
+  check config /tmp/prometheus/prometheus.yml
 
 echo "[monitoring] promtool check rules"
 docker run --rm \
