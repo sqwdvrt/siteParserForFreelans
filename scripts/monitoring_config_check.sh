@@ -4,6 +4,9 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 TMP_DIR="$(mktemp -d)"
+# Docker containers reading bind-mounted files need execute permission on the
+# parent temp directory to traverse it on the host filesystem.
+chmod 755 "$TMP_DIR"
 trap 'rm -rf "$TMP_DIR"' EXIT
 
 echo "[monitoring] promtool check config"
