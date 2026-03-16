@@ -98,7 +98,18 @@ jobs:
                 .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
             }
 
+            function latestStatusByContext(statuses, name) {
+              return statuses
+                .filter((status) => status.context === name)
+                .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+            }
+
             for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              const combinedStatus = await github.rest.repos.getCombinedStatusForRef({
+                owner,
+                repo,
+                ref: sha,
+              });
               const runs = await github.paginate(
                 github.rest.actions.listWorkflowRunsForRepo,
                 { owner, repo, head_sha: sha, per_page: 100 }
@@ -109,6 +120,23 @@ jobs:
               const statusReport = {};
 
               for (const gateName of required) {
+                const status = latestStatusByContext(combinedStatus.data.statuses, gateName);
+                if (status) {
+                  if (status.state === "success") {
+                    statusReport[gateName] = "success";
+                    continue;
+                  }
+
+                  if (status.state === "pending") {
+                    statusReport[gateName] = `status=${status.state}`;
+                    allCompleted = false;
+                    continue;
+                  }
+
+                  failedGate = `${gateName} status is '${status.state}'`;
+                  break;
+                }
+
                 const run = latestRunByName(runs, gateName);
                 if (!run) {
                   statusReport[gateName] = "missing";
@@ -303,8 +331,12 @@ jobs:
             git checkout --detach "${{ needs.resolve-target.outputs.deploy_sha }}"
             git clean -ffdx -e .env.production
             bash ./scripts/validate-env-production.sh .env.production
-            docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
-            docker compose --env-file .env.production -f docker-compose.prod.yml ps
+            docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml up -d --build
+            docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml ps
+            set -a
+            . ./.env.production
+            set +a
+            bash ./scripts/post_deploy_production_gate.sh
 
       - name: Production health check
         env:
@@ -320,3 +352,6 @@ jobs:
               ;;
           esac
           curl --fail --show-error --silent --retry 10 --retry-delay 5 "${PROD_HEALTHCHECK_URL}"
+          if [[ "${PROD_HEALTHCHECK_URL}" == */healthz ]]; then
+            curl --fail --show-error --silent --retry 10 --retry-delay 5 "${PROD_HEALTHCHECK_URL%/healthz}/readyz"
+          fi
