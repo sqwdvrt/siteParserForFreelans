@@ -552,11 +552,20 @@ class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, resolved_url)
 
 
-_HTTP_ONLY_OPENER = urllib.request.build_opener(
-    urllib.request.HTTPHandler(),
-    urllib.request.HTTPSHandler(),
-    _SafeRedirectHandler(),
-)
+def _build_opener() -> urllib.request.OpenerDirector:
+    proxy_url = os.environ.get("TELEGRAM_PROXY_URL", "").strip()
+    handlers: list = [
+        urllib.request.HTTPHandler(),
+        urllib.request.HTTPSHandler(),
+        _SafeRedirectHandler(),
+    ]
+    if proxy_url:
+        handlers.insert(0, urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
+        logging.getLogger(__name__).info("Telegram HTTP opener: proxy configured")
+    return urllib.request.build_opener(*handlers)
+
+
+_HTTP_ONLY_OPENER = _build_opener()
 
 
 def _safe_open(url_or_request, timeout: int):
@@ -1216,7 +1225,7 @@ def set_webhook(token: str, url: str, secret_token: str, max_connections: int = 
         },
     )
     if status != 200:
-        logger.error("setWebhook failed: status=%s", status)
+        logger.error("setWebhook failed: status=%s response=%r", status, data)
         return False
     if not isinstance(data, dict) or data.get("ok") is not True:
         logger.error("setWebhook failed: unexpected response=%r", data)
@@ -2172,10 +2181,6 @@ def run_webhook(
     max_connections: int = 40,
     server_factory=ThreadingHTTPServer,
 ) -> None:
-    if not set_webhook(token, webhook_url, webhook_secret, max_connections=max_connections):
-        logger.error("webhook registration failed; aborting")
-        sys.exit(1)
-
     _WebhookHandler.secret_token = webhook_secret
     _WebhookHandler.bot_token = token
     _WebhookHandler.api_url = api_url
@@ -2198,8 +2203,24 @@ def run_webhook(
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
 
+    server_thread = threading.Thread(target=server.serve_forever, daemon=True, name="telegram-webhook-server")
+    server_thread.start()
+
+    if not set_webhook(token, webhook_url, webhook_secret, max_connections=max_connections):
+        logger.error("webhook registration failed; aborting")
+        try:
+            server.shutdown()
+        except Exception:
+            pass
+        server_thread.join(timeout=5)
+        try:
+            server.server_close()
+        except Exception:
+            pass
+        raise SystemExit(1)
+
     try:
-        server.serve_forever()
+        server_thread.join()
     finally:
         try:
             server.server_close()

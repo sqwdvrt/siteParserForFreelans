@@ -12,8 +12,10 @@
 
 Для production-only шагов ниже используйте тот же compose-контур, что и deploy pipeline:
 ```bash
-export PROD_COMPOSE="docker compose --env-file .env.production -f docker-compose.prod.yml"
+export PROD_COMPOSE="docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml"
 ```
+
+> `docker-compose.ssl.yml` — VPS-overlay: подключает внешнюю сеть `infra_default` и пробрасывает CA-сертификат во все контейнеры. Требует запущенного `/home/deploy/infra`. Подробнее: `docs/vps_deploy.md`.
 
 ### 0.1 Preflight before deploy
 1. Проверить target SHA и release notes.
@@ -34,7 +36,7 @@ docker compose --env-file .env.example -f docker-compose.yml --profile workers -
 ```
 2. Проверить production compose contract:
 ```bash
-docker compose --env-file .env.production.example -f docker-compose.prod.yml config -q
+docker compose --env-file .env.production.example -f docker-compose.prod.yml -f docker-compose.ssl.yml config -q
 ```
 
 ### 0.3 Env validation
@@ -46,6 +48,10 @@ python3 ./scripts/production_config_contract.py check-consistency
 ```bash
 bash ./scripts/validate-env-production.sh .env.production
 ```
+3. Для `telegram-bot` подтвердить webhook ingress:
+   `BOT_MODE=webhook`, `WEBHOOK_URL` и `WEBHOOK_SECRET_TOKEN` обязательны;
+   host reverse proxy должен маршрутизировать `WEBHOOK_URL` на loopback-адрес `BOT_BIND_IP:BOT_PORT`.
+   Готовый nginx-пример для VPS: `docs/vps_deploy.md` (`/webhook -> http://127.0.0.1:${BOT_PORT}`).
 
 ### 0.4 Smoke and health
 1. После staging deploy проверить health endpoint:
@@ -77,6 +83,15 @@ bash ./scripts/staging_smoke_e2e_gate.sh
 3. После production deploy проверить production health endpoint:
 ```bash
 curl -fsS "$PROD_HEALTHCHECK_URL"
+```
+4. На production host прогнать post-deploy gate из deploy-директории, чтобы проверить health всех critical services, локальные `healthz/readyz` у backend API и webhook ingress:
+```bash
+cd "$PROD_DEPLOY_PATH"
+set -a
+. ./.env.production
+set +a
+
+bash ./scripts/post_deploy_production_gate.sh
 ```
 
 ### 0.5 Queue drain and post-release observation
@@ -127,7 +142,7 @@ $PROD_COMPOSE stop backend-api backend-crawler backend-notifier ai-service ai-us
 
 ### 1.0 Базовая инфраструктура мониторинга в репозитории
 - Prometheus compose профиль: `docker-compose.monitoring.yml`
-- Prometheus config: `monitoring/prometheus/prometheus.yml`
+- Prometheus template: `monitoring/prometheus/prometheus.yml.tmpl`
 - Alert rules: `monitoring/prometheus/alerts.yml`
 - Alertmanager config template: `monitoring/alertmanager/alertmanager.yml.tmpl`
 - Grafana dashboards: `monitoring/grafana/dashboards/*.json`
@@ -153,6 +168,21 @@ $PROD_COMPOSE stop backend-api backend-crawler backend-notifier ai-service ai-us
 Минимальный запуск локально:
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile monitoring up -d
+```
+
+Production monitoring запускай вместе с `docker-compose.prod.yml`, а не с dev-compose. Для этого переопредели:
+- `BACKEND_API_METRICS_TARGET=backend-api:8443`
+- `BACKEND_API_METRICS_SCHEME=https`
+- `BACKEND_API_METRICS_TLS_INSECURE_SKIP_VERIFY=true`
+- `POSTGRES_EXPORTER_DATA_SOURCE_NAME=postgresql://...?...sslmode=require`
+- `GRAFANA_POSTGRES_HOST`, `GRAFANA_POSTGRES_PORT`, `GRAFANA_POSTGRES_SSLMODE=require`
+
+Пример:
+```bash
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml \
+  -f docker-compose.monitoring.yml \
+  --profile monitoring up -d
 ```
 
 После старта открыть:
@@ -187,6 +217,7 @@ docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile 
   назначение: readiness (БД и Redis доступны).
 - `GET /metrics`:
   назначение: scrape endpoint для Prometheus.
+  В production backend API scrape идёт по HTTPS на внутренний `backend-api:8443`, поэтому monitoring stack должен знать TLS-target через `BACKEND_API_METRICS_*`.
 
 Проверка:
 ```bash
@@ -261,13 +292,13 @@ redis-cli -u "$REDIS_URL" LLEN match-notify:dlq
 2. Проверить `healthz/readyz`.
 3. Проверить логи сервисов:
 ```bash
-docker compose logs --since=15m backend-api
-docker compose logs --since=15m backend-crawler
-docker compose logs --since=15m backend-notifier
-docker compose logs --since=15m ai-service
-docker compose logs --since=15m ai-user-embed
-docker compose logs --since=15m ai-user-rematch
-docker compose logs --since=15m telegram-bot
+$PROD_COMPOSE logs --since=15m backend-api
+$PROD_COMPOSE logs --since=15m backend-crawler
+$PROD_COMPOSE logs --since=15m backend-notifier
+$PROD_COMPOSE logs --since=15m ai-service
+$PROD_COMPOSE logs --since=15m ai-user-embed
+$PROD_COMPOSE logs --since=15m ai-user-rematch
+$PROD_COMPOSE logs --since=15m telegram-bot
 ```
 4. Проверить очереди (`LLEN`) и DLQ.
 5. Если проблема не устраняется быстро: деградация/ограничение трафика, затем rollback.

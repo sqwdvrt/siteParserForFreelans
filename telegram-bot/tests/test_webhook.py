@@ -145,6 +145,7 @@ def test_handle_update_routes_callback_query(bot, monkeypatch):
 def test_run_webhook_registers_and_keeps_webhook_on_sigterm(bot, monkeypatch):
     handlers: dict[int, object] = {}
     shutdown_called = threading.Event()
+    serving_started = threading.Event()
     set_calls: list[tuple[str, str, str, int]] = []
 
     class FakeServer:
@@ -153,6 +154,7 @@ def test_run_webhook_registers_and_keeps_webhook_on_sigterm(bot, monkeypatch):
             self.handler_cls = handler_cls
 
         def serve_forever(self) -> None:
+            serving_started.set()
             handlers[bot.signal.SIGTERM](bot.signal.SIGTERM, None)
             assert shutdown_called.wait(timeout=1)
 
@@ -165,9 +167,11 @@ def test_run_webhook_registers_and_keeps_webhook_on_sigterm(bot, monkeypatch):
     monkeypatch.setattr(
         bot,
         "set_webhook",
-        lambda token, url, secret_token, max_connections=40: set_calls.append(
-            (token, url, secret_token, max_connections)
-        ) or True,
+        lambda token, url, secret_token, max_connections=40: (
+            serving_started.is_set()
+            and set_calls.append((token, url, secret_token, max_connections)) is None
+            and True
+        ),
     )
     monkeypatch.setattr(bot.signal, "signal", lambda sig, handler: handlers.__setitem__(sig, handler))
 
@@ -184,6 +188,7 @@ def test_run_webhook_registers_and_keeps_webhook_on_sigterm(bot, monkeypatch):
     )
 
     assert set_calls == [("bot-token", "https://bot.example.com/webhook", "0123456789abcdef0123456789abcdef", 55)]
+    assert serving_started.is_set()
     assert shutdown_called.is_set()
 
 

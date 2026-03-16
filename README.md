@@ -114,9 +114,16 @@ docker compose up -d ai-user-rematch
   Вторичные воркеры (`backend-crawler`, `backend-notifier`, `ai-service`, `ai-ac-consumer`) вынесены в profile `workers` и запускаются on-demand.
   Локальный `telegram-bot` вынесен в profile `bot`; если бот уже живет отдельно, например на Railway, этот profile локально можно не запускать.
   Для точечного запуска отдельный profile сохранён только у `ai-user-embed`.
-- `docker-compose.prod.yml` — production-профиль (только внешние TLS endpoints, `APP_ENV=production`).
-  `ai-user-embed`, `ai-user-rematch` и `ai-ac-consumer` входят в production compose по умолчанию.
+- `docker-compose.prod.yml` — production-профиль (`APP_ENV=production`, TLS обязателен).
+  `ai-user-embed`, `ai-user-rematch` и `ai-ac-consumer` входят по умолчанию.
+  `telegram-bot` публикуется только на loopback (`BOT_BIND_IP`/`BOT_PORT`), поэтому production webhook должен идти через host reverse proxy на `WEBHOOK_URL -> 127.0.0.1:${BOT_PORT}`.
+  Готовый nginx-конфиг для VPS-схемы см. в `docs/vps_deploy.md`.
+- `docker-compose.ssl.yml` — VPS-overlay поверх `docker-compose.prod.yml`.
+  Подключает внешнюю сеть `infra_default` (отдельный инфра-compose с postgres + redis) и пробрасывает самоподписанный CA-сертификат во все контейнеры через `SSL_CERT_FILE`.
+  Запуск: `docker compose -f docker-compose.prod.yml -f docker-compose.ssl.yml --env-file .env.production up -d`.
+  Подробнее: `docs/vps_deploy.md`.
 - `docker-compose.monitoring.yml` — профиль мониторинга (Prometheus + Alertmanager, profile `monitoring`).
+  По умолчанию он заточен под локальный dev-compose, а для production переопределяется env-переменными scrape/DB endpoints.
 
 ### Monitoring (Docker Compose)
 
@@ -145,6 +152,21 @@ docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile 
 Опционально можно переопределить источники exporter-метрик:
 - `REDIS_EXPORTER_REDIS_ADDR` (по умолчанию `redis://redis:6379`)
 - `REDIS_EXPORTER_CHECK_KEYS` (по умолчанию ключи очередей `ai-process/user-embed/user-rematch/ac-batch/match-notify` + `:processing/:dlq`)
+
+Для production monitoring вместе с `docker-compose.prod.yml` переопредели:
+- `BACKEND_API_METRICS_TARGET=backend-api:8443`
+- `BACKEND_API_METRICS_SCHEME=https`
+- `BACKEND_API_METRICS_TLS_INSECURE_SKIP_VERIFY=true`
+- `POSTGRES_EXPORTER_DATA_SOURCE_NAME=postgresql://...?...sslmode=require`
+- `GRAFANA_POSTGRES_HOST`, `GRAFANA_POSTGRES_PORT`, `GRAFANA_POSTGRES_SSLMODE=require`
+
+Пример production-запуска monitoring stack:
+```bash
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml \
+  -f docker-compose.monitoring.yml \
+  --profile monitoring up -d
+```
 
 После старта monitoring-профиля в Grafana автоматически появляются:
 - Prometheus datasource
