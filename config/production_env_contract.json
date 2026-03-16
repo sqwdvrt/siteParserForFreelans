@@ -47,6 +47,13 @@
       "type": "https_url",
       "documentation": "active"
     },
+    "BOT_MODE": {
+      "type": "enum",
+      "allowed": [
+        "webhook"
+      ],
+      "documentation": "active"
+    },
     "LLM_PROVIDER": {
       "type": "enum",
       "allowed": [
@@ -57,6 +64,19 @@
     }
   },
   "conditional_env": {
+    "BOT_MODE": {
+      "webhook": {
+        "WEBHOOK_URL": {
+          "type": "https_url",
+          "documentation": "active"
+        },
+        "WEBHOOK_SECRET_TOKEN": {
+          "type": "secret",
+          "min_length": 32,
+          "documentation": "active"
+        }
+      }
+    },
     "LLM_PROVIDER": {
       "gemini": {
         "GEMINI_API_KEY": {
@@ -138,7 +158,12 @@
     "telegram-bot": {
       "must_have_env_file": true,
       "must_reference": [
-        "API_URL"
+        "API_URL",
+        "BOT_MODE",
+        "WEBHOOK_URL",
+        "WEBHOOK_SECRET_TOKEN",
+        "BOT_BIND_IP",
+        "BOT_PORT"
       ]
     }
   },
@@ -169,10 +194,10 @@
       "must_contain": [
         "DATABASE_URL not set",
         "REDIS_URL not set",
-        "TELEGRAM_BOT_TOKEN not set",
+        "telegram bot token not set",
         "ValidatePostgresTLSForProduction(\"DATABASE_URL\"",
         "ValidateRedisTLSForProduction(\"REDIS_URL\"",
-        "ValidateSecret(\"TELEGRAM_BOT_TOKEN\""
+        "ValidateSecret(tokenSource, token, 20)"
       ]
     },
     {
@@ -187,9 +212,7 @@
       "file": "ai-service/cmd/consumer/main.py",
       "must_contain": [
         "require_env",
-        "resolve_redis_url",
-        "resolve_llm_provider",
-        "GEMINI_API_KEY not set (required when LLM_PROVIDER=gemini)"
+        "resolve_redis_url"
       ]
     },
     {
@@ -221,6 +244,9 @@
         "TELEGRAM_BOT_TOKEN",
         "API_AUTH_TOKEN",
         "API_USER_HMAC_SECRET",
+        "BOT_MODE must be polling or webhook",
+        "WEBHOOK_URL",
+        "WEBHOOK_SECRET_TOKEN",
         "API_URL not set in production",
         "_validate_api_url_for_production"
       ]
