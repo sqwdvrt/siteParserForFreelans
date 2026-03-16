@@ -2189,6 +2189,19 @@ def run_webhook(
 
     server = server_factory(("0.0.0.0", port), _WebhookHandler)
     logger.info("webhook server listening on port %d", port)
+    heartbeat_file = os.getenv(HEARTBEAT_FILE_ENV, DEFAULT_HEARTBEAT_FILE)
+    stop_event = threading.Event()
+
+    try:
+        heartbeat_max_age = float(os.getenv("TELEGRAM_HEARTBEAT_MAX_AGE_SEC", "90"))
+    except ValueError:
+        heartbeat_max_age = 90.0
+    heartbeat_interval = max(1.0, min(30.0, heartbeat_max_age / 3.0))
+
+    def _heartbeat_loop() -> None:
+        while not stop_event.is_set():
+            _touch_heartbeat(heartbeat_file)
+            stop_event.wait(timeout=heartbeat_interval)
 
     def _handle_shutdown(signum: int, frame: object) -> None:
         _ = frame
@@ -2203,16 +2216,20 @@ def run_webhook(
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
 
+    heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True, name="telegram-webhook-heartbeat")
+    heartbeat_thread.start()
     server_thread = threading.Thread(target=server.serve_forever, daemon=True, name="telegram-webhook-server")
     server_thread.start()
 
     if not set_webhook(token, webhook_url, webhook_secret, max_connections=max_connections):
         logger.error("webhook registration failed; aborting")
+        stop_event.set()
         try:
             server.shutdown()
         except Exception:
             pass
         server_thread.join(timeout=5)
+        heartbeat_thread.join(timeout=5)
         try:
             server.server_close()
         except Exception:
@@ -2222,6 +2239,8 @@ def run_webhook(
     try:
         server_thread.join()
     finally:
+        stop_event.set()
+        heartbeat_thread.join(timeout=5)
         try:
             server.server_close()
         except Exception:

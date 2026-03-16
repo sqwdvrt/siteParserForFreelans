@@ -192,6 +192,46 @@ def test_run_webhook_registers_and_keeps_webhook_on_sigterm(bot, monkeypatch):
     assert shutdown_called.is_set()
 
 
+def test_run_webhook_updates_heartbeat_while_idle(bot, monkeypatch):
+    handlers: dict[int, object] = {}
+    heartbeat_touched = threading.Event()
+
+    class FakeServer:
+        def __init__(self, server_address, handler_cls) -> None:
+            self.server_address = server_address
+            self.handler_cls = handler_cls
+
+        def serve_forever(self) -> None:
+            assert heartbeat_touched.wait(timeout=1)
+            handlers[bot.signal.SIGTERM](bot.signal.SIGTERM, None)
+
+        def shutdown(self) -> None:
+            return None
+
+        def server_close(self) -> None:
+            return None
+
+    monkeypatch.setenv("TELEGRAM_HEARTBEAT_FILE", "/tmp/test-telegram-heartbeat")
+    monkeypatch.setenv("TELEGRAM_HEARTBEAT_MAX_AGE_SEC", "3")
+    monkeypatch.setattr(bot, "set_webhook", lambda *args, **kwargs: True)
+    monkeypatch.setattr(bot.signal, "signal", lambda sig, handler: handlers.__setitem__(sig, handler))
+    monkeypatch.setattr(bot, "_touch_heartbeat", lambda _path: heartbeat_touched.set())
+
+    bot.run_webhook(
+        "bot-token",
+        "https://bot.example.com/webhook",
+        "0123456789abcdef0123456789abcdef",
+        "https://api.example.com",
+        "api-token",
+        "0123456789abcdef0123456789abcdef",
+        port=8080,
+        max_connections=40,
+        server_factory=FakeServer,
+    )
+
+    assert heartbeat_touched.is_set()
+
+
 def test_set_webhook_rejects_non_ok_response(bot, monkeypatch):
     monkeypatch.setattr(bot, "_http_post", lambda *args, **kwargs: (200, {"ok": False, "description": "bad webhook"}))
 
