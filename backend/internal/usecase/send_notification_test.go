@@ -122,6 +122,10 @@ func (m *mockJobRepo) ExistsByURL(ctx context.Context, url string) (bool, error)
 func (m *mockJobRepo) GetUnembeddedIDs(ctx context.Context, limit int) ([]int64, error) {
 	return nil, nil
 }
+func (m *mockJobRepo) TouchSeenAt(ctx context.Context, url string) error { return nil }
+func (m *mockJobRepo) ExpireStaleJobs(ctx context.Context, days int) (int64, error) {
+	return 0, nil
+}
 
 type mockNotifier struct {
 	sendFunc func(ctx context.Context, telegramID int64, p port.NotifyPayload) error
@@ -451,6 +455,39 @@ func TestSendNotification_Execute_JobNotFound(t *testing.T) {
 	}
 }
 
+func TestSendNotification_Execute_ExpiredJobSkipped(t *testing.T) {
+	markSentCalled := false
+	uc := NewSendNotification(
+		&mockNotifRepo{
+			markSentFunc: func(context.Context, int64, int64) error {
+				markSentCalled = true
+				return nil
+			},
+		},
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 888}, nil
+		}},
+		&mockJobRepo{getByIDFunc: func(context.Context, int64) (*domain.Job, error) {
+			// Expired jobs are filtered in postgres GetByID and surface as not found.
+			return nil, nil
+		}},
+		&mockNotifier{sendFunc: func(context.Context, int64, port.NotifyPayload) error {
+			t.Error("must not call Send when job is expired")
+			return nil
+		}},
+		5*time.Minute,
+		5,
+	)
+
+	err := uc.Execute(context.Background(), 1, 999, 0.9, 0.9, "v2", nil, "")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if markSentCalled {
+		t.Fatal("must not mark sent when job is expired")
+	}
+}
+
 func TestSendNotification_Execute_JobLookupError(t *testing.T) {
 	uc := NewSendNotification(
 		&mockNotifRepo{},
@@ -745,6 +782,59 @@ func TestSendNotification_ExecuteBatch_SingleJobsQuery(t *testing.T) {
 	}
 	if getByIDsCalls != 1 {
 		t.Fatalf("GetByIDs called %d times, want exactly 1", getByIDsCalls)
+	}
+}
+
+func TestSendNotification_ExecuteBatch_SkipsExpiredJobs(t *testing.T) {
+	markedJobIDs := make([]int64, 0, 2)
+	var gotPayload port.NotifyPayload
+
+	uc := NewSendNotification(
+		&mockNotifRepo{
+			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
+				return true, true, nil
+			},
+			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
+			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
+			markSentFunc: func(_ context.Context, _ int64, jobID int64) error {
+				markedJobIDs = append(markedJobIDs, jobID)
+				return nil
+			},
+		},
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 777}, nil
+		}},
+		&mockJobRepo{
+			getByIDsFunc: func(_ context.Context, ids []int64) (map[int64]*domain.Job, error) {
+				return map[int64]*domain.Job{
+					10: {ID: 10, Title: "Active", URL: "https://kwork.ru/p/10"},
+					// Job 20 is expired and filtered by postgres GetByIDs.
+				}, nil
+			},
+		},
+		&mockNotifier{sendFunc: func(_ context.Context, _ int64, p port.NotifyPayload) error {
+			gotPayload = p
+			return nil
+		}},
+		5*time.Minute,
+		5,
+	)
+
+	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{
+		{JobID: 10, Rank: 1, FinalScore: 0.91},
+		{JobID: 20, Rank: 2, FinalScore: 0.82},
+	}, 8.4)
+	if err != nil {
+		t.Fatalf("ExecuteBatch: %v", err)
+	}
+	if len(gotPayload.Batch) != 1 {
+		t.Fatalf("batch items=%d, want 1", len(gotPayload.Batch))
+	}
+	if gotPayload.Batch[0].Job == nil || gotPayload.Batch[0].Job.ID != 10 {
+		t.Fatalf("sent wrong batch payload: %+v", gotPayload.Batch)
+	}
+	if len(markedJobIDs) != 1 || markedJobIDs[0] != 10 {
+		t.Fatalf("marked jobs=%v, want [10]", markedJobIDs)
 	}
 }
 

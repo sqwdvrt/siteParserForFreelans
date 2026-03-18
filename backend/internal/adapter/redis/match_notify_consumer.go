@@ -12,6 +12,7 @@ import (
 
 const defaultMatchNotifyQueue = "match-notify"
 const defaultMaxNackRetries = 5
+const DefaultMatchNotifyPopTimeout = 60 * time.Second
 
 var requeueScript = redis.NewScript(`
 local removed = redis.call("LREM", KEYS[1], 1, ARGV[1])
@@ -29,20 +30,38 @@ type MatchNotifyConsumer struct {
 	processingQueue string
 	dlqQueue        string
 	maxNackRetries  int
+	popTimeout      time.Duration
+}
+
+type MatchNotifyConsumerOption func(*MatchNotifyConsumer)
+
+func WithMatchNotifyPopTimeout(timeout time.Duration) MatchNotifyConsumerOption {
+	return func(c *MatchNotifyConsumer) {
+		if timeout > 0 {
+			c.popTimeout = timeout
+		}
+	}
 }
 
 // NewMatchNotifyConsumer создаёт consumer.
-func NewMatchNotifyConsumer(client *redis.Client, queueName string) *MatchNotifyConsumer {
+func NewMatchNotifyConsumer(client *redis.Client, queueName string, opts ...MatchNotifyConsumerOption) *MatchNotifyConsumer {
 	if queueName == "" {
 		queueName = defaultMatchNotifyQueue
 	}
-	return &MatchNotifyConsumer{
+	consumer := &MatchNotifyConsumer{
 		client:          client,
 		queue:           queueName,
 		processingQueue: queueName + ":processing",
 		dlqQueue:        queueName + ":dlq",
 		maxNackRetries:  defaultMaxNackRetries,
+		popTimeout:      DefaultMatchNotifyPopTimeout,
 	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(consumer)
+		}
+	}
+	return consumer
 }
 
 // Recover переносит застрявшие сообщения из processing обратно в основную очередь.
@@ -61,7 +80,7 @@ func (c *MatchNotifyConsumer) Recover(ctx context.Context) error {
 
 // Pop атомарно переносит сообщение в processing (BRPOPLPUSH) и возвращает delivery.
 func (c *MatchNotifyConsumer) Pop(ctx context.Context) (*port.MatchNotifyMessage, error) {
-	raw, err := c.client.BRPopLPush(ctx, c.queue, c.processingQueue, 5*time.Second).Result()
+	raw, err := c.client.BRPopLPush(ctx, c.queue, c.processingQueue, c.popTimeout).Result()
 	if err != nil {
 		if errors.Is(err, redis.Nil) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, nil

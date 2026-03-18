@@ -132,6 +132,20 @@ func TestNotifierEnvParsing_EmptyValueUsesFallback(t *testing.T) {
 	}
 }
 
+func TestNotifierEnvParsing_DefaultDurations(t *testing.T) {
+	t.Setenv("NOTIFIER_QUEUE_DEPTH_SAMPLE_PERIOD", "")
+	t.Setenv("NOTIFIER_MATCH_NOTIFY_POP_TIMEOUT", "")
+
+	gotQueueDepth, err := parsePositiveDurationEnv("NOTIFIER_QUEUE_DEPTH_SAMPLE_PERIOD", defaultQueueDepthSamplePeriod)
+	if err != nil || gotQueueDepth != 60*time.Second {
+		t.Fatalf("NOTIFIER_QUEUE_DEPTH_SAMPLE_PERIOD fallback = %v, want 60s (err=%v)", gotQueueDepth, err)
+	}
+	gotPopTimeout, err := parsePositiveDurationEnv("NOTIFIER_MATCH_NOTIFY_POP_TIMEOUT", 60*time.Second)
+	if err != nil || gotPopTimeout != 60*time.Second {
+		t.Fatalf("NOTIFIER_MATCH_NOTIFY_POP_TIMEOUT fallback = %v, want 60s (err=%v)", gotPopTimeout, err)
+	}
+}
+
 func TestNotifierEnvParsing_MaxPerDayPrefersProKey(t *testing.T) {
 	t.Setenv("NOTIFY_PRO_MAX_PER_DAY", "11")
 	t.Setenv("NOTIFY_MAX_PER_DAY", "5")
@@ -219,6 +233,10 @@ type stubJobRepo struct {
 }
 
 func (s *stubJobRepo) Save(ctx context.Context, job *domain.Job) (int64, error) { return 0, nil }
+func (s *stubJobRepo) TouchSeenAt(ctx context.Context, url string) error         { return nil }
+func (s *stubJobRepo) ExpireStaleJobs(ctx context.Context, olderThanDays int) (int64, error) {
+	return 0, nil
+}
 func (s *stubJobRepo) GetByID(ctx context.Context, id int64) (*domain.Job, error) {
 	if s.getByID != nil {
 		return s.getByID(ctx, id)

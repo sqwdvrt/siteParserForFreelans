@@ -57,9 +57,10 @@ func (m *mockExtractor) ExtractDetail(html []byte, pageURL string) (*domain.Job,
 }
 
 type mockRepo struct {
-	exists  map[string]bool
-	saveID  int64
-	saveErr error
+	exists      map[string]bool
+	saveID      int64
+	saveErr     error
+	touchedURLs []string
 }
 
 func (m *mockRepo) Save(ctx context.Context, job *domain.Job) (int64, error) {
@@ -79,6 +80,15 @@ func (m *mockRepo) GetByIDs(ctx context.Context, ids []int64) (map[int64]*domain
 
 func (m *mockRepo) ExistsByURL(ctx context.Context, url string) (bool, error) {
 	return m.exists[url], nil
+}
+
+func (m *mockRepo) TouchSeenAt(ctx context.Context, url string) error {
+	m.touchedURLs = append(m.touchedURLs, url)
+	return nil
+}
+
+func (m *mockRepo) ExpireStaleJobs(ctx context.Context, olderThanDays int) (int64, error) {
+	return 0, nil
 }
 
 func (m *mockRepo) GetUnembeddedIDs(ctx context.Context, limit int) ([]int64, error) {
@@ -143,6 +153,10 @@ func TestCrawlProjects_Execute_Success(t *testing.T) {
 	if saved != 1 {
 		t.Errorf("want saved=1, got %d", saved)
 	}
+	// Existing URL должен быть помечен через TouchSeenAt, а не пропущен молча.
+	if len(repo.touchedURLs) != 1 || repo.touchedURLs[0] != "https://kwork.ru/projects/2/view" {
+		t.Errorf("want TouchSeenAt called for existing URL, got %v", repo.touchedURLs)
+	}
 }
 
 func TestCrawlProjects_Execute_FetchListFails(t *testing.T) {
@@ -178,6 +192,37 @@ func TestCrawlProjects_Execute_EmptyList(t *testing.T) {
 	}
 	if saved != 0 {
 		t.Errorf("want saved=0, got %d", saved)
+	}
+}
+
+func TestCrawlProjects_Execute_TouchSeenAt_OnExisting(t *testing.T) {
+	existingURL := "https://kwork.ru/projects/2/view"
+	newURL := "https://kwork.ru/projects/1/view"
+	ext := &mockExtractor{
+		listURLs: []string{newURL, existingURL},
+		detail:   &domain.Job{Title: "Job", Source: "kwork"},
+	}
+	fetcher := &mockFetcher{
+		listHTML: []byte("<html>list</html>"),
+		details:  map[string][]byte{newURL: []byte("<html>1</html>")},
+	}
+	repo := &mockRepo{
+		exists: map[string]bool{existingURL: true},
+		saveID: 1,
+	}
+	stager := &mockDispatchRepo{
+		saveAndStageFunc: func(_ context.Context, _ *domain.Job, _ port.QueueDispatchTrace) (int64, bool, error) {
+			return 1, true, nil
+		},
+	}
+
+	uc := NewCrawlProjects(fetcher, ext, repo, stager)
+	_, err := uc.Execute(context.Background(), "https://kwork.ru/projects")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(repo.touchedURLs) != 1 || repo.touchedURLs[0] != existingURL {
+		t.Errorf("want TouchSeenAt called for %q, got %v", existingURL, repo.touchedURLs)
 	}
 }
 

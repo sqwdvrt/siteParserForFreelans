@@ -39,7 +39,7 @@ const (
 	defaultBreakerFailureThreshold = 3
 	defaultBreakerOpenInterval     = 30 * time.Second
 	defaultBreakerOpenJitter       = 0.2
-	defaultQueueDepthSamplePeriod  = 10 * time.Second
+	defaultQueueDepthSamplePeriod  = 60 * time.Second
 	localTelegramTokenEnv          = "LOCAL_TELEGRAM_BOT_TOKEN"
 )
 
@@ -148,6 +148,11 @@ func main() {
 		slog.Error("invalid NOTIFIER_QUEUE_DEPTH_SAMPLE_PERIOD", "err", err)
 		os.Exit(1)
 	}
+	matchNotifyPopTimeout, err := parsePositiveDurationEnv("NOTIFIER_MATCH_NOTIFY_POP_TIMEOUT", redisadapter.DefaultMatchNotifyPopTimeout)
+	if err != nil {
+		slog.Error("invalid NOTIFIER_MATCH_NOTIFY_POP_TIMEOUT", "err", err)
+		os.Exit(1)
+	}
 
 	ctx := context.Background()
 	shutdownTracer, err := telemetry.InitTracerProvider(ctx, "site-parser-notifier", os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT"))
@@ -210,7 +215,11 @@ func main() {
 	defer digestCron.Stop()
 	slog.Info("digest cron started", "spec", digestCronSpec)
 
-	consumer := redisadapter.NewMatchNotifyConsumer(rdb, queueName)
+	consumer := redisadapter.NewMatchNotifyConsumer(
+		rdb,
+		queueName,
+		redisadapter.WithMatchNotifyPopTimeout(matchNotifyPopTimeout),
+	)
 	if err := consumer.Recover(ctx); err != nil {
 		slog.Error("recover processing queue failed", "queue", queueName, "err", err)
 		os.Exit(1)

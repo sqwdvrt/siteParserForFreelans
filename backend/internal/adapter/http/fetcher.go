@@ -287,10 +287,10 @@ func (f *Fetcher) waitForRateLimitAndOpenCircuitCheck(ctx context.Context, domai
 		reservedAt   time.Time
 	)
 	for {
+		f.mu.Lock()
 		now := time.Now()
 		wait := time.Duration(0)
 
-		f.mu.Lock()
 		if err := f.checkCircuitOpenLocked(domain, now); err != nil {
 			f.mu.Unlock()
 			return err

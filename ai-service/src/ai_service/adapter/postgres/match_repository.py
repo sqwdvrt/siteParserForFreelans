@@ -29,6 +29,7 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
         threshold: float,
         limit: int = 100,
         allowed_user_ids: list[int] | None = None,
+        max_age_days: int | None = None,
     ) -> list[MatchCandidate]:
         """
         SQL: score = 1 - (embedding <=> $1) считается в CTE.
@@ -44,11 +45,16 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 vec = Vector(embedding)
                 user_scope_sql = ""
+                job_age_sql = ""
                 params: list[object] = [vec]
                 if allowed_user_ids is not None:
                     user_scope_sql = " AND u.id = ANY(%s)"
                     params.append(allowed_user_ids)
-                params.extend([threshold, job_id, limit])
+                params.extend([job_id, threshold])
+                if max_age_days is not None and max_age_days > 0:
+                    job_age_sql = " AND COALESCE(j.posted_at, j.created_at) >= NOW() - make_interval(days => %s)"
+                    params.append(max_age_days)
+                params.append(limit)
                 cur.execute(
                     f"""
                     WITH scored_users AS (
@@ -62,11 +68,14 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
                     )
                     SELECT s.user_id, s.profile_text, s.similarity
                     FROM scored_users s
-                    WHERE s.similarity >= %s
+                    JOIN jobs j ON j.id = %s
+                    WHERE j.status = 'active'
+                      AND s.similarity >= %s
+                      {job_age_sql}
                       AND NOT EXISTS (
                           SELECT 1
                           FROM notifications n
-                          WHERE n.job_id = %s
+                          WHERE n.job_id = j.id
                             AND n.user_id = s.user_id
                       )
                     ORDER BY s.similarity DESC
@@ -110,7 +119,8 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
                         1 - (je.embedding <=> %s) AS similarity
                       FROM jobs j
                       JOIN job_embeddings je ON je.job_id = j.id
-                      WHERE COALESCE(j.posted_at, j.created_at) >= NOW() - make_interval(days => %s)
+                      WHERE j.status = 'active'
+                        AND COALESCE(j.posted_at, j.created_at) >= NOW() - make_interval(days => %s)
                     )
                     SELECT s.job_id, s.similarity
                     FROM scored_jobs s

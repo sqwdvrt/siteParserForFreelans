@@ -280,6 +280,8 @@ cd backend && go run ./cmd/crawler
 | `TELEGRAM_ID` | Личный chat_id для локальных smoke/e2e-проверок и fallback Alertmanager, если `ALERTMANAGER_TELEGRAM_CHAT_ID` не задан |
 | `ALERTMANAGER_TELEGRAM_BOT_TOKEN` | Отдельный токен бота для Alertmanager (опционально; иначе используется `TELEGRAM_BOT_TOKEN`) |
 | `ALERTMANAGER_TELEGRAM_CHAT_ID` | Отдельный chat_id канала/ops-чата для monitoring alerts (рекомендуется) |
+| `PGADMIN_EMAIL` | Логин для optional `pgAdmin` в production compose; используется только для localhost-only доступа через SSH tunnel |
+| `PGADMIN_PASSWORD` | Пароль для optional `pgAdmin`; задайте сильное значение (`openssl rand -hex 16`) |
 | `NOTIFY_PRO_MAX_PER_DAY` | Предпочтительный суточный лимит уведомлений на пользователя (`backend-notifier`, по умолчанию `5`) |
 | `NOTIFY_MAX_PER_DAY` | Legacy fallback для суточного лимита уведомлений (если `NOTIFY_PRO_MAX_PER_DAY` не задан) |
 | `API_URL` | URL backend API (в production для telegram-bot только `https://`) |
@@ -290,11 +292,23 @@ cd backend && go run ./cmd/crawler
 | `CRAWL_RETRY_MAX_ATTEMPTS` | Количество попыток fetch для `429/5xx` (по умолчанию `3`) |
 | `CRAWL_RETRY_BASE_BACKOFF` | Базовый exponential backoff между retry (по умолчанию `1s`) |
 | `CRAWL_RETRY_MAX_BACKOFF` | Верхняя граница backoff между retry (по умолчанию `30s`) |
+| `DATABASE_MIGRATE_URL` | Отдельный DSN для миграций; в текущем проектном `.env` совпадает с `DATABASE_URL` |
+| `PG_POOL_MAX_CONNS`/`PG_POOL_MIN_CONNS`/`PG_POOL_ACQUIRE_TIMEOUT` | Тюнинг postgres pool для backend и `ai-service` |
+| `BROWSER_SERVICE_URL` | URL browser render service для crawler; в текущем `.env` используется `http://browser-service:8090` |
+| `LLM_PROVIDER` | Провайдер actor в `ai-ac-consumer`: только `ollama` или `gemini`; без него процесс завершится с ошибкой |
+| `GEMINI_API_KEY` | Обязателен при `LLM_PROVIDER=gemini` |
+| `GEMINI_MODEL`/`GEMINI_ACTOR_MODEL` | Базовая и role-specific Gemini модель actor (`GEMINI_ACTOR_MODEL` имеет приоритет; по умолчанию `gemini-2.0-flash`) |
+| `ACTOR_GEMINI_TIMEOUT_SEC` | Таймаут запросов Actor к Gemini (по умолчанию `30`) |
 | `EMBEDDING_MODEL` | Модель эмбеддингов `sentence-transformers` (должна совпадать с preloaded моделью в Docker image) |
-| `EMBEDDING_REQUIRE_LOCAL` | `1` (рекомендуется): запрещает runtime-загрузку модели из сети; сервис падает, если модель не найдена локально/в `EMBEDDING_MODELS_DIR` |
-| `OLLAMA_URL` | URL Ollama для AI classifier (локально по умолчанию `http://ollama:11434`) |
-| `OLLAMA_MODEL` | Модель Ollama для classifier (по умолчанию `llama3.2:3b-instruct-q4_K_M`) |
-| `OLLAMA_TIMEOUT_SEC` | Таймаут запроса к Ollama в секундах (по умолчанию `30`) |
+| `EMBEDDING_MODELS_DIR`/`RERANK_MODELS_DIR` | Каталоги с локально предзагруженными embedding/rerank моделями (по умолчанию `/opt/models`) |
+| `EMBEDDING_REQUIRE_LOCAL` | В текущем проектном `.env` стоит `0`: разрешён fallback на локальный cache/remote download; `1` включает strict local-only режим |
+| `RERANK_MODEL` | Cross-encoder модель rerank стадии (по умолчанию `BAAI/bge-reranker-base`) |
+| `RERANK_REQUIRE_LOCAL` | Принудительно использовать только локальную/bundled rerank модель; если не задан, наследует `EMBEDDING_REQUIRE_LOCAL` |
+| `AI_WARMUP_ENABLED` | В текущем проектном `.env` стоит `0`, чтобы снизить peak RAM на старте embedding consumers |
+| `OLLAMA_URL` | URL Ollama для actor при `LLM_PROVIDER=ollama` (локально по умолчанию `http://ollama:11434`) |
+| `ACTOR_OLLAMA_MODEL` | Модель Ollama для batch explanation generation (по умолчанию `llama3.2:3b-instruct-q4_K_M`) |
+| `ACTOR_OLLAMA_TIMEOUT_SEC` | Таймаут запросов Actor к Ollama (по умолчанию `45`) |
+| `OLLAMA_REQUIRED` | Если `1`, `ai-ac-consumer` завершится при недоступном Ollama; по умолчанию `0` в dev и `1` в production |
 | `AI_METRICS_BIND` | Bind-address для `/metrics` endpoint AI-consumer процессов (по умолчанию `0.0.0.0`) |
 | `AI_CONSUMER_METRICS_PORT` | Порт `/metrics` для `ai-service` consumer (по умолчанию `9108`, `0` = выключить exporter) |
 | `AI_AC_CONSUMER_METRICS_PORT` | Порт `/metrics` для `ai-ac-consumer` (по умолчанию `9109`, `0` = выключить exporter) |
@@ -305,13 +319,15 @@ cd backend && go run ./cmd/crawler
 | `AC_BATCH_QUEUE` | Redis-очередь batch-задач финального ранжирования (по умолчанию `ac-batch`) |
 | `AC_BATCH_INTERVAL_SEC` | Интервал планировщика batch в `ai-ac-consumer` (по умолчанию `300`) |
 | `AC_BATCH_MIN_JOBS`/`AC_BATCH_MAX_JOBS` | Границы размера batch из pending-совпадений (по умолчанию `1` и `20`) |
+| `AC_LEASE_TIMEOUT_SEC` | Lease timeout для claim/reclaim строк в `pending_ac_jobs` (по умолчанию `600`) |
+| `AC_PENDING_RETENTION_DAYS` | Retention обработанных строк `pending_ac_jobs` (по умолчанию `14`) |
+| `AC_PENDING_CLEANUP_INTERVAL_SEC` | Период cleanup processed строк `pending_ac_jobs` (по умолчанию `3600`) |
+| `AC_PENDING_METRICS_REFRESH_SEC` | Период обновления gauge-метрик `pending_ac_jobs` (по умолчанию `30`) |
+| `AI_AC_BATCH_POP_TIMEOUT_SEC` | BRPOP timeout `ai-ac-consumer` до cap по shutdown grace (по умолчанию `30`) |
 | `MAX_MATCHES_PER_JOB` | Размер ANN candidate pool до rerank (по умолчанию `50`) |
+| `SIMILARITY_THRESHOLD` | В текущем проектном `.env` используется tuned значение `0.35` (кодовый fallback выше) |
 | `RERANK_THRESHOLD` | Минимальный score cross-encoder rerank для downstream scoring (по умолчанию `0.55`) |
 | `RERANK_TOP_K` | Сколько кандидатов оставить после cross-encoder rerank (по умолчанию `10`) |
-| `AC_MAX_ATTEMPTS` | Legacy env из старого Actor-Critic pipeline; текущим scorer не используется |
-| `AC_MAX_JOBS_PER_SELECTION` | Legacy env из старого Actor-Critic pipeline; текущим scorer не используется |
-| `ACTOR_OLLAMA_MODEL` | Модель Ollama для batch explanation generation (по умолчанию `llama3.2:3b-instruct-q4_K_M`) |
-| `ACTOR_OLLAMA_TIMEOUT_SEC` | Таймаут запросов Actor к Ollama (по умолчанию `45`) |
 
 Полный список: `.env.example`. Документация: `docs/env_setup.md`.
 

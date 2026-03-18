@@ -14,6 +14,8 @@ backend/.gocache*
 backend/.gomodcache*
 rules/
 .cursor/
+.omc/
+backend/.omc/
 .claude/worktrees/
 __pycache__/
 .venv/
@@ -29,3 +31,5 @@ coverage_*.out
 htmlcov/
 .DS_Store
 gitleaks.sarif
+.omc/
+backend/.omc/

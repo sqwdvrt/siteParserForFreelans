@@ -108,6 +108,7 @@
 | Kwork | browser-service (JS рендеринг через Playwright) |
 | FL.ru | plain HTTP GET |
 | Freelancehunt | plain HTTP GET |
+| Weblancer | plain HTTP GET |
 
 **Цикл:**
 1. Fetch HTML → extract (title, description, budget, skills, URL)
@@ -451,13 +452,13 @@ trace_id       TEXT
 | Файл | Что делает |
 |------|-----------|
 | `001_init.sql` | Базовая схема: jobs, job_embeddings, users, notifications |
-| `002_...` | Индекс (user_id, sent_at) на notifications |
+| `002_...` | Индекс `(job_id, user_id)` на notifications для anti-join по `job_id` |
 | `003_...` | Колонка status в notifications (pending/sent) |
 | `004_...` | Таблица pending_ac_jobs |
 | `005_...` | trace_id в pending_ac_jobs |
 | `006_...` | queued_at в pending_ac_jobs |
 | `007_...` | Индекс для reclaim expired leases |
-| `008_...` | Индекс на status в notifications |
+| `008_...` | Составной индекс `(user_id, status, sent_at DESC)` на notifications |
 | `009_...` | Row-Level Security (RLS) для изоляции данных |
 | `010_...` | Таблица user_feedback |
 | `011_...` | is_pro, notify_hour в users |
@@ -473,6 +474,8 @@ trace_id       TEXT
 | `020_pending_ac_jobs_score_components.sql` | Компоненты скоринга в `pending_ac_jobs` (`feedback_bonus`, `preference_multiplier`) |
 | `021_user_job_filter_events.sql` | Таблица `user_job_filter_events` для explainable matching stats |
 | `022_product_events.sql` | Таблица `product_events` для продуктовой SQL-аналитики |
+| `023_notifications_drop_legacy_sent_index.sql` | Удаление устаревшего индекса `notifications(user_id, sent_at)` и фиксация status-aware индекса `(user_id, status, sent_at DESC)` |
+| `024_jobs_freshness.sql` | Колонки `status` (`active`/`expired`) и `last_seen_at` в `jobs` для экспирации закрытых проектов |
 
 **Применение:** `make migrate` (запускает `backend-migrate` контейнер с advisory lock).
 Нюанс: в репозитории исторически есть два файла с префиксом `017_*`; это ожидаемо для текущего набора миграций.
@@ -623,11 +626,18 @@ signature = HMAC-SHA256(
 
 | Переменная | Default | Описание |
 |-----------|---------|---------|
-| `OLLAMA_URL` | `http://ollama:11434` | LLM endpoint |
-| `OLLAMA_MODEL` | `llama3.2:3b-instruct-q4_K_M` | Модель |
-| `OLLAMA_TIMEOUT_SEC` | `30` | Таймаут запроса к LLM |
+| `LLM_PROVIDER` | — | Провайдер actor для `ai-ac-consumer`: `gemini` или `ollama` |
+| `GEMINI_API_KEY` | — | Обязателен при `LLM_PROVIDER=gemini` |
+| `GEMINI_MODEL` / `GEMINI_ACTOR_MODEL` | `gemini-2.0-flash` | Базовая и role-specific Gemini модель actor |
+| `ACTOR_GEMINI_TIMEOUT_SEC` | `30` | Таймаут actor-запроса к Gemini |
+| `OLLAMA_URL` | `http://ollama:11434` | Ollama endpoint для actor при `LLM_PROVIDER=ollama` |
+| `ACTOR_OLLAMA_MODEL` | `llama3.2:3b-instruct-q4_K_M` | Модель Ollama для actor |
+| `ACTOR_OLLAMA_TIMEOUT_SEC` | `45` | Таймаут actor-запроса к Ollama |
+| `OLLAMA_REQUIRED` | dev `0`, prod `1` | Fail-closed проверка доступности Ollama |
 | `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Модель эмбеддингов |
-| `SIMILARITY_THRESHOLD` | `0.7` | Порог косинусного сходства |
+| `RERANK_MODEL` | `BAAI/bge-reranker-base` | Cross-encoder модель rerank-стадии |
+| `AI_WARMUP_ENABLED` | `0` в текущем `.env` | Warmup embedding-модели на старте `ai-service` и `ai-user-embed` |
+| `SIMILARITY_THRESHOLD` | `0.35` в текущем `.env` | Порог косинусного сходства |
 | `MAX_MATCHES_PER_JOB` | `50` | Размер ANN candidate pool до rerank |
 | `RERANK_THRESHOLD` | `0.55` | Мин. cross-encoder score для downstream scoring |
 | `RERANK_TOP_K` | `10` | Сколько кандидатов оставить после cross-encoder rerank |
@@ -636,6 +646,11 @@ signature = HMAC-SHA256(
 | `AC_BATCH_INTERVAL_SEC` | `300` | Окно накопления батча |
 | `AC_BATCH_MIN_JOBS` | `1` | Мин. заданий в батче |
 | `AC_BATCH_MAX_JOBS` | `20` | Макс. заданий в батче |
+| `AC_LEASE_TIMEOUT_SEC` | `600` | Lease timeout для pending batch rows |
+| `AI_AC_BATCH_POP_TIMEOUT_SEC` | `30` | BRPOP timeout `ai-ac-consumer` до cap по shutdown grace |
+| `AC_PENDING_RETENTION_DAYS` | `14` | Retention processed строк `pending_ac_jobs` |
+| `AC_PENDING_CLEANUP_INTERVAL_SEC` | `3600` | Интервал cleanup processed строк |
+| `AC_PENDING_METRICS_REFRESH_SEC` | `30` | Интервал обновления gauge-метрик pending rows |
 
 ### Telegram Bot
 
@@ -707,25 +722,34 @@ make logs SERVICE=backend-api   # Логи конкретного сервиса
 
 `rollback` и DLQ reprocess не оформлены отдельными make-целями: используйте runbook из `docs/operations.md` и прямые команды `redis-cli`/restore-скрипты.
 
-### Production (Railway)
+### Production (VPS)
 
-Сервисы деплоятся через `railpack.json`. База данных и Redis — внешние управляемые сервисы.
+Развёртывание на VPS через Docker Compose. PostgreSQL и Redis поднимаются локально в отдельном `infra`-compose с TLS. Подробная пошаговая инструкция: `docs/vps_deploy.md`.
 
-**Порядок деплоя:**
-1. Запустить `backend-migrate` (применит новые миграции)
-2. Задеплоить `backend-api`
-3. Задеплоить `backend-notifier` (с `DIGEST_CRON=0 * * * *`)
-4. Задеплоить `backend-crawler`
-5. Задеплоить AI-сервисы (нужен Ollama)
-6. Задеплоить `telegram-bot`
+**Compose-контур:**
+```bash
+export PROD_COMPOSE="docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml"
 
-**Обязательные env vars в Railway:**
-- `DATABASE_URL` (с `sslmode=require`)
-- `REDIS_URL` (с `rediss://` + password)
+# Первый запуск
+$PROD_COMPOSE up -d --build
+
+# Обновление
+$PROD_COMPOSE up -d
+```
+
+`docker-compose.ssl.yml` — overlay, который:
+- подключает внешнюю сеть `infra_default` (postgres + redis)
+- пробрасывает самоподписанный CA-сертификат через `SSL_CERT_FILE` во все контейнеры
+
+**Обязательные env vars в `.env.production`:**
+- `DATABASE_URL` (`sslmode=require`, hostname `postgres`)
+- `REDIS_URL` (`rediss://`, hostname `redis`)
+- `API_TLS_CERT_HOST_PATH` / `API_TLS_KEY_HOST_PATH` (Let's Encrypt certs)
 - `TELEGRAM_BOT_TOKEN`
-- `API_AUTH_TOKEN` (≥32 chars, случайные)
-- `API_USER_HMAC_SECRET` (≥32 chars, случайные)
+- `API_AUTH_TOKEN` (≥32 chars)
+- `API_USER_HMAC_SECRET` (≥32 chars)
 - `APP_ENV=production`
+- `API_URL=https://api.freematch.ru`
 
 ### Активация Pro для пользователя
 
@@ -817,6 +841,23 @@ Pending-запись удаляется, чтобы не накапливать 
 ```
 
 Ключевое: для Pro-пользователей `EnsurePending` сохраняет запись, но `sendNotif.Execute` делает early return не отправляя немедленно — всё накапливается до нужного часа.
+
+### Preference Filter (жёсткий pre-filter)
+
+Перед pgvector ANN-поиском каждый пользователь проверяется на соответствие явным предпочтениям.
+Реализован в `ai-service/src/ai_service/util/preference_filter.py`.
+
+| Фильтр | Логика |
+|--------|--------|
+| `preferred_sources` | Job должен быть из указанного источника |
+| `work_type` | web / mobile / bot — из профиля и описания задания |
+| `stack` | Пересечение стека пользователя и технологий задания |
+| `experience_years` | Опыт пользователя ≥ требуемого в задании |
+| `include_keywords` | Хотя бы одно слово должно присутствовать в title+description |
+| `exclude_keywords` | Ни одно слово не должно присутствовать в title+description |
+| `min_budget` / `max_budget` | Бюджет задания в диапазоне |
+
+Если все фильтры пройдены — пользователь попадает в ANN-поиск.
 
 ### Фидбек и обучение
 

@@ -164,6 +164,17 @@ func main() {
 		slog.Info("crawler proxy configured", "proxy", proxyURL)
 	}
 
+	jobExpireDays, err := parsePositiveIntEnv("JOB_EXPIRE_DAYS", 14)
+	if err != nil {
+		slog.Error("invalid JOB_EXPIRE_DAYS", "err", err)
+		os.Exit(1)
+	}
+	jobExpireCheckSec, err := parsePositiveIntEnv("JOB_EXPIRE_CHECK_SEC", 3600)
+	if err != nil {
+		slog.Error("invalid JOB_EXPIRE_CHECK_SEC", "err", err)
+		os.Exit(1)
+	}
+
 	cronSpec := os.Getenv("CRAWL_CRON")
 	if cronSpec == "" {
 		cronSpec = "0 5 * * *" // каждый день в 05:00 UTC по умолчанию
@@ -283,9 +294,12 @@ func main() {
 	}
 	slog.Info("crawler sources configured", "sources", enabledSourcesRaw)
 
+	expireJobs := usecase.NewExpireJobs(repo, jobExpireDays)
+
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go runJobEmbedDispatchLoop(ctx, jobEmbedDispatcher)
+	go runExpireJobsLoop(ctx, expireJobs, time.Duration(jobExpireCheckSec)*time.Second)
 
 	healthAddr := os.Getenv("CRAWLER_HEALTH_ADDR")
 	if healthAddr == "" {
@@ -507,6 +521,21 @@ func observeCrawlerQueueDepth(client *redisclient.Client, metrics *telemetry.Cra
 		return
 	}
 	metrics.SetQueueDepth(ready, processing, dlq)
+}
+
+func runExpireJobsLoop(ctx context.Context, uc *usecase.ExpireJobs, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if _, err := uc.Execute(ctx); err != nil && ctx.Err() == nil {
+			slog.Warn("expire_jobs: failed", "err", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func runJobEmbedDispatchLoop(ctx context.Context, dispatcher *usecase.PendingJobEmbedDispatcher) {

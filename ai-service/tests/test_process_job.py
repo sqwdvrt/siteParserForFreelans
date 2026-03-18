@@ -73,7 +73,14 @@ def test_execute_skips_when_embedding_exists() -> None:
     match_repo.find_users_for_job.return_value = []
     uc = ProcessJobUseCase(repo, emb, match_repo=match_repo)
     assert uc.execute(1) is True
-    match_repo.find_users_for_job.assert_called_once_with([0.2] * 384, 1, 0.7, 20, allowed_user_ids=None)
+    match_repo.find_users_for_job.assert_called_once_with(
+        [0.2] * 384,
+        1,
+        0.7,
+        20,
+        allowed_user_ids=None,
+        max_age_days=None,
+    )
     emb.encode.assert_not_called()
     repo.save_embedding.assert_not_called()
 
@@ -119,6 +126,7 @@ def test_execute_calls_matching_after_save() -> None:
     assert call[0][1] == 1
     assert call[0][2] == 0.7
     assert call[0][3] == 20
+    assert call.kwargs["max_age_days"] is None
 
 
 def test_execute_accumulates_candidates_to_pending_repo() -> None:
@@ -210,6 +218,7 @@ def test_execute_applies_rerank_threshold_and_top_k() -> None:
     reranker.score_pairs.assert_called_once()
     call = match_repo.find_users_for_job.call_args
     assert call[0][3] == 50
+    assert call.kwargs["max_age_days"] is None
     sent = accumulate_matches.execute.call_args[0][0]
     assert [item.user_id for item in sent] == [10, 30]
     assert sent[0].rerank_score == pytest.approx(0.91)
@@ -265,6 +274,25 @@ def test_execute_applies_preference_filter_before_ann() -> None:
 
     call = match_repo.find_users_for_job.call_args
     assert call.kwargs["allowed_user_ids"] == [10]
+    assert call.kwargs["max_age_days"] is None
+
+
+def test_execute_passes_explicit_match_age_gate_to_repo() -> None:
+    job = Job(id=1, title="T", description="D", raw_html="<p>H</p>")
+    repo = MagicMock()
+    repo.get.return_value = job
+    repo.get_embedding.return_value = None
+    emb = MagicMock()
+    emb.encode.return_value = [0.1] * 384
+    emb.model_name = "test"
+    match_repo = MagicMock()
+    match_repo.find_users_for_job.return_value = []
+    uc = ProcessJobUseCase(repo, emb, match_repo=match_repo, match_max_age_days=2)
+
+    assert uc.execute(1) is True
+
+    call = match_repo.find_users_for_job.call_args
+    assert call.kwargs["max_age_days"] == 2
 
 
 def test_execute_records_budget_filter_events() -> None:

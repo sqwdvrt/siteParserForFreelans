@@ -99,7 +99,9 @@ func (r *DispatchRepository) SaveAndStageJobForEmbedding(
 	case pgx.ErrNoRows:
 		if _, err := tx.Exec(ctx, `
 			UPDATE jobs
-			SET raw_html = $2
+			SET raw_html = $2,
+			    status = 'active',
+			    last_seen_at = NOW()
 			WHERE url = $1
 		`, job.URL, job.RawHTML); err != nil {
 			return 0, false, err

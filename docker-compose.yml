@@ -307,9 +307,7 @@ services:
     image: ${OLLAMA_IMAGE:-ollama/ollama@sha256:006ad593108a705eafc8ea8496a30765222bdab17b1a1b0bbe3d50ff2e70fbf4}
     environment:
       OLLAMA_HOST: http://ollama:11434
-      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2:3b-instruct-q4_K_M}
       ACTOR_OLLAMA_MODEL: ${ACTOR_OLLAMA_MODEL:-llama3.2:3b-instruct-q4_K_M}
-      CRITIC_OLLAMA_MODEL: ${CRITIC_OLLAMA_MODEL:-llama3.2:3b-instruct-q4_K_M}
     entrypoint: ["/bin/sh"]
     command: ["/opt/bootstrap/ollama_bootstrap.sh"]
     volumes:
@@ -366,7 +364,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
       REDIS_URL: redis://redis:6379/0
       AI_READY_FILE: /tmp/ai-user-rematch-ready
-      AI_HEALTH_PORT: ${AI_USER_REMATCH_HEALTH_PORT:-8092}
+      AI_USER_REMATCH_HEALTH_PORT: ${AI_USER_REMATCH_HEALTH_PORT:-8092}
     depends_on:
       postgres:
         condition: service_healthy

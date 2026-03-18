@@ -102,6 +102,7 @@ class ProcessJobUseCase:
         *,
         similarity_threshold: float = 0.7,
         max_matches_per_job: int = 20,
+        match_max_age_days: int | None = None,
         rerank_threshold: float = 0.55,
         rerank_top_k: int = 10,
         feedback_repo=None,
@@ -116,6 +117,7 @@ class ProcessJobUseCase:
         self._reranker = reranker
         self._threshold = similarity_threshold
         self._limit = max_matches_per_job
+        self._match_max_age_days = match_max_age_days
         self._rerank_threshold = rerank_threshold
         self._rerank_top_k = rerank_top_k
         self._feedback_repo = feedback_repo
@@ -218,6 +220,7 @@ class ProcessJobUseCase:
                 self._threshold,
                 max(self._limit, DEFAULT_ANN_TOP_K) if self._reranker is not None else self._limit,
                 allowed_user_ids=allowed_user_ids,
+                max_age_days=self._match_max_age_days,
             )
             if trace_id:
                 logger.info("job_id=%s trace_id=%s: %d match candidates", job_id, trace_id, len(candidates))

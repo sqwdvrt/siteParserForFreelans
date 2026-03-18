@@ -48,6 +48,7 @@ PREFERENCE_FILTER_REASON_WORK_TYPE = "work_type"
 PREFERENCE_FILTER_REASON_STACK = "stack"
 PREFERENCE_FILTER_REASON_EXPERIENCE = "experience"
 PREFERENCE_FILTER_REASON_EXCLUDE_KEYWORD = "exclude_keyword"
+PREFERENCE_FILTER_REASON_INCLUDE_KEYWORD = "include_keyword"
 PREFERENCE_FILTER_REASON_BUDGET = "budget"
 
 
@@ -150,6 +151,11 @@ def evaluate_preference_filter(
             mark_filtered(user.id, PREFERENCE_FILTER_REASON_EXCLUDE_KEYWORD)
             continue
 
+        include_keywords = [str(kw or "").strip() for kw in prefs.include_keywords if str(kw or "").strip()]
+        if include_keywords and not any(_keyword_matches(kw, haystack) for kw in include_keywords):
+            mark_filtered(user.id, PREFERENCE_FILTER_REASON_INCLUDE_KEYWORD)
+            continue
+
         if budget_amount is not None:
             min_budget = (
                 float(prefs.min_budget)
@@ -186,6 +192,19 @@ def _normalize_budget_number(raw_number: str) -> float | None:
         return float(compact)
     except ValueError:
         return None
+
+
+def _keyword_matches(raw_keyword: str, haystack: str) -> bool:
+    normalized = str(raw_keyword or "").strip().casefold()
+    if not normalized:
+        return False
+
+    parts = [re.escape(part) for part in re.split(r"\s+", normalized) if part]
+    if not parts:
+        return False
+
+    pattern = re.compile(rf"(?<!\w){r'\s+'.join(parts)}(?!\w)", re.IGNORECASE)
+    return pattern.search(haystack) is not None
 
 
 def _extract_job_stack(haystack: str, classification: dict[str, object] | None) -> set[str]:

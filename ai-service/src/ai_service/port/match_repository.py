@@ -34,11 +34,14 @@ class MatchRepository(ABC):
         threshold: float,
         limit: int = 100,
         allowed_user_ids: list[int] | None = None,
+        max_age_days: int | None = None,
     ) -> list[MatchCandidate]:
         """
         Найти пользователей для job по similarity.
         score = 1 - (embedding <=> query), cosine similarity.
         Исключает пользователей, уже в notifications для этого job_id.
+        Если max_age_days задан, дополнительно ограничивает возраст job.
+        По умолчанию age-gate выключен, чтобы backlog/replay не терял матчи молча.
         match_score = similarity (0–1), эвристики можно добавить.
         """
         ...

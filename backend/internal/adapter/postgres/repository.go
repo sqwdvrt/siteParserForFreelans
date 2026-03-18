@@ -19,13 +19,17 @@ func NewJobRepository(pool *pgxpool.Pool) *JobRepository {
 	return &JobRepository{pool: pool}
 }
 
-// Save сохраняет job в БД. При дубликате по URL обновляет raw_html и возвращает существующий id.
+// Save сохраняет job в БД. При дубликате по URL обновляет raw_html,
+// реактивирует status='active' и возвращает существующий id.
 func (r *JobRepository) Save(ctx context.Context, job *domain.Job) (int64, error) {
 	var id int64
 	err := r.pool.QueryRow(ctx, `
 		INSERT INTO jobs (source, url, external_id, title, description, budget, skills, posted_at, raw_html)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-		ON CONFLICT (url) DO UPDATE SET raw_html = EXCLUDED.raw_html
+		ON CONFLICT (url) DO UPDATE SET
+			raw_html = EXCLUDED.raw_html,
+			status = 'active',
+			last_seen_at = NOW()
 		RETURNING id
 	`,
 		job.Source,
@@ -50,7 +54,9 @@ func (r *JobRepository) GetByID(ctx context.Context, id int64) (*domain.Job, err
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, source, url, COALESCE(external_id, ''), title, COALESCE(description, ''),
 			COALESCE(budget, ''), skills, posted_at, raw_html, created_at
-		FROM jobs WHERE id = $1
+		FROM jobs
+		WHERE id = $1
+		  AND status = 'active'
 	`, id).Scan(&j.ID, &j.Source, &j.URL, &j.ExternalID, &j.Title, &j.Description,
 		&j.Budget, &j.Skills, &j.PostedAt, &j.RawHTML, &j.CreatedAt)
 	if err != nil {
@@ -70,7 +76,9 @@ func (r *JobRepository) GetByIDs(ctx context.Context, ids []int64) (map[int64]*d
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, source, url, COALESCE(external_id, ''), title, COALESCE(description, ''),
 			COALESCE(budget, ''), skills, posted_at, raw_html, created_at
-		FROM jobs WHERE id = ANY($1)
+		FROM jobs
+		WHERE id = ANY($1)
+		  AND status = 'active'
 	`, ids)
 	if err != nil {
 		return nil, err
@@ -86,6 +94,27 @@ func (r *JobRepository) GetByIDs(ctx context.Context, ids []int64) (map[int64]*d
 		result[j.ID] = &j
 	}
 	return result, rows.Err()
+}
+
+// TouchSeenAt обновляет last_seen_at = NOW() для job по URL и
+// возвращает ранее истёкшую вакансию в active-состояние.
+func (r *JobRepository) TouchSeenAt(ctx context.Context, url string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE jobs SET last_seen_at = NOW(), status = 'active' WHERE url = $1`, url)
+	return err
+}
+
+// ExpireStaleJobs помечает активные jobs как 'expired' если last_seen_at старше olderThanDays дней.
+func (r *JobRepository) ExpireStaleJobs(ctx context.Context, olderThanDays int) (int64, error) {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE jobs SET status = 'expired'
+		WHERE status = 'active'
+		  AND last_seen_at < NOW() - make_interval(days => $1)
+	`, olderThanDays)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 // ExistsByURL проверяет наличие job по URL.
@@ -104,6 +133,7 @@ func (r *JobRepository) GetUnembeddedIDs(ctx context.Context, limit int) ([]int6
 		SELECT j.id FROM jobs j
 		LEFT JOIN job_embeddings je ON je.job_id = j.id
 		WHERE je.job_id IS NULL
+		  AND j.status = 'active'
 		ORDER BY j.created_at DESC
 		LIMIT $1
 	`, limit)

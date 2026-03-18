@@ -257,6 +257,44 @@ API_URL=https://api.freematch.ru
 docker compose -f docker-compose.prod.yml -f docker-compose.ssl.yml --env-file .env.production up -d --build
 ```
 
+### 4.1 pgAdmin (optional, localhost-only)
+
+`pgAdmin` можно поднять в том же production compose-контуре для ручной диагностики БД.
+Сервис публикуется только на loopback хоста (`127.0.0.1:5050`), поэтому наружу не торчит
+и предполагает доступ через SSH tunnel. По умолчанию сервис не стартует вместе с основным
+production стеком: он вынесен в profile `admin` и запускается только явно.
+
+Добавьте в `.env.production`:
+
+```env
+PGADMIN_EMAIL=admin@yourdomain.com
+PGADMIN_PASSWORD=<output of: openssl rand -hex 16>
+```
+
+Запуск:
+
+```bash
+cd /home/deploy/app/siteParserForFreelans
+docker compose -f docker-compose.prod.yml -f docker-compose.ssl.yml --env-file .env.production --profile admin up -d pgadmin
+```
+
+SSH tunnel с локальной машины:
+
+```bash
+ssh -L 5050:localhost:5050 deploy@185.154.193.193
+```
+
+После этого откройте `http://localhost:5050` и войдите под `PGADMIN_EMAIL` / `PGADMIN_PASSWORD`.
+
+Для подключения к PostgreSQL внутри `pgAdmin` используйте:
+
+- Host: `postgres`
+- Port: `5432`
+- Database: `site_parser`
+- Username: `site_parser`
+- Password: значение `POSTGRES_PASSWORD` из `/home/deploy/infra/.env`
+- SSL mode: `Require`
+
 ---
 
 ## 5. Проверка

@@ -43,6 +43,7 @@ PY_BIN="$(resolve_python_bin)"
 run_step "Bash syntax for release smoke scripts" \
   bash -n \
   ./scripts/lib/release_smoke_payloads.sh \
+  ./scripts/post_deploy_production_gate.sh \
   ./scripts/staging_smoke_e2e_gate.sh \
   ./scripts/e2e_test.sh \
   ./scripts/validate-env-production.sh

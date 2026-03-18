@@ -51,7 +51,55 @@ def test_find_jobs_for_user_maps_rows() -> None:
     assert got[0].final_score == 0.8123
     sql, params = cur.execute.call_args.args
     assert "FROM jobs j" in sql
+    assert "j.status = 'active'" in sql
     assert params[1] == 14
     assert params[2] == 0.7
     assert params[3] == 5
     assert params[4] == 3
+
+
+def test_find_users_for_job_joins_active_job() -> None:
+    repo = PostgresMatchRepository("postgresql://fake/fake")
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    cur.fetchall.return_value = [{"user_id": 11, "profile_text": "hello", "similarity": 0.91}]
+
+    @contextlib.contextmanager
+    def fake_conn():
+        yield conn
+
+    repo._conn = fake_conn  # type: ignore[method-assign]
+
+    got = repo.find_users_for_job([0.1] * 384, job_id=7, threshold=0.8, limit=4)
+
+    assert len(got) == 1
+    assert got[0].user_id == 11
+    assert got[0].job_id == 7
+    sql, params = cur.execute.call_args.args
+    assert "JOIN jobs j ON j.id = %s" in sql
+    assert "j.status = 'active'" in sql
+    assert "COALESCE(j.posted_at, j.created_at) >= NOW() - make_interval(days => %s)" not in sql
+    assert "WHERE n.job_id = j.id" in sql
+    assert params[1] == 7
+    assert params[2] == 0.8
+    assert params[3] == 4
+
+
+def test_find_users_for_job_applies_explicit_age_gate() -> None:
+    repo = PostgresMatchRepository("postgresql://fake/fake")
+    conn = MagicMock()
+    cur = conn.cursor.return_value.__enter__.return_value
+    cur.fetchall.return_value = [{"user_id": 11, "profile_text": "hello", "similarity": 0.91}]
+
+    @contextlib.contextmanager
+    def fake_conn():
+        yield conn
+
+    repo._conn = fake_conn  # type: ignore[method-assign]
+
+    repo.find_users_for_job([0.1] * 384, job_id=7, threshold=0.8, limit=4, max_age_days=2)
+
+    sql, params = cur.execute.call_args.args
+    assert "COALESCE(j.posted_at, j.created_at) >= NOW() - make_interval(days => %s)" in sql
+    assert params[3] == 2
+    assert params[4] == 4

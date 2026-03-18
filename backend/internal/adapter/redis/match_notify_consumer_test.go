@@ -20,14 +20,38 @@ func TestMatchNotifyConsumer_NewDefaultQueue(t *testing.T) {
 	if c.queue != "match-notify" {
 		t.Errorf("want default queue match-notify, got %q", c.queue)
 	}
+	if c.popTimeout != DefaultMatchNotifyPopTimeout {
+		t.Errorf("want default pop timeout %v, got %v", DefaultMatchNotifyPopTimeout, c.popTimeout)
+	}
 }
 
 func TestMatchNotifyConsumer_NewCustomQueue(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
-	c := NewMatchNotifyConsumer(redis.NewClient(&redis.Options{Addr: mr.Addr()}), "custom-queue")
+	customTimeout := 3 * time.Second
+	c := NewMatchNotifyConsumer(
+		redis.NewClient(&redis.Options{Addr: mr.Addr()}),
+		"custom-queue",
+		WithMatchNotifyPopTimeout(customTimeout),
+	)
 	if c.queue != "custom-queue" {
 		t.Errorf("want custom-queue, got %q", c.queue)
+	}
+	if c.popTimeout != customTimeout {
+		t.Errorf("want custom pop timeout %v, got %v", customTimeout, c.popTimeout)
+	}
+}
+
+func TestMatchNotifyConsumer_NewInvalidPopTimeout_UsesDefault(t *testing.T) {
+	mr := mustRunMiniRedis(t)
+
+	c := NewMatchNotifyConsumer(
+		redis.NewClient(&redis.Options{Addr: mr.Addr()}),
+		"custom-queue",
+		WithMatchNotifyPopTimeout(0),
+	)
+	if c.popTimeout != DefaultMatchNotifyPopTimeout {
+		t.Errorf("want default pop timeout %v, got %v", DefaultMatchNotifyPopTimeout, c.popTimeout)
 	}
 }
 

@@ -51,6 +51,9 @@ func (u *CrawlProjects) Execute(ctx context.Context, listURL string) (saved int,
 			continue
 		}
 		if exists {
+			if err := u.repo.TouchSeenAt(ctx, detailURL); err != nil {
+				slog.Warn("crawl: touch seen_at failed", "url", detailURL, "err", err)
+			}
 			continue
 		}
 		detailHTML, err := u.fetcher.Fetch(ctx, detailURL)

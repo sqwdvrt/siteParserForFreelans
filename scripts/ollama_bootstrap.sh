@@ -15,9 +15,7 @@ append_model() {
   models="$models $model"
 }
 
-append_model "${OLLAMA_MODEL:-llama3.2:3b-instruct-q4_K_M}"
 append_model "${ACTOR_OLLAMA_MODEL:-${OLLAMA_MODEL:-llama3.2:3b-instruct-q4_K_M}}"
-append_model "${CRITIC_OLLAMA_MODEL:-${OLLAMA_MODEL:-llama3.2:3b-instruct-q4_K_M}}"
 
 for attempt in $(seq 1 60); do
   if ollama list >/dev/null 2>&1; then

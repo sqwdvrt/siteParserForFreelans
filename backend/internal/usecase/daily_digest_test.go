@@ -117,6 +117,10 @@ func (m *digestJobRepo) ExistsByURL(ctx context.Context, url string) (bool, erro
 func (m *digestJobRepo) GetUnembeddedIDs(ctx context.Context, limit int) ([]int64, error) {
 	return nil, nil
 }
+func (m *digestJobRepo) TouchSeenAt(ctx context.Context, url string) error { return nil }
+func (m *digestJobRepo) ExpireStaleJobs(ctx context.Context, days int) (int64, error) {
+	return 0, nil
+}
 
 type digestNotifier struct {
 	sendFunc func(ctx context.Context, telegramID int64, payload port.NotifyPayload) error
@@ -173,6 +177,41 @@ func TestDailyDigestSendDigestForUserSuccess(t *testing.T) {
 	}
 	if len(notifRepo.markSentCalls) != 2 || notifRepo.markSentCalls[0] != 1 || notifRepo.markSentCalls[1] != 2 {
 		t.Fatalf("markSentCalls=%v", notifRepo.markSentCalls)
+	}
+}
+
+func TestDailyDigestSendDigestForUser_SkipsExpiredJobs(t *testing.T) {
+	notifRepo := &digestNotifRepo{
+		countTodayFunc: func(context.Context, int64) (int, error) { return 0, nil },
+		getPendingFunc: func(context.Context, int64) ([]port.PendingNotification, error) {
+			return []port.PendingNotification{
+				{JobID: 1, MatchScore: 8.1, WhyItFits: "Go"},
+				{JobID: 2, MatchScore: 7.5, WhyItFits: "Expired"},
+			}, nil
+		},
+	}
+	jobRepo := &digestJobRepo{
+		getByIDsFunc: func(ctx context.Context, ids []int64) (map[int64]*domain.Job, error) {
+			return map[int64]*domain.Job{
+				1: {ID: 1, Title: "Active"},
+				// Job 2 is expired and filtered by postgres GetByIDs.
+			}, nil
+		},
+	}
+	notifier := &digestNotifier{}
+	uc := NewDailyDigest(&digestUserRepo{}, notifRepo, jobRepo, notifier, 3)
+
+	if err := uc.sendDigestForUser(context.Background(), 42); err != nil {
+		t.Fatalf("sendDigestForUser: %v", err)
+	}
+	if len(notifier.payload.Batch) != 1 {
+		t.Fatalf("batch len=%d, want 1", len(notifier.payload.Batch))
+	}
+	if notifier.payload.Batch[0].Job == nil || notifier.payload.Batch[0].Job.ID != 1 {
+		t.Fatalf("sent wrong digest payload: %+v", notifier.payload.Batch)
+	}
+	if len(notifRepo.markSentCalls) != 1 || notifRepo.markSentCalls[0] != 1 {
+		t.Fatalf("markSentCalls=%v, want [1]", notifRepo.markSentCalls)
 	}
 }
 

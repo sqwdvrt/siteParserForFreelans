@@ -1,8 +1,0 @@
-{
-  "active": true,
-  "started_at": "2026-03-08T09:38:05.367Z",
-  "original_prompt": "/autopilot роверил. Причина не в notifier.\n\n  Сейчас картина такая:\n\n  - все delivery-очереди пусты: ai-process=0, ac-batch=0, match-notify=0\n  - notifications.pending=0\n  - последний реально дошедший до AI/AC job: job_id=278\n      - pending_ac_jobs.created_at=2026-03-08 08:11:36 UTC\n      - processed_at=2026-03-08 08:12:53 UTC\n\n  Но новые вакансии после этого есть:\n\n  - job_id=279..284 существуют в jobs\n  - 283 сохранён crawler в 2026-03-08 09:00:17 UTC\n  - 284 сохранён crawler в 2026-03-08 09:30:18 UTC\n\n  При этом для 279..284:\n\n  - нет записей в pending_ac_jobs\n  - нет записей в notifications\n  - в логах ai-service нет обработки этих job_id\n\n  Итог:\n\n  - pending=0 и пустой match-notify не потому, что всё отправилось\n  - а потому что новые jobs сейчас не доходят до AI pipeline после сохранения\n    crawler'ом\n\n  Где обрыв:\n\n  - crawler сохраняет job в БД\n  - но дальше job_id не попадает в фактическую обработку ai-process ->\n    pending_ac_jobs -> match-notify\n\n  То есть текущий живой блокер сейчас выше notifier: между backend-crawler и ai-\n  service.\n\n  Если продолжать, следующий шаг уже конкретный: я добью именно этот разрыв\n  crawler -> ai-process и потом переобработаю job_id=279..284.",
-  "session_id": "71156e8b-e235-4a59-8271-e5c5f0248d3e",
-  "reinforcement_count": 2,
-  "last_checked_at": "2026-03-08T10:06:19.932Z"
-}

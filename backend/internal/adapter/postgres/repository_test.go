@@ -161,3 +161,114 @@ func TestJobRepository_GetByID_Found(t *testing.T) {
 		t.Errorf("GetByID: got %+v", got)
 	}
 }
+
+func TestJobRepository_GetByID_ExpiredFiltered(t *testing.T) {
+	pool := setupTestDB(t)
+	repo := NewJobRepository(pool)
+	ctx := context.Background()
+
+	job := &domain.Job{
+		Source:    "kwork",
+		URL:       "https://kwork.ru/projects/getbyid-expired-" + time.Now().Format("20060102150405") + "/view",
+		Title:     "Expired GetByID Test",
+		RawHTML:   "<html>expired</html>",
+		CreatedAt: time.Now(),
+	}
+	id, err := repo.Save(ctx, job)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE jobs SET status = 'expired' WHERE id = $1`, id); err != nil {
+		t.Fatalf("expire job: %v", err)
+	}
+
+	got, err := repo.GetByID(ctx, id)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("GetByID: want nil for expired job, got %+v", got)
+	}
+}
+
+func TestJobRepository_GetByIDs_FiltersExpired(t *testing.T) {
+	pool := setupTestDB(t)
+	repo := NewJobRepository(pool)
+	ctx := context.Background()
+
+	activeID, err := repo.Save(ctx, &domain.Job{
+		Source:    "kwork",
+		URL:       "https://kwork.ru/projects/getbyids-active-" + time.Now().Format("20060102150405") + "/view",
+		Title:     "Active GetByIDs Test",
+		RawHTML:   "<html>active</html>",
+		CreatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Save active: %v", err)
+	}
+	expiredID, err := repo.Save(ctx, &domain.Job{
+		Source:    "kwork",
+		URL:       "https://kwork.ru/projects/getbyids-expired-" + time.Now().Add(time.Second).Format("20060102150405") + "/view",
+		Title:     "Expired GetByIDs Test",
+		RawHTML:   "<html>expired</html>",
+		CreatedAt: time.Now(),
+	})
+	if err != nil {
+		t.Fatalf("Save expired: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE jobs SET status = 'expired' WHERE id = $1`, expiredID); err != nil {
+		t.Fatalf("expire job: %v", err)
+	}
+
+	got, err := repo.GetByIDs(ctx, []int64{activeID, expiredID})
+	if err != nil {
+		t.Fatalf("GetByIDs: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("GetByIDs len = %d, want 1", len(got))
+	}
+	if got[activeID] == nil {
+		t.Fatalf("GetByIDs: active job %d missing", activeID)
+	}
+	if _, ok := got[expiredID]; ok {
+		t.Fatalf("GetByIDs: expired job %d must be filtered", expiredID)
+	}
+}
+
+func TestJobRepository_TouchSeenAt_ReactivatesExpiredJob(t *testing.T) {
+	pool := setupTestDB(t)
+	repo := NewJobRepository(pool)
+	ctx := context.Background()
+
+	url := "https://kwork.ru/projects/reactivate-" + time.Now().Format("20060102150405") + "/view"
+	job := &domain.Job{
+		Source:    "kwork",
+		URL:       url,
+		Title:     "Reactivate Test",
+		RawHTML:   "<html>expired</html>",
+		CreatedAt: time.Now(),
+	}
+	if _, err := repo.Save(ctx, job); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `
+		UPDATE jobs
+		SET status = 'expired',
+		    last_seen_at = NOW() - INTERVAL '20 days'
+		WHERE url = $1
+	`, url); err != nil {
+		t.Fatalf("prepare expired job: %v", err)
+	}
+
+	if err := repo.TouchSeenAt(ctx, url); err != nil {
+		t.Fatalf("TouchSeenAt: %v", err)
+	}
+
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM jobs WHERE url = $1`, url).Scan(&status); err != nil {
+		t.Fatalf("QueryRow: %v", err)
+	}
+	if status != "active" {
+		t.Fatalf("status = %q, want active", status)
+	}
+}

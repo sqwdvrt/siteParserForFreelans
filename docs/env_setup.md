@@ -10,12 +10,26 @@
 | **LOG_LEVEL** | Уровень логов telegram-bot (`DEBUG`, `INFO`, `WARNING`, `ERROR`), по умолчанию `INFO` |
 | **DATABASE_URL** | PostgreSQL URL. Локально: `...?sslmode=disable`. В production: только `sslmode=require|verify-ca|verify-full` |
 | **DATABASE_MIGRATE_URL** | Отдельный PostgreSQL URL только для миграций. Нужен в production, если `DATABASE_URL` указывает на transaction-pooler, а миграции требуют session/advisory locks |
+| **PG_POOL_MAX_CONNS / PG_POOL_MIN_CONNS / PG_POOL_ACQUIRE_TIMEOUT** | Тюнинг postgres pool. В текущем проектном `.env` используются `10 / 1 / 15s` |
 | **POSTGRES_PASSWORD** | Сильный пароль PostgreSQL (обязателен; в `.env.example` только шаблон) |
 | **REDIS_URL** | Redis URL. Локально: `redis://localhost:6379/0`. В production: только `rediss://...` + пароль |
 | **API_URL** | URL Backend API. Локально: `http://localhost:8080`. В production (telegram-bot): только `https://` |
-| **OLLAMA_URL** | URL Ollama для AI classifier. По умолчанию `http://ollama:11434` (docker-compose service `ollama`) |
-| **OLLAMA_MODEL** | Модель Ollama для классификации. По умолчанию `llama3.2:3b-instruct-q4_K_M` |
-| **OLLAMA_TIMEOUT_SEC** | Таймаут запроса к Ollama в секундах. По умолчанию `30` |
+| **BROWSER_SERVICE_URL** | URL browser render service для crawler. В текущем проектном `.env` используется `http://browser-service:8090` |
+| **LLM_PROVIDER** | Провайдер actor для `ai-ac-consumer`: `ollama` или `gemini`. Переменная обязательна для этого процесса |
+| **GEMINI_API_KEY** | Ключ Gemini API. Обязателен при `LLM_PROVIDER=gemini` |
+| **GEMINI_MODEL / GEMINI_ACTOR_MODEL** | Базовая и role-specific Gemini модель actor. По умолчанию `gemini-2.0-flash` |
+| **ACTOR_GEMINI_TIMEOUT_SEC** | Таймаут actor-запроса к Gemini. По умолчанию `30` |
+| **OLLAMA_URL** | URL Ollama для actor при `LLM_PROVIDER=ollama`. По умолчанию `http://ollama:11434` |
+| **ACTOR_OLLAMA_MODEL** | Модель Ollama для batch explanations. По умолчанию `llama3.2:3b-instruct-q4_K_M` |
+| **ACTOR_OLLAMA_TIMEOUT_SEC** | Таймаут actor-запроса к Ollama. По умолчанию `45` |
+| **OLLAMA_REQUIRED** | Если `1`, `ai-ac-consumer` завершится при недоступном Ollama. По умолчанию `0` в dev и `1` в production |
+| **EMBEDDING_MODEL / RERANK_MODEL** | Модели embedding и rerank. По умолчанию `all-MiniLM-L6-v2` и `BAAI/bge-reranker-base` |
+| **EMBEDDING_MODELS_DIR / RERANK_MODELS_DIR** | Каталоги с локально предзагруженными моделями. По умолчанию `/opt/models` |
+| **EMBEDDING_REQUIRE_LOCAL / RERANK_REQUIRE_LOCAL** | В текущем проектном `.env` `EMBEDDING_REQUIRE_LOCAL=0`; для `RERANK_REQUIRE_LOCAL` unset-значение наследует `EMBEDDING_REQUIRE_LOCAL` |
+| **AI_WARMUP_ENABLED** | В текущем проектном `.env` `0`, чтобы уменьшить peak RAM на старте embedding consumers |
+| **SIMILARITY_THRESHOLD** | В текущем проектном `.env` tuned значение `0.35` для `ai-service`/`ai-user-rematch` |
+| **AI_USER_REMATCH_HEALTH_PORT** | Внутренний health-port `ai-user-rematch`. По умолчанию `8092` |
+| **AI_AC_BATCH_POP_TIMEOUT_SEC / AC_LEASE_TIMEOUT_SEC / AC_PENDING_RETENTION_DAYS / AC_PENDING_CLEANUP_INTERVAL_SEC / AC_PENDING_METRICS_REFRESH_SEC** | Настройки BRPOP/lease/cleanup/metrics для `pending_ac_jobs` в `ai-ac-consumer` |
 | **API_ADDR** | Порт, на котором слушает API. По умолчанию: `:8080` |
 | **API_TLS_CERT_FILE / API_TLS_KEY_FILE** | TLS-сертификат и ключ API. Обязательны для backend API в `APP_ENV=production` |
 | **API_AUTH_TOKEN** | Секрет для Bearer-auth backend API (должен совпадать у backend и telegram-bot) |

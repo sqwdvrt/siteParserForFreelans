@@ -45,6 +45,8 @@ logger = logging.getLogger(__name__)
 
 READY_FILE_ENV = "AI_READY_FILE"
 DEFAULT_READY_FILE = "/tmp/ai-user-rematch-ready"
+HEALTH_PORT_ENV = "AI_USER_REMATCH_HEALTH_PORT"
+LEGACY_HEALTH_PORT_ENV = "AI_HEALTH_PORT"
 SHUTDOWN_GRACE_SEC_ENV = "AI_SHUTDOWN_GRACE_SEC"
 DEFAULT_SHUTDOWN_GRACE_SEC = 20.0
 POP_TIMEOUT_SEC_ENV = "AI_USER_REMATCH_POP_TIMEOUT_SEC"
@@ -112,6 +114,19 @@ def _pop_timeout_sec() -> int:
             DEFAULT_POP_TIMEOUT_SEC,
         )
         return DEFAULT_POP_TIMEOUT_SEC
+    return value
+
+
+def _health_port() -> int:
+    raw = os.getenv(HEALTH_PORT_ENV, os.getenv(LEGACY_HEALTH_PORT_ENV, "8092"))
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("invalid %s=%r, fallback to 8092", HEALTH_PORT_ENV, raw)
+        return 8092
+    if value <= 0:
+        logger.warning("non-positive %s=%r, fallback to 8092", HEALTH_PORT_ENV, raw)
+        return 8092
     return value
 
 
@@ -242,8 +257,7 @@ def main() -> None:
         feedback_repo=feedback_repo,
     )
     queue = RedisUserRematchQueueConsumer(redis_url)
-    health_port = int(os.getenv("AI_HEALTH_PORT", "8092"))
-    start_health_server(health_port)
+    start_health_server(_health_port())
     _mark_ready(ready_file)
 
     stop_event = threading.Event()

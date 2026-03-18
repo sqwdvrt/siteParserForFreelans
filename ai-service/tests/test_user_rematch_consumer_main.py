@@ -60,6 +60,17 @@ def test_main_caps_pop_timeout_to_shutdown_grace(monkeypatch, tmp_path: Path) ->
     assert seen_timeout == [19]
 
 
+def test_health_port_prefers_documented_env_and_supports_legacy_alias(monkeypatch) -> None:
+    module = _load_user_rematch_consumer_main_module()
+
+    monkeypatch.setenv(module.HEALTH_PORT_ENV, "9123")
+    monkeypatch.setenv(module.LEGACY_HEALTH_PORT_ENV, "9999")
+    assert module._health_port() == 9123
+
+    monkeypatch.delenv(module.HEALTH_PORT_ENV, raising=False)
+    assert module._health_port() == 9999
+
+
 def test_main_rejects_missing_redis_url_in_production(monkeypatch, tmp_path: Path) -> None:
     module = _load_user_rematch_consumer_main_module()
 

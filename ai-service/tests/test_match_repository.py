@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 import pytest
 
@@ -20,8 +21,24 @@ def repo() -> PostgresMatchRepository:
 
 @pytest.fixture
 def job_id() -> int:
-    """Тестовый job_id (не в notifications)."""
-    return 999999
+    """Тестовый active job_id."""
+    import psycopg2
+
+    dsn = os.environ["DATABASE_URL"]
+    with psycopg2.connect(dsn) as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO jobs (source, url, title, raw_html, status)
+                VALUES ('kwork', %s, 'Match Job', '<p>x</p>', 'active')
+                ON CONFLICT (url) DO UPDATE SET status = EXCLUDED.status
+                RETURNING id
+                """,
+                (f"https://kwork.ru/test-job-{time.time_ns()}",),
+            )
+            conn.commit()
+            (jid,) = cur.fetchone()
+    return jid
 
 
 def test_find_users_for_job_empty(repo: PostgresMatchRepository, job_id: int) -> None:
@@ -154,3 +171,135 @@ def test_ordering_by_score_desc(
     )
     scores = [c.match_score for c in result]
     assert scores == sorted(scores, reverse=True)
+
+
+def test_find_users_for_job_excludes_expired_job(repo: PostgresMatchRepository) -> None:
+    import psycopg2
+    from pgvector.psycopg2 import register_vector
+
+    dsn = os.environ["DATABASE_URL"]
+    with psycopg2.connect(dsn) as conn:
+        register_vector(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO jobs (source, url, title, raw_html, status)
+                VALUES ('kwork', %s, 'Expired', '<p>x</p>', 'expired')
+                RETURNING id
+                """,
+                (f"https://kwork.ru/expired-{time.time_ns()}",),
+            )
+            (jid,) = cur.fetchone()
+            cur.execute(
+                """
+                INSERT INTO users (telegram_id, embedding)
+                VALUES (888777, %s)
+                ON CONFLICT (telegram_id) DO UPDATE SET embedding = EXCLUDED.embedding
+                RETURNING id
+                """,
+                ([0.3] * 384,),
+            )
+            conn.commit()
+
+    result = repo.find_users_for_job([0.3] * 384, jid, threshold=0.5)
+    assert result == []
+
+
+def test_find_jobs_for_user_excludes_expired_jobs(repo: PostgresMatchRepository) -> None:
+    import psycopg2
+    from pgvector.psycopg2 import register_vector
+
+    dsn = os.environ["DATABASE_URL"]
+    with psycopg2.connect(dsn) as conn:
+        register_vector(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO jobs (source, url, title, raw_html, status)
+                VALUES ('kwork', %s, 'Expired', '<p>x</p>', 'expired')
+                RETURNING id
+                """,
+                (f"https://kwork.ru/expired-match-{time.time_ns()}",),
+            )
+            (jid,) = cur.fetchone()
+            cur.execute(
+                """
+                INSERT INTO job_embeddings (job_id, embedding)
+                VALUES (%s, %s)
+                ON CONFLICT (job_id) DO UPDATE SET embedding = EXCLUDED.embedding
+                """,
+                (jid, [0.4] * 384),
+            )
+            conn.commit()
+
+    result = repo.find_jobs_for_user([0.4] * 384, user_id=42, threshold=0.5)
+    result_job_ids = [c.job_id for c in result]
+    assert jid not in result_job_ids
+
+
+def test_find_users_for_job_includes_stale_active_job_by_default(repo: PostgresMatchRepository) -> None:
+    import psycopg2
+    from pgvector.psycopg2 import register_vector
+
+    dsn = os.environ["DATABASE_URL"]
+    with psycopg2.connect(dsn) as conn:
+        register_vector(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO jobs (source, url, title, raw_html, status, created_at)
+                VALUES ('kwork', %s, 'Stale Active', '<p>x</p>', 'active', NOW() - INTERVAL '3 days')
+                RETURNING id
+                """,
+                (f"https://kwork.ru/stale-active-{time.time_ns()}",),
+            )
+            (jid,) = cur.fetchone()
+            cur.execute(
+                """
+                INSERT INTO users (telegram_id, embedding)
+                VALUES (888778, %s)
+                ON CONFLICT (telegram_id) DO UPDATE SET embedding = EXCLUDED.embedding
+                RETURNING id
+                """,
+                ([0.5] * 384,),
+            )
+            (uid,) = cur.fetchone()
+            conn.commit()
+
+    result = repo.find_users_for_job([0.5] * 384, jid, threshold=0.5)
+    assert any(candidate.user_id == uid for candidate in result)
+
+
+def test_find_users_for_job_excludes_stale_active_job_when_age_gate_enabled(
+    repo: PostgresMatchRepository,
+) -> None:
+    import psycopg2
+    from pgvector.psycopg2 import register_vector
+
+    dsn = os.environ["DATABASE_URL"]
+    with psycopg2.connect(dsn) as conn:
+        register_vector(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO jobs (source, url, title, raw_html, status, created_at)
+                VALUES ('kwork', %s, 'Stale Active', '<p>x</p>', 'active', NOW() - INTERVAL '3 days')
+                RETURNING id
+                """,
+                (f"https://kwork.ru/stale-active-age-gate-{time.time_ns()}",),
+            )
+            (jid,) = cur.fetchone()
+            cur.execute(
+                """
+                INSERT INTO users (telegram_id, embedding)
+                VALUES (888779, %s)
+                ON CONFLICT (telegram_id) DO UPDATE SET embedding = EXCLUDED.embedding
+                RETURNING id
+                """,
+                ([0.6] * 384,),
+            )
+            (uid,) = cur.fetchone()
+            conn.commit()
+
+    result = repo.find_users_for_job([0.6] * 384, jid, threshold=0.5, max_age_days=2)
+    assert uid not in [candidate.user_id for candidate in result]

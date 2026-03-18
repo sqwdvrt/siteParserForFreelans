@@ -5,7 +5,7 @@
     "dockerfilePath": "Dockerfile"
   },
   "deploy": {
-    "startCommand": "sh -lc 'case \"${AI_ROLE:-consumer}\" in consumer) AI_METRICS_BIND=0.0.0.0 AI_CONSUMER_METRICS_PORT=${PORT} exec /opt/venv/bin/python -u cmd/consumer/main.py ;; user_embed) AI_METRICS_BIND=0.0.0.0 AI_USER_EMBED_METRICS_PORT=${PORT} exec /opt/venv/bin/python -u cmd/user_embed_consumer/main.py ;; ac) AI_METRICS_BIND=0.0.0.0 AI_AC_CONSUMER_METRICS_PORT=${PORT} exec /opt/venv/bin/python -u cmd/ac_consumer/main.py ;; user_rematch) AI_HEALTH_PORT=${PORT} exec /opt/venv/bin/python -u cmd/user_rematch_consumer/main.py ;; *) echo \"unknown AI_ROLE=${AI_ROLE}\" >&2; exit 1 ;; esac'",
+    "startCommand": "sh -lc 'case \"${AI_ROLE:-consumer}\" in consumer) AI_METRICS_BIND=0.0.0.0 AI_CONSUMER_METRICS_PORT=${PORT} exec /opt/venv/bin/python -u cmd/consumer/main.py ;; user_embed) AI_METRICS_BIND=0.0.0.0 AI_USER_EMBED_METRICS_PORT=${PORT} exec /opt/venv/bin/python -u cmd/user_embed_consumer/main.py ;; ac) AI_METRICS_BIND=0.0.0.0 AI_AC_CONSUMER_METRICS_PORT=${PORT} exec /opt/venv/bin/python -u cmd/ac_consumer/main.py ;; user_rematch) AI_USER_REMATCH_HEALTH_PORT=${PORT} exec /opt/venv/bin/python -u cmd/user_rematch_consumer/main.py ;; *) echo \"unknown AI_ROLE=${AI_ROLE}\" >&2; exit 1 ;; esac'",
     "healthcheckPath": "/metrics",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 3
