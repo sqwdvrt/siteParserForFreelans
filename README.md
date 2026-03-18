@@ -196,9 +196,17 @@ cp .env.production.example .env.production
 # Отредактировать .env.production: DATABASE_URL (sslmode=require), REDIS_URL (rediss://), API_URL (https://),
 # API_TLS_CERT_HOST_PATH/API_TLS_KEY_HOST_PATH и секреты.
 
-# 2. Запуск production-профиля
+# 2a. VPS/self-hosted запуск с infra overlay (внешние Postgres/Redis в сети infra_default)
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml \
+  -f docker-compose.ssl.yml \
+  up -d --build
+
+# 2b. Альтернатива без overlay: managed Postgres/Redis доступны напрямую по TLS
 docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
 ```
+
+Для VPS-схемы из `docs/vps_deploy.md` используйте вариант `2a` с `docker-compose.ssl.yml`.
 
 `ai-user-embed`, `ai-user-rematch` и `ai-ac-consumer` входят в production compose по умолчанию (без отдельного profile).
 

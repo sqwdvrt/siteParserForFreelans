@@ -232,8 +232,8 @@ jobs:
             git checkout --detach "${{ needs.resolve-target.outputs.deploy_sha }}"
             git clean -ffdx -e .env.production
             bash ./scripts/validate-env-production.sh .env.production
-            docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
-            docker compose --env-file .env.production -f docker-compose.prod.yml ps
+            docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml up -d --build
+            docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml ps
 
       - name: Staging health check
         env:
