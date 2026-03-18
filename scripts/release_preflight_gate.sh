@@ -42,11 +42,15 @@ PY_BIN="$(resolve_python_bin)"
 
 run_step "Bash syntax for release smoke scripts" \
   bash -n \
+  ./scripts/check_migration_filenames.sh \
   ./scripts/lib/release_smoke_payloads.sh \
   ./scripts/post_deploy_production_gate.sh \
   ./scripts/staging_smoke_e2e_gate.sh \
   ./scripts/e2e_test.sh \
   ./scripts/validate-env-production.sh
+
+run_step "Migration filename validation" \
+  ./scripts/check_migration_filenames.sh
 
 run_step "Production docker compose validation" \
   docker compose --env-file .env.production.example -f docker-compose.prod.yml config -q

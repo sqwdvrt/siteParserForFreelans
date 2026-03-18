@@ -36,11 +36,22 @@ if [[ ${#migration_files[@]} -eq 0 ]]; then
   exit 1
 fi
 
+LIST_MIGRATIONS_SCRIPT="${ROOT_DIR}/backend/scripts/list-migrations.sh"
+if [[ ! -f "$LIST_MIGRATIONS_SCRIPT" ]]; then
+  echo "ERROR: migration lister script was not found: $LIST_MIGRATIONS_SCRIPT"
+  exit 1
+fi
+
 echo "Applying migrations..."
-for migration in "${migration_files[@]}"; do
+MIGRATION_LIST_FILE="$(mktemp)"
+trap 'rm -f "$MIGRATION_LIST_FILE"' EXIT
+sh "$LIST_MIGRATIONS_SCRIPT" "$MIGRATIONS_DIR" > "$MIGRATION_LIST_FILE"
+
+while IFS= read -r migration; do
+  [[ -n "$migration" ]] || continue
   echo " - $migration"
   psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$migration"
-done
+done < "$MIGRATION_LIST_FILE"
 
 echo "Verifying tables..."
 psql "$DB_URL" -c "\dt"

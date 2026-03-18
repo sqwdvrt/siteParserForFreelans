@@ -393,16 +393,25 @@ jobs:
       - name: Install AI dependencies
         run: python -m pip install -r ai-service/requirements.txt
 
+      - name: Check migration filenames
+        run: ./scripts/check_migration_filenames.sh
+
       - name: Apply database migrations
         run: |
           python - <<'PY'
           import os
+          import subprocess
           import time
-          from pathlib import Path
           import psycopg2
 
           dsn = os.environ["DATABASE_URL"]
-          migration_paths = sorted(Path("backend/migrations").glob("*.sql"))
+          raw_paths = subprocess.run(
+              ["sh", "backend/scripts/list-migrations.sh", "backend/migrations"],
+              check=True,
+              capture_output=True,
+              text=True,
+          ).stdout.splitlines()
+          migration_paths = [path for path in raw_paths if path]
           if not migration_paths:
               raise SystemExit("failed to apply migrations: no *.sql files found in backend/migrations")
 
@@ -413,7 +422,8 @@ jobs:
                       with conn.cursor() as cur:
                           for migration_path in migration_paths:
                               print(f"Applying migration: {migration_path}")
-                              sql = migration_path.read_text(encoding="utf-8")
+                              with open(migration_path, encoding="utf-8") as fh:
+                                  sql = fh.read()
                               cur.execute(sql)
                       conn.commit()
                   break

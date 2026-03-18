@@ -81,6 +81,21 @@ resolve_migrations_dir() {
   return 1
 }
 
+list_migrations() {
+  migrations_dir="$1"
+  if [ -f ./scripts/list-migrations.sh ]; then
+    sh ./scripts/list-migrations.sh "$migrations_dir"
+    return 0
+  fi
+  if [ -f backend/scripts/list-migrations.sh ]; then
+    sh backend/scripts/list-migrations.sh "$migrations_dir"
+    return 0
+  fi
+
+  echo "migration lister script not found"
+  return 1
+}
+
 if [ -z "${API_ADDR:-}" ] && [ -n "${PORT:-}" ]; then
   export API_ADDR=":${PORT}"
   echo "API_ADDR is not set; using PORT=${PORT}"
@@ -101,12 +116,15 @@ if should_run_migrations; then
   fi
 
   echo "Running migrations (attempts=${MIGRATION_RETRY_ATTEMPTS}, delay=${MIGRATION_RETRY_DELAY_SEC}s)..."
-  for f in $(ls "$_RESOLVED_MIGRATIONS_DIR"/*.sql | sort); do
-    [ -f "$f" ] || continue
+  _MIGRATION_LIST_FILE="$(mktemp)"
+  list_migrations "$_RESOLVED_MIGRATIONS_DIR" > "$_MIGRATION_LIST_FILE"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
     echo "  Applying $(basename "$f")..."
     # Переопределяем DATABASE_URL для psql внутри функции
     DATABASE_URL="$_MIGRATE_URL" run_migration_with_retry "$f"
-  done
+  done < "$_MIGRATION_LIST_FILE"
+  rm -f "$_MIGRATION_LIST_FILE"
   echo "Migrations complete."
 fi
 

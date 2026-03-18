@@ -468,7 +468,6 @@ trace_id       TEXT
 | `015_...` | pending_sent_at для дайджеста |
 | `016_...` | why_it_fits в notifications |
 | `017_notifications_pending_partial_index.sql` | Частичный индекс pending-уведомлений для retry/digest путей |
-| `017_rerank_score.sql` | Колонка `rerank_score` в `pending_ac_jobs` |
 | `018_hnsw_index_params.sql` | Явные HNSW-параметры индексов для `job_embeddings` и `users.embedding` |
 | `019_pending_embed_dispatch.sql` | Outbox-таблицы `pending_user_embeds`/`pending_job_embeds` для deferred Redis dispatch |
 | `020_pending_ac_jobs_score_components.sql` | Компоненты скоринга в `pending_ac_jobs` (`feedback_bonus`, `preference_multiplier`) |
@@ -476,9 +475,10 @@ trace_id       TEXT
 | `022_product_events.sql` | Таблица `product_events` для продуктовой SQL-аналитики |
 | `023_notifications_drop_legacy_sent_index.sql` | Удаление устаревшего индекса `notifications(user_id, sent_at)` и фиксация status-aware индекса `(user_id, status, sent_at DESC)` |
 | `024_jobs_freshness.sql` | Колонки `status` (`active`/`expired`) и `last_seen_at` в `jobs` для экспирации закрытых проектов |
+| `025_rerank_score.sql` | Колонка `rerank_score` в `pending_ac_jobs` |
 
 **Применение:** `make migrate` (запускает `backend-migrate` контейнер с advisory lock).
-Нюанс: в репозитории исторически есть два файла с префиксом `017_*`; это ожидаемо для текущего набора миграций.
+Порядок выполнения задаётся явно через `backend/migrations/manifest.txt`; раннеры больше не полагаются на простую сортировку `*.sql`.
 
 ---
 
