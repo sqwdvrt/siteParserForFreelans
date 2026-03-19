@@ -55,7 +55,7 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
 
       - name: Run actionlint
-        uses: docker://rhysd/actionlint:latest
+        uses: docker://rhysd/actionlint:1.7.8
 
   compose-validate:
     runs-on: ubuntu-latest
@@ -64,6 +64,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
+
+      - name: Materialize example env files for compose validation
+        run: |
+          cp .env.example .env
+          cp .env.production.example .env.production
 
       - name: Validate docker-compose.yml
         run: docker compose --env-file .env.example -f docker-compose.yml --profile workers --profile ai-user-embed --profile ai-user-rematch config -q
@@ -206,9 +211,9 @@ jobs:
           cache-dependency-path: backend/go.sum
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          version: v2.11.0
           working-directory: backend
 
   python-lint:
@@ -328,13 +333,13 @@ jobs:
 
       - name: Install Python coverage dependencies
         run: |
-          python -m pip install -r ai-service/requirements.txt
-          python -m pip install -e "./telegram-bot[dev]"
-          python -m pip install "pytest>=7.0" "pytest-cov>=4.0" "python-dotenv>=1.0"
+          python3.11 -m pip install -r ai-service/requirements.txt
+          python3.11 -m pip install -e "./telegram-bot[dev]"
+          python3.11 -m pip install "pytest>=7.0" "pytest-cov>=4.0" "python-dotenv>=1.0"
 
       - name: Run coverage gate
         env:
-          PYTHON_BIN: python
+          PYTHON_BIN: python3.11
         run: ./scripts/check_coverage.sh
 
   integration:
@@ -397,42 +402,10 @@ jobs:
         run: ./scripts/check_migration_filenames.sh
 
       - name: Apply database migrations
-        run: |
-          python - <<'PY'
-          import os
-          import subprocess
-          import time
-          import psycopg2
-
-          dsn = os.environ["DATABASE_URL"]
-          raw_paths = subprocess.run(
-              ["sh", "backend/scripts/list-migrations.sh", "backend/migrations"],
-              check=True,
-              capture_output=True,
-              text=True,
-          ).stdout.splitlines()
-          migration_paths = [path for path in raw_paths if path]
-          if not migration_paths:
-              raise SystemExit("failed to apply migrations: no *.sql files found in backend/migrations")
-
-          last_err = None
-          for _ in range(60):
-              try:
-                  with psycopg2.connect(dsn) as conn:
-                      with conn.cursor() as cur:
-                          for migration_path in migration_paths:
-                              print(f"Applying migration: {migration_path}")
-                              with open(migration_path, encoding="utf-8") as fh:
-                                  sql = fh.read()
-                              cur.execute(sql)
-                      conn.commit()
-                  break
-              except Exception as e:
-                  last_err = e
-                  time.sleep(2)
-          else:
-              raise SystemExit(f"failed to apply migrations: {last_err}")
-          PY
+        env:
+          MIGRATION_RETRY_ATTEMPTS: "60"
+          MIGRATION_RETRY_DELAY_SEC: "2"
+        run: bash ./scripts/apply_migrations.sh
 
       - name: Backup/restore smoke test
         run: ./scripts/backup_restore_smoke.sh
@@ -567,7 +540,8 @@ jobs:
 
   publish-gate-status:
     runs-on: ubuntu-latest
-    if: ${{ always() }}
+    # Fork PRs get a read-only GITHUB_TOKEN, so publishing commit statuses would fail.
+    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true) }}
     needs:
       - resolve-target
       - workflow-lint

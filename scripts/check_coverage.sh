@@ -35,11 +35,10 @@ choose_python_cmd() {
         echo "${PYTHON_BIN}"
         return 0
       fi
-      echo "ERROR: PYTHON_BIN=${PYTHON_BIN} does not have pytest-cov" >&2
-      return 1
+      echo "WARN: PYTHON_BIN=${PYTHON_BIN} does not have pytest-cov; trying fallback interpreters" >&2
+    else
+      echo "WARN: PYTHON_BIN=${PYTHON_BIN} not found; trying fallback interpreters" >&2
     fi
-    echo "ERROR: PYTHON_BIN=${PYTHON_BIN} not found" >&2
-    return 1
   fi
 
   if [[ -x ".venv/bin/python" ]] && has_pytest_cov ".venv/bin/python"; then

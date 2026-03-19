@@ -1,6 +1,6 @@
 # AI Service: consumer (ai-process), user_embed_consumer
 # Build stage: install runtime deps into venv (excluding dev/test deps).
-FROM python:3.11-slim@sha256:0b23cfb7425d065008b778022a17b1551c82f8b4866ee5a7a200084b7e2eafbf AS builder
+FROM python:3.11-slim@sha256:6d98ca198cea726f2c86da2699594339a7b7ff08e49728797b4ed6e3b5c3b62a AS builder
 
 ARG TORCH_VERSION=2.8.0
 ARG EMBEDDING_MODEL=all-MiniLM-L6-v2
@@ -20,6 +20,13 @@ COPY requirements.runtime.lock .
 # Pin torch from CPU index explicitly to avoid pulling CUDA wheels.
 RUN "${VENV_PATH}/bin/pip" install --index-url https://download.pytorch.org/whl/cpu "torch==${TORCH_VERSION}" && \
     "${VENV_PATH}/bin/pip" install -r requirements.runtime.lock
+
+# Some upstream wheels bundle third-party audit SBOMs under *.dist-info/sboms/.
+# Trivy treats those embedded SBOMs as additional package inventories, which
+# creates false HIGH findings for tooling that is not actually installed at
+# runtime (for example wheel/jaraco.context from auditwheel metadata). They are
+# not used by the service at runtime, so drop them from the shipped venv.
+RUN find "${VENV_PATH}/lib" -type d -path '*/site-packages/*.dist-info/sboms' -prune -exec rm -rf {} +
 
 # Preload default embedding and rerank models into image to avoid runtime cold-start downloads.
 # Use isolated HF cache in build step to avoid stale lock waits across interrupted builds.
@@ -51,7 +58,7 @@ print(f"Preloaded rerank model '{rerank_name}' to '{rerank_dst}'")
 PY
 
 # Runtime stage: copy prebuilt venv with runtime deps only.
-FROM python:3.11-slim@sha256:0b23cfb7425d065008b778022a17b1551c82f8b4866ee5a7a200084b7e2eafbf
+FROM python:3.11-slim@sha256:6d98ca198cea726f2c86da2699594339a7b7ff08e49728797b4ed6e3b5c3b62a
 
 ENV VENV_PATH=/opt/venv
 ENV PATH="${VENV_PATH}/bin:${PATH}"

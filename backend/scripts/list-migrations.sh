@@ -52,6 +52,7 @@ record_migration_prefix() {
 
 if [ -f "$MANIFEST_FILE" ]; then
   listed_entries="$(mktemp)"
+  listed_entries_sorted="$(mktemp)"
   discovered_entries="$(mktemp)"
   ordered_paths="$(mktemp)"
   SEEN_PREFIXES=""
@@ -64,17 +65,17 @@ if [ -f "$MANIFEST_FILE" ]; then
     esac
 
     if ! validate_migration_name "$entry"; then
-      cleanup_files "$listed_entries" "$discovered_entries"
+      cleanup_files "$listed_entries" "$listed_entries_sorted" "$discovered_entries" "$ordered_paths"
       exit 1
     fi
     if ! record_migration_prefix "$entry"; then
-      cleanup_files "$listed_entries" "$discovered_entries"
+      cleanup_files "$listed_entries" "$listed_entries_sorted" "$discovered_entries" "$ordered_paths"
       exit 1
     fi
 
     migration_path="$MIGRATIONS_DIR/$entry"
     if [ ! -f "$migration_path" ]; then
-      cleanup_files "$listed_entries" "$discovered_entries" "$ordered_paths"
+      cleanup_files "$listed_entries" "$listed_entries_sorted" "$discovered_entries" "$ordered_paths"
       echo "manifest references missing migration: $migration_path" >&2
       exit 1
     fi
@@ -85,21 +86,22 @@ if [ -f "$MANIFEST_FILE" ]; then
 
   duplicate_entries="$(sort "$listed_entries" | uniq -d || true)"
   if [ -n "$duplicate_entries" ]; then
-    cleanup_files "$listed_entries" "$discovered_entries" "$ordered_paths"
+    cleanup_files "$listed_entries" "$listed_entries_sorted" "$discovered_entries" "$ordered_paths"
     echo "duplicate manifest entries in $MANIFEST_FILE:" >&2
     printf '%s\n' "$duplicate_entries" >&2
     exit 1
   fi
 
+  sort "$listed_entries" > "$listed_entries_sorted"
   find "$MIGRATIONS_DIR" -maxdepth 1 -type f -name '*.sql' -exec basename {} \; | sort > "$discovered_entries"
-  if ! diff -u "$listed_entries" "$discovered_entries" >/dev/null; then
-    cleanup_files "$listed_entries" "$discovered_entries" "$ordered_paths"
+  if ! diff -u "$listed_entries_sorted" "$discovered_entries" >/dev/null; then
+    cleanup_files "$listed_entries" "$listed_entries_sorted" "$discovered_entries" "$ordered_paths"
     echo "manifest does not match SQL files in $MIGRATIONS_DIR" >&2
     exit 1
   fi
 
   cat "$ordered_paths"
-  cleanup_files "$listed_entries" "$discovered_entries" "$ordered_paths"
+  cleanup_files "$listed_entries" "$listed_entries_sorted" "$discovered_entries" "$ordered_paths"
   exit 0
 fi
 

@@ -54,40 +54,10 @@ jobs:
         run: ./scripts/check_migration_filenames.sh
 
       - name: Apply all migrations
-        run: |
-          python - <<'PY'
-          import os, time, sys, subprocess
-          import psycopg2
-
-          dsn = os.environ["DATABASE_URL"]
-          raw_paths = subprocess.run(
-              ["sh", "backend/scripts/list-migrations.sh", "backend/migrations"],
-              check=True,
-              capture_output=True,
-              text=True,
-          ).stdout.splitlines()
-          migrations = [path for path in raw_paths if path]
-          if not migrations:
-              sys.exit("no migrations found")
-
-          last_err = None
-          for _ in range(30):
-              try:
-                  with psycopg2.connect(dsn) as conn:
-                      with conn.cursor() as cur:
-                          for m in migrations:
-                              print(f"applying {os.path.basename(m)}")
-                              with open(m, encoding="utf-8") as fh:
-                                  cur.execute(fh.read())
-                      conn.commit()
-                  break
-              except Exception as e:
-                  last_err = e
-                  time.sleep(2)
-          else:
-              sys.exit(f"migrations failed: {last_err}")
-          print("migrations ok")
-          PY
+        env:
+          MIGRATION_RETRY_ATTEMPTS: "30"
+          MIGRATION_RETRY_DELAY_SEC: "2"
+        run: bash ./scripts/apply_migrations.sh
 
       - name: Insert sentinel data
         run: |

@@ -47,7 +47,9 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
-          cache-dependency-path: ai-service/requirements.txt
+          cache-dependency-path: |
+            ai-service/requirements.txt
+            telegram-bot/pyproject.toml
 
       # Install all Python deps once up front so every full_check.sh step
       # (ai tests, tg-bot tests, coverage gate, security/pip-audit) finds
@@ -55,11 +57,12 @@ jobs:
       # of pytest / pytest-cov.
       - name: Install Python dependencies
         run: |
-          python -m pip install -r ai-service/requirements.txt
-          python -m pip install "pytest>=7.0" "pytest-cov>=4.0" "python-dotenv>=1.0"
+          python3.11 -m pip install -r ai-service/requirements.txt
+          python3.11 -m pip install -e "./telegram-bot[dev]"
+          python3.11 -m pip install "pytest>=7.0" "pytest-cov>=4.0" "python-dotenv>=1.0"
 
       - name: Run make test-all
         env:
-          PYTHON_BIN: python
+          PYTHON_BIN: python3.11
           GO_TOOLCHAIN: go1.25.8
         run: make test-all

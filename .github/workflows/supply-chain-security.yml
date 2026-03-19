@@ -69,7 +69,7 @@ jobs:
           if [ -f /repo/.gitleaks.toml ]; then
             config_args=(--config /repo/.gitleaks.toml)
           fi
-          docker run --rm -v "${PWD}:/repo" zricethezav/gitleaks:latest \
+          docker run --rm -v "${PWD}:/repo" zricethezav/gitleaks:v8.30.0 \
             detect --source /repo "${config_args[@]}" --no-banner --redact \
             --report-format sarif --report-path /repo/gitleaks.sarif
           exit_code=$?
@@ -203,6 +203,9 @@ jobs:
       - name: Run Grype scan
         env:
           IMAGE_REF: local/${{ matrix.service }}:${{ github.sha }}
+          # Trivy refreshes its DB on every run; Grype's default 5-day age guard
+          # is too strict for ephemeral CI when the published DB itself is older.
+          GRYPE_DB_VALIDATE_AGE: "false"
         run: |
           set -euo pipefail
           ./.anchore-tools/bin/grype "${IMAGE_REF}" -o json > "grype-${{ matrix.service }}.json"
@@ -253,7 +256,8 @@ jobs:
 
   publish-gate-status:
     runs-on: ubuntu-latest
-    if: ${{ always() }}
+    # Fork PRs get a read-only GITHUB_TOKEN, so publishing commit statuses would fail.
+    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true) }}
     needs:
       - resolve-target
       - secret-scan

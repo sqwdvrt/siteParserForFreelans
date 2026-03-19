@@ -15,7 +15,7 @@ on:
           - staging
           - production
       ref:
-        description: "Git ref to deploy (branch/tag/SHA)"
+        description: "Git ref to deploy (branch/tag/SHA). For manual runs, required gate workflows must already be green for the target SHA."
         required: true
         default: main
 
@@ -86,6 +86,7 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const sha = process.env.DEPLOY_SHA;
+            const isManual = context.eventName === "workflow_dispatch";
             const required = ["Test Gate", "Security Baseline", "Supply Chain Security", "Monitoring Gate"];
             const maxAttempts = 90; // 30 minutes with 20s interval
             const sleepMs = 20_000;
@@ -140,6 +141,13 @@ jobs:
                 const run = latestRunByName(runs, gateName);
                 if (!run) {
                   statusReport[gateName] = "missing";
+                  if (isManual) {
+                    core.setFailed(
+                      `Missing required gate '${gateName}' for manual deploy of ${sha}. ` +
+                      `Run the gate workflows on the target ref first, then retry deploy.`
+                    );
+                    return;
+                  }
                   allCompleted = false;
                   continue;
                 }

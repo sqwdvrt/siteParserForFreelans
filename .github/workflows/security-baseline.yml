@@ -68,7 +68,7 @@ jobs:
         run: python -m pip install --upgrade pip pip-audit
 
       - name: Run pip-audit (ai-service requirements)
-        run: python -m pip_audit -r ai-service/requirements.txt
+        run: python -m pip_audit --no-deps -r ai-service/requirements.txt
 
       - name: Run baseline checks
         env:
@@ -79,7 +79,8 @@ jobs:
 
   publish-gate-status:
     runs-on: ubuntu-latest
-    if: ${{ always() }}
+    # Fork PRs get a read-only GITHUB_TOKEN, so publishing commit statuses would fail.
+    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true) }}
     needs:
       - resolve-target
       - security-baseline

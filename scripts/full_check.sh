@@ -50,7 +50,7 @@ run_actionlint() {
     return 1
   fi
 
-  docker run --rm -v "${ROOT_DIR}:/repo" -w /repo rhysd/actionlint:latest
+  docker run --rm -v "${ROOT_DIR}:/repo" -w /repo rhysd/actionlint:1.7.8
 }
 
 PY_BIN="$(resolve_python_bin)"

@@ -13,6 +13,7 @@ PY_MODE="local"
 PIP_AUDIT_REQ_PATH="ai-service/requirements.txt"
 AI_VENV_PYTHON="${ROOT_DIR}/ai-service/.venv/bin/python"
 SECURITY_BASELINE_SKIP_PIP_AUDIT="${SECURITY_BASELINE_SKIP_PIP_AUDIT:-0}"
+PIP_AUDIT_ARGS=(--no-deps -r "$PIP_AUDIT_REQ_PATH")
 
 echo "[security] Validating pinned baseline versions"
 
@@ -136,7 +137,7 @@ mkdir -p "${GO_GOMODCACHE}" "${GO_GOCACHE}"
     GOTOOLCHAIN="${GO_TOOLCHAIN}" \
     GOMODCACHE="${GO_GOMODCACHE}" \
     GOCACHE="${GO_GOCACHE}" \
-    go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+    go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
 )
 
 if [[ "$SECURITY_BASELINE_SKIP_PIP_AUDIT" == "1" ]]; then
@@ -145,18 +146,18 @@ else
   echo "[security] Running pip-audit"
   if [[ "$PY_MODE" == "docker" ]]; then
     docker run --rm --entrypoint sh siteparserforfreelans-ai-service -lc \
-      'python -m pip install --upgrade pip pip-audit >/dev/null && python -m pip_audit -r /app/requirements.txt'
+      'python -m pip install --upgrade pip pip-audit >/dev/null && python -m pip_audit --no-deps -r /app/requirements.txt'
   else
     if is_python_virtualenv "${PY_CMD[@]}"; then
       echo "[security] Detected virtualenv Python; installing pip-audit into venv (without --user)"
       PIP_DISABLE_PIP_VERSION_CHECK=1 \
         "${PY_CMD[@]}" -m pip install --upgrade pip pip-audit >/dev/null
-      "${PY_CMD[@]}" -m pip_audit -r "$PIP_AUDIT_REQ_PATH"
+      "${PY_CMD[@]}" -m pip_audit "${PIP_AUDIT_ARGS[@]}"
     else
       PIP_DISABLE_PIP_VERSION_CHECK=1 PYTHONUSERBASE="$PY_USER_BASE" HOME="$ROOT_DIR" \
         "${PY_CMD[@]}" -m pip install --upgrade --user pip pip-audit >/dev/null
       PYTHONUSERBASE="$PY_USER_BASE" HOME="$ROOT_DIR" \
-        "${PY_CMD[@]}" -m pip_audit -r "$PIP_AUDIT_REQ_PATH"
+        "${PY_CMD[@]}" -m pip_audit "${PIP_AUDIT_ARGS[@]}"
     fi
   fi
 fi
