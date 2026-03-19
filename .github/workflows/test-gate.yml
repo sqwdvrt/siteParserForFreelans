@@ -333,13 +333,13 @@ jobs:
 
       - name: Install Python coverage dependencies
         run: |
-          python3.11 -m pip install -r ai-service/requirements.txt
-          python3.11 -m pip install -e "./telegram-bot[dev]"
-          python3.11 -m pip install "pytest>=7.0" "pytest-cov>=4.0" "python-dotenv>=1.0"
+          python -m pip install -r ai-service/requirements.txt
+          python -m pip install -e "./telegram-bot[dev]"
+          python -m pip install "pytest>=7.0" "pytest-cov>=4.0" "python-dotenv>=1.0"
 
       - name: Run coverage gate
         env:
-          PYTHON_BIN: python3.11
+          PYTHON_BIN: python
         run: ./scripts/check_coverage.sh
 
   integration:
@@ -471,8 +471,8 @@ jobs:
       - name: E2E — POST /users and PUT /users/{id}/profile
         env:
           # Match the values written into .env via .env.example above.
-          API_AUTH_TOKEN: change_me_long_random_token
-          API_USER_HMAC_SECRET: change_me_different_long_random_secret
+          API_AUTH_TOKEN: B7nP3xQ9mR2tV8yL4cD6kF1hJ5sW0zUaX2
+          API_USER_HMAC_SECRET: C9vN4mB7qT2yH8kL1pR5sD3fG6jW0xZaY4
         run: |
           set -euo pipefail
 

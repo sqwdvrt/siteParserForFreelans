@@ -8,6 +8,14 @@ GO_TOOLCHAIN="${GO_TOOLCHAIN:-go1.25.8}"
 GO_GOMODCACHE="${GO_GOMODCACHE:-${ROOT_DIR}/backend/.gomodcache-${GO_TOOLCHAIN}}"
 GO_GOCACHE="${GO_GOCACHE:-${ROOT_DIR}/backend/.gocache-${GO_TOOLCHAIN}}"
 PYTHON_BIN="${PYTHON_BIN:-}"
+PREPARED_PROD_ENV=0
+
+cleanup() {
+  if [[ "${PREPARED_PROD_ENV}" == "1" ]]; then
+    rm -f "${ROOT_DIR}/.env.production"
+  fi
+}
+trap cleanup EXIT
 
 run_step() {
   local name="$1"
@@ -39,6 +47,11 @@ resolve_python_bin() {
 }
 
 PY_BIN="$(resolve_python_bin)"
+
+if [[ ! -f "${ROOT_DIR}/.env.production" ]]; then
+  cp "${ROOT_DIR}/.env.production.example" "${ROOT_DIR}/.env.production"
+  PREPARED_PROD_ENV=1
+fi
 
 run_step "Bash syntax for release smoke scripts" \
   bash -n \

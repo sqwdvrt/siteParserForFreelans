@@ -57,12 +57,12 @@ jobs:
       # of pytest / pytest-cov.
       - name: Install Python dependencies
         run: |
-          python3.11 -m pip install -r ai-service/requirements.txt
-          python3.11 -m pip install -e "./telegram-bot[dev]"
-          python3.11 -m pip install "pytest>=7.0" "pytest-cov>=4.0" "python-dotenv>=1.0"
+          python -m pip install -r ai-service/requirements.txt
+          python -m pip install -e "./telegram-bot[dev]"
+          python -m pip install "pytest>=7.0" "pytest-cov>=4.0" "python-dotenv>=1.0"
 
       - name: Run make test-all
         env:
-          PYTHON_BIN: python3.11
+          PYTHON_BIN: python
           GO_TOOLCHAIN: go1.25.8
         run: make test-all

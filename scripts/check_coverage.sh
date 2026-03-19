@@ -58,7 +58,8 @@ choose_python_cmd() {
 }
 
 has_pytest_cov() {
-  "$1" -m pytest --help 2>/dev/null | grep -q -- '--cov'
+  "$1" -c 'import importlib.util, sys; raise SystemExit(0 if importlib.util.find_spec("pytest_cov") else 1)' >/dev/null 2>&1 \
+    || "$1" -m pytest --help 2>/dev/null | grep -q -- '--cov'
 }
 
 ensure_pytest_coverage_tools() {

@@ -78,7 +78,10 @@ def test_main_enters_standby_when_webhook_is_active_for_polling_token(bot, monke
         "get_webhook_info",
         lambda *_args, **_kwargs: {"url": "https://spectacular-warmth-production.up.railway.app/webhook"},
     )
-    monkeypatch.setattr(bot, "run_polling", lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("run_polling must not be called")))
+    def _unexpected_run_polling(*_args, **_kwargs):
+        raise AssertionError("run_polling must not be called")
+
+    monkeypatch.setattr(bot, "run_polling", _unexpected_run_polling)
     monkeypatch.setattr(bot, "run_polling_standby", lambda reason, **_kwargs: called.__setitem__("standby", reason))
     bot.main()
 
