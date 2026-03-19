@@ -21,12 +21,20 @@ COPY requirements.runtime.lock .
 RUN "${VENV_PATH}/bin/pip" install --index-url https://download.pytorch.org/whl/cpu "torch==${TORCH_VERSION}" && \
     "${VENV_PATH}/bin/pip" install -r requirements.runtime.lock
 
+# `wheel` is only needed while assembling the venv and should not ship in the
+# runtime image; Trivy rightfully flags old wheel metadata if we keep it around.
+RUN "${VENV_PATH}/bin/pip" uninstall -y wheel
+
 # Some upstream wheels bundle third-party audit SBOMs under *.dist-info/sboms/.
 # Trivy treats those embedded SBOMs as additional package inventories, which
 # creates false HIGH findings for tooling that is not actually installed at
 # runtime (for example wheel/jaraco.context from auditwheel metadata). They are
 # not used by the service at runtime, so drop them from the shipped venv.
-RUN find "${VENV_PATH}/lib" -type d -path '*/site-packages/*.dist-info/sboms' -prune -exec rm -rf {} +
+RUN find "${VENV_PATH}/lib" -type d -path '*/site-packages/*.dist-info/sboms' -prune -exec rm -rf {} + && \
+    find "${VENV_PATH}/lib" -type d \( \
+      -path '*/site-packages/setuptools/_vendor/jaraco.context-*.dist-info' -o \
+      -path '*/site-packages/setuptools/_vendor/wheel-*.dist-info' \
+    \) -prune -exec rm -rf {} +
 
 # Preload default embedding and rerank models into image to avoid runtime cold-start downloads.
 # Use isolated HF cache in build step to avoid stale lock waits across interrupted builds.
@@ -72,6 +80,9 @@ COPY src ./src
 COPY cmd ./cmd
 
 RUN groupadd --system app && useradd --system --gid app --create-home --home-dir /home/app --shell /usr/sbin/nologin app && \
+    rm -rf /usr/local/lib/python3.11/site-packages/wheel-*.dist-info \
+      /usr/local/lib/python3.11/site-packages/setuptools/_vendor/jaraco.context-*.dist-info \
+      /usr/local/lib/python3.11/site-packages/setuptools/_vendor/wheel-*.dist-info && \
     mkdir -p /tmp/hf /tmp/transformers /tmp/torch /tmp/.cache && \
     chown -R app:app /app /home/app /tmp /opt/models
 

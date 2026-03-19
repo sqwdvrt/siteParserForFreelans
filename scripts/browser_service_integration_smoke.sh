@@ -51,10 +51,12 @@ fi
 HTTP_SERVER_PORT="${HTTP_SERVER_PORT:-$(pick_port)}"
 BROWSER_SERVICE_PORT="${BROWSER_SERVICE_PORT:-$(pick_port)}"
 
-echo "[browser-smoke] serving fixture from ${FIXTURE_DIR} on 127.0.0.1:${HTTP_SERVER_PORT}"
+echo "[browser-smoke] serving fixture from ${FIXTURE_DIR} on 0.0.0.0:${HTTP_SERVER_PORT}"
 (
   cd "${FIXTURE_DIR}"
-  exec python3 -m http.server "${HTTP_SERVER_PORT}" --bind 127.0.0.1
+  # The browser-service container reaches the fixture through the host-gateway
+  # mapping, so the host-side HTTP server must listen beyond loopback.
+  exec python3 -m http.server "${HTTP_SERVER_PORT}" --bind 0.0.0.0
 ) >/tmp/browser-service-fixture.log 2>&1 &
 HTTP_SERVER_PID=$!
 

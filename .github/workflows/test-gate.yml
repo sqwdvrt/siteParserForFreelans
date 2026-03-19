@@ -431,9 +431,16 @@ jobs:
           ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
 
       - name: Prepare CI env file
-        # Use .env.example values as-is: passwords are ≥16 chars and match
-        # what the security validator requires (dev mode, APP_ENV=development).
-        run: cp .env.example .env
+        # Compose e2e must not use placeholder "change_me" secrets because the
+        # backend validates them at boot and exits before /healthz goes green.
+        run: |
+          cp .env.example .env
+          printf '%s\n' \
+            'POSTGRES_PASSWORD=E2ePostgresSecret_2026' \
+            'API_AUTH_TOKEN=B7nP3xQ9mR2tV8yL4cD6kF1hJ5sW0zUaX2' \
+            'API_USER_HMAC_SECRET=C9vN4mB7qT2yH8kL1pR5sD3fG6jW0xZaY4' \
+            'ADMIN_AUTH_TOKEN=H4kL9pR2sT7vX3yN6bC1dF8gJ5mQ0wZe' \
+            >> .env
 
       - name: Start backend API stack
         # Brings up postgres → redis → backend-migrate → backend-api.

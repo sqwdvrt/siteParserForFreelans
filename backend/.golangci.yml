@@ -10,15 +10,13 @@ linters:
     - unused
     - gofmt
     - misspell
-
-linters-settings:
-  govet:
-    enable:
-      - shadow
-
-issues:
-  exclude-dirs:
-    - .gomodcache
-    - .gomodcache-local
-    - .gomodcache-docker
-    - .gocache
+  settings:
+    govet:
+      enable:
+        - shadow
+  exclusions:
+    paths:
+      - .gomodcache
+      - .gomodcache-local
+      - .gomodcache-docker
+      - .gocache

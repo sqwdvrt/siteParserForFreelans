@@ -42,7 +42,7 @@ SENTINEL_URL="https://backup-restore-smoke.local/jobs/$(date -u +%Y%m%dT%H%M%SZ)
 # Step 1: insert sentinel row into the real `jobs` table
 # ---------------------------------------------------------------------------
 echo "[backup-restore-smoke] inserting sentinel into jobs table"
-SENTINEL_ID="$(psql "$DB_URL" -tA -v ON_ERROR_STOP=1 <<SQL
+SENTINEL_ID="$(psql "$DB_URL" -X -q -tA -v ON_ERROR_STOP=1 <<SQL
 INSERT INTO jobs (source, url, title, description, raw_html)
 VALUES (
   'backup-restore-smoke',

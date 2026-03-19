@@ -203,7 +203,8 @@ def _keyword_matches(raw_keyword: str, haystack: str) -> bool:
     if not parts:
         return False
 
-    pattern = re.compile(rf"(?<!\w){r'\s+'.join(parts)}(?!\w)", re.IGNORECASE)
+    separator_pattern = r"\s+".join(parts)
+    pattern = re.compile(rf"(?<!\w){separator_pattern}(?!\w)", re.IGNORECASE)
     return pattern.search(haystack) is not None
 
 
