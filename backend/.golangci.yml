@@ -3,12 +3,10 @@ version: "2"
 linters:
   enable:
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
     - unused
-    - gofmt
     - misspell
   settings:
     govet:
@@ -20,3 +18,7 @@ linters:
       - .gomodcache-local
       - .gomodcache-docker
       - .gocache
+
+formatters:
+  enable:
+    - gofmt

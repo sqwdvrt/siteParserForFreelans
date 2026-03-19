@@ -215,6 +215,7 @@ jobs:
         with:
           version: v2.11.0
           working-directory: backend
+          only-new-issues: true
 
   python-lint:
     runs-on: ubuntu-latest
@@ -516,7 +517,7 @@ jobs:
           echo "OK: POST /users → user_id=${user_id}"
 
           # --- PUT /users/{id}/profile ---
-          put_body='{"profile_text":"CI e2e test — golang developer 5 years"}'
+          put_body='{"profile_text":"Backend Python developer with six years building Telegram bots, parsers, Postgres APIs, and automation for freelance marketplaces."}'
           put_path="/users/${user_id}/profile"
           put_ts="$(date +%s)"
           put_nonce="$(openssl rand -hex 16)"

@@ -5,7 +5,9 @@ package postgres
 
 import (
 	"context"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -20,16 +22,32 @@ import (
 func setupTestDBWithContainers(t *testing.T) *pgxpool.Pool {
 	t.Helper()
 	ctx := context.Background()
-	migrationPath, err := filepath.Abs("../../../migrations/001_init.sql")
+	migrationsDir, err := filepath.Abs("../../../migrations")
 	if err != nil {
 		t.Fatalf("abs path: %v", err)
+	}
+	manifestPath := filepath.Join(migrationsDir, "manifest.txt")
+	manifestRaw, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatalf("read manifest: %v", err)
+	}
+	initScripts := make([]string, 0, 16)
+	for _, rawLine := range strings.Split(string(manifestRaw), "\n") {
+		entry := strings.TrimSpace(rawLine)
+		if entry == "" || strings.HasPrefix(entry, "#") {
+			continue
+		}
+		initScripts = append(initScripts, filepath.Join(migrationsDir, entry))
+	}
+	if len(initScripts) == 0 {
+		t.Fatal("manifest has no migrations")
 	}
 	ctr, err := postgres.Run(ctx,
 		"pgvector/pgvector:pg16",
 		postgres.WithDatabase("test"),
 		postgres.WithUsername("test"),
 		postgres.WithPassword("test"),
-		postgres.WithInitScripts(migrationPath),
+		postgres.WithInitScripts(initScripts...),
 		postgres.BasicWaitStrategies(),
 	)
 	if err != nil {

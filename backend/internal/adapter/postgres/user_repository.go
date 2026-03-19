@@ -31,7 +31,7 @@ func (r *UserRepository) Save(ctx context.Context, telegramID int64) (int64, boo
 	)
 	err := r.pool.QueryRow(ctx, `
 		INSERT INTO users (telegram_id, updated_at)
-		VALUES ($1)
+		VALUES ($1, NOW())
 		ON CONFLICT (telegram_id) DO UPDATE SET updated_at = NOW()
 		RETURNING id, (xmax = 0) AS created
 	`, telegramID).Scan(&id, &created)
