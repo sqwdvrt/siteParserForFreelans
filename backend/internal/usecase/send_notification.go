@@ -234,7 +234,7 @@ func (u *SendNotification) ExecuteBatch(
 
 		meta := metaByID[jobID]
 		finalScore := meta.finalScore
-		wasInserted, shouldSend, err := u.notifRepo.EnsurePending(
+		wasInserted, shouldSend, ensureErr := u.notifRepo.EnsurePending(
 			ctx,
 			userID,
 			jobID,
@@ -244,8 +244,8 @@ func (u *SendNotification) ExecuteBatch(
 			meta.reasonCodes,
 			meta.whyItFits,
 		)
-		if err != nil {
-			return err
+		if ensureErr != nil {
+			return ensureErr
 		}
 		if !shouldSend {
 			continue

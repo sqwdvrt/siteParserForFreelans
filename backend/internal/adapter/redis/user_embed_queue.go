@@ -6,8 +6,8 @@ import (
 	"fmt"
 
 	redis "github.com/redis/go-redis/v9"
-	"go.opentelemetry.io/otel"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/observability"
+	"go.opentelemetry.io/otel"
 )
 
 const defaultUserEmbedQueue = "user-embed"

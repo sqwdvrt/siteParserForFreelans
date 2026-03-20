@@ -233,7 +233,7 @@ type stubJobRepo struct {
 }
 
 func (s *stubJobRepo) Save(ctx context.Context, job *domain.Job) (int64, error) { return 0, nil }
-func (s *stubJobRepo) TouchSeenAt(ctx context.Context, url string) error         { return nil }
+func (s *stubJobRepo) TouchSeenAt(ctx context.Context, url string) error        { return nil }
 func (s *stubJobRepo) ExpireStaleJobs(ctx context.Context, olderThanDays int) (int64, error) {
 	return 0, nil
 }

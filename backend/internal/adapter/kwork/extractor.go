@@ -139,20 +139,3 @@ func extractExternalID(u string) string {
 	}
 	return ""
 }
-
-var dateLayouts = []string{
-	"02.01.2006",
-	"2.1.2006",
-}
-
-func parsePostedAt(s string) *time.Time {
-	s = strings.TrimPrefix(s, "Опубликовано:")
-	s = strings.TrimSpace(s)
-	for _, layout := range dateLayouts {
-		t, err := time.Parse(layout, s)
-		if err == nil {
-			return &t
-		}
-	}
-	return nil
-}

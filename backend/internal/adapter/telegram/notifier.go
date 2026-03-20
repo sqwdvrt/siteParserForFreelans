@@ -208,7 +208,7 @@ func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayl
 		if status == http.StatusTooManyRequests {
 			rateLimitDelay = parseTelegramRetryAfter(resp.Body)
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		if status == http.StatusOK {
 			n.breaker.markSuccess()
@@ -499,14 +499,6 @@ func withPositiveJitter(base time.Duration, jitter float64, rnd func() float64) 
 	return base + time.Duration(extra)
 }
 
-func retryBackoff(attempt int) time.Duration {
-	d := retryBaseWait
-	for i := 0; i < attempt; i++ {
-		d *= 2
-	}
-	return d
-}
-
 func waitForRetry(ctx context.Context, d time.Duration) error {
 	if d <= 0 {
 		return nil
@@ -606,7 +598,7 @@ func formatMessage(p port.NotifyPayload) string {
 		b.WriteString(escapeHTML(p.WhyItFits))
 	}
 
-	b.WriteString(fmt.Sprintf("\n\n📊 Рекомендация: %.0f%%", p.Score*100))
+	fmt.Fprintf(&b, "\n\n📊 Рекомендация: %.0f%%", p.Score*100)
 	return b.String()
 }
 
@@ -624,7 +616,7 @@ func formatBatchMessage(p port.NotifyPayload) string {
 	}
 
 	b.WriteString("🎯 <b>Подборка для вас</b> (оценка: ")
-	b.WriteString(fmt.Sprintf("%.1f/10", score))
+	fmt.Fprintf(&b, "%.1f/10", score)
 	b.WriteString(")")
 
 	links := make([]string, 0, len(items))
@@ -635,7 +627,7 @@ func formatBatchMessage(p port.NotifyPayload) string {
 			title = "Проект"
 		}
 		b.WriteString("\n\n<b>")
-		b.WriteString(fmt.Sprintf("%d. ", idx+1))
+		fmt.Fprintf(&b, "%d. ", idx+1)
 		b.WriteString(escapeHTML(title))
 		b.WriteString("</b>")
 		if age := formatJobAge(job, time.Now()); age != "" {

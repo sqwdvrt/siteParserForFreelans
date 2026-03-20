@@ -155,8 +155,8 @@ func main() {
 
 	proxyURL := strings.TrimSpace(os.Getenv("CRAWL_PROXY_URL"))
 	if proxyURL != "" {
-		if err := security.ValidateHTTPOrHTTPSURL("CRAWL_PROXY_URL", proxyURL); err != nil {
-			slog.Error("invalid CRAWL_PROXY_URL", "err", err)
+		if validateErr := security.ValidateHTTPOrHTTPSURL("CRAWL_PROXY_URL", proxyURL); validateErr != nil {
+			slog.Error("invalid CRAWL_PROXY_URL", "err", validateErr)
 			os.Exit(1)
 		}
 	}
@@ -201,9 +201,9 @@ func main() {
 		os.Exit(1)
 	}
 	rdb := redisclient.NewClient(redisOpt)
-	defer rdb.Close()
-	if err := rdb.Ping(ctx).Err(); err != nil {
-		slog.Error("redis ping", "err", err)
+	defer func() { _ = rdb.Close() }()
+	if pingErr := rdb.Ping(ctx).Err(); pingErr != nil {
+		slog.Error("redis ping", "err", pingErr)
 		os.Exit(1)
 	}
 
@@ -238,8 +238,8 @@ func main() {
 	// Если не задан — используется обычный HTTP-фетчер (без JS-рендера).
 	browserServiceURL := strings.TrimSpace(os.Getenv("BROWSER_SERVICE_URL"))
 	if browserServiceURL != "" {
-		if err := security.ValidateHTTPOrHTTPSURL("BROWSER_SERVICE_URL", browserServiceURL); err != nil {
-			slog.Error("invalid BROWSER_SERVICE_URL", "err", err)
+		if validateErr := security.ValidateHTTPOrHTTPSURL("BROWSER_SERVICE_URL", browserServiceURL); validateErr != nil {
+			slog.Error("invalid BROWSER_SERVICE_URL", "err", validateErr)
 			os.Exit(1)
 		}
 	}
@@ -317,8 +317,8 @@ func main() {
 	}
 	go func() {
 		slog.Info("crawler health server listening", "addr", healthAddr)
-		if err := healthSrv.ListenAndServe(); err != nil && err != stdhttp.ErrServerClosed {
-			slog.Error("crawler health server failed", "err", err)
+		if serveErr := healthSrv.ListenAndServe(); serveErr != nil && serveErr != stdhttp.ErrServerClosed {
+			slog.Error("crawler health server failed", "err", serveErr)
 		}
 	}()
 	go func() {
@@ -344,8 +344,8 @@ func main() {
 				break
 			}
 			slog.Info("crawl run started", "source", src.name, "url", src.listURL, "trace_id", traceID)
-			saved, err := src.crawl.Execute(crawlCtx, src.listURL)
-			if err != nil {
+			saved, crawlErr := src.crawl.Execute(crawlCtx, src.listURL)
+			if crawlErr != nil {
 				if errors.Is(crawlCtx.Err(), context.Canceled) {
 					crawlerMetrics.ObserveRunInterrupted(time.Since(startedAt))
 					slog.Info("crawl interrupted by shutdown", "source", src.name)
@@ -357,7 +357,7 @@ func main() {
 					return
 				}
 				crawlerMetrics.ObserveRunFailure(time.Since(startedAt))
-				slog.Error("crawl failed", "source", src.name, "err", err, "trace_id", traceID)
+				slog.Error("crawl failed", "source", src.name, "err", crawlErr, "trace_id", traceID)
 				continue
 			}
 			slog.Info("crawl source done", "source", src.name, "saved", saved, "trace_id", traceID)
@@ -368,13 +368,13 @@ func main() {
 
 		// Re-enqueue any jobs that were saved but never reached the ai-process queue
 		// (e.g. due to a Redis blip during a previous crawl run).
-		if requeued, err := sources[0].crawl.RequeueOrphaned(crawlCtx, 50); err != nil {
-			slog.Warn("crawl: orphan requeue scan failed", "err", err)
+		if requeued, requeueErr := sources[0].crawl.RequeueOrphaned(crawlCtx, 50); requeueErr != nil {
+			slog.Warn("crawl: orphan requeue scan failed", "err", requeueErr)
 		} else if requeued > 0 {
 			slog.Info("crawl: orphaned jobs requeued", "count", requeued, "trace_id", traceID)
 		}
-		if flushed, err := jobEmbedDispatcher.Flush(crawlCtx, 500); err != nil {
-			slog.Warn("crawl: pending job dispatch flush failed", "err", err, "trace_id", traceID)
+		if flushed, flushErr := jobEmbedDispatcher.Flush(crawlCtx, 500); flushErr != nil {
+			slog.Warn("crawl: pending job dispatch flush failed", "err", flushErr, "trace_id", traceID)
 		} else if flushed > 0 {
 			slog.Info("crawl: pending jobs dispatched", "count", flushed, "trace_id", traceID)
 		}

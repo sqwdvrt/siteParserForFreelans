@@ -76,8 +76,8 @@ func (r *UserRepository) GetPreferencesScoped(ctx context.Context, userID int64)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := tx.Exec(ctx, setUserScopeSQL, strconv.FormatInt(userID, 10)); err != nil {
-		return nil, err
+	if _, execErr := tx.Exec(ctx, setUserScopeSQL, strconv.FormatInt(userID, 10)); execErr != nil {
+		return nil, execErr
 	}
 
 	var (
@@ -150,8 +150,8 @@ func (r *UserRepository) UpdateProfileScoped(ctx context.Context, userID int64, 
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := tx.Exec(ctx, setUserScopeSQL, strconv.FormatInt(userID, 10)); err != nil {
-		return err
+	if _, execErr := tx.Exec(ctx, setUserScopeSQL, strconv.FormatInt(userID, 10)); execErr != nil {
+		return execErr
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE users SET profile_text = $1, updated_at = NOW() WHERE id = $2
@@ -169,8 +169,8 @@ func (r *UserRepository) UpdateNotifyHourScoped(ctx context.Context, userID int6
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := tx.Exec(ctx, setUserScopeSQL, strconv.FormatInt(userID, 10)); err != nil {
-		return err
+	if _, execErr := tx.Exec(ctx, setUserScopeSQL, strconv.FormatInt(userID, 10)); execErr != nil {
+		return execErr
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE users SET notify_hour = $1, updated_at = NOW() WHERE id = $2
@@ -212,8 +212,8 @@ func (r *UserRepository) UpsertPreferencesScoped(ctx context.Context, userID int
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	if _, err := tx.Exec(ctx, setUserScopeSQL, strconv.FormatInt(userID, 10)); err != nil {
-		return err
+	if _, execErr := tx.Exec(ctx, setUserScopeSQL, strconv.FormatInt(userID, 10)); execErr != nil {
+		return execErr
 	}
 	_, err = tx.Exec(ctx, `
 		INSERT INTO user_preferences (

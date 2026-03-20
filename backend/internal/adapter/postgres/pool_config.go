@@ -49,8 +49,8 @@ func NewConfiguredPool(ctx context.Context, dbURL string) (*pgxpool.Pool, error)
 	if err != nil {
 		return nil, err
 	}
-	if err := applyPoolRuntimeSettings(cfg, settings); err != nil {
-		return nil, err
+	if applyErr := applyPoolRuntimeSettings(cfg, settings); applyErr != nil {
+		return nil, applyErr
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)

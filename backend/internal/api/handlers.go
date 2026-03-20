@@ -259,11 +259,11 @@ func (h *Handlers) PutUserProfile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "profile_text too long", http.StatusBadRequest)
 		return
 	}
-	if err := validateProfileText(req.ProfileText); err != nil {
+	if validateErr := validateProfileText(req.ProfileText); validateErr != nil {
 		switch {
-		case errors.Is(err, errProfileTextTooShort):
+		case errors.Is(validateErr, errProfileTextTooShort):
 			http.Error(w, "profile_text too short; include skills, stack, experience and target tasks", http.StatusBadRequest)
-		case errors.Is(err, errProfileTextLooksPlaceholder):
+		case errors.Is(validateErr, errProfileTextLooksPlaceholder):
 			http.Error(w, "profile_text looks like test placeholder; send a real freelancer profile", http.StatusBadRequest)
 		default:
 			http.Error(w, "invalid profile_text", http.StatusBadRequest)

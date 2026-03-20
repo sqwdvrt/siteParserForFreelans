@@ -22,7 +22,7 @@ func (m *mockExpireRepo) GetByIDs(_ context.Context, _ []int64) (map[int64]*doma
 	return nil, nil
 }
 func (m *mockExpireRepo) ExistsByURL(_ context.Context, _ string) (bool, error) { return false, nil }
-func (m *mockExpireRepo) TouchSeenAt(_ context.Context, _ string) error          { return nil }
+func (m *mockExpireRepo) TouchSeenAt(_ context.Context, _ string) error         { return nil }
 func (m *mockExpireRepo) GetUnembeddedIDs(_ context.Context, _ int) ([]int64, error) {
 	return nil, nil
 }

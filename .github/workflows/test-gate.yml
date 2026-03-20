@@ -215,7 +215,6 @@ jobs:
         with:
           version: v2.11.0
           working-directory: backend
-          only-new-issues: true
 
   python-lint:
     runs-on: ubuntu-latest

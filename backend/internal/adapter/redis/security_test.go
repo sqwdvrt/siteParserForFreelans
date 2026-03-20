@@ -12,7 +12,7 @@ func TestNonceStore_Use(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	store := NewNonceStore(client, "test:nonce")
 	ctx := context.Background()
@@ -38,7 +38,7 @@ func TestRateLimiter_Allow(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	limiter := NewRateLimiter(client, "test:rl")
 	ctx := context.Background()

@@ -125,7 +125,7 @@ func (f *Fetcher) Ping(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("browser fetcher ping: request: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("browser fetcher ping: http %d", resp.StatusCode)
 	}

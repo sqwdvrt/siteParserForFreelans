@@ -20,17 +20,6 @@ import (
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 )
 
-type mockUserEmbedQueue struct {
-	enqueueFunc func(ctx context.Context, userID int64) error
-}
-
-func (m *mockUserEmbedQueue) Enqueue(ctx context.Context, userID int64) error {
-	if m.enqueueFunc != nil {
-		return m.enqueueFunc(ctx, userID)
-	}
-	return nil
-}
-
 type mockUserEmbedDispatcher struct {
 	flushFunc func(ctx context.Context, limit int) (int, error)
 }
@@ -184,20 +173,12 @@ func (m *mockUserRepo) GetProUsersWithNotifyHour(ctx context.Context, hour int) 
 }
 
 const testAuthToken = "test-api-token"
-const testTelegramIDHeader = "123456789"
 const testUserHMACSecret = "test-hmac-secret"
 const validProfileText = "Python backend разработчик, 4 года опыта. Делаю API, PostgreSQL, Redis, Docker, интеграции и автоматизацию."
 
 func newAuthHeaders() map[string]string {
 	return map[string]string{
 		"Authorization": "Bearer " + testAuthToken,
-	}
-}
-
-func newAuthAndTelegramHeaders() map[string]string {
-	return map[string]string{
-		"Authorization": "Bearer " + testAuthToken,
-		"X-Telegram-ID": testTelegramIDHeader,
 	}
 }
 

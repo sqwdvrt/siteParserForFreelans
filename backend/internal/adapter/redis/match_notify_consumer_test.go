@@ -59,7 +59,7 @@ func TestMatchNotifyConsumer_Pop(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	payload := port.MatchNotifyPayload{UserID: 10, JobID: 20, MatchScore: 0.9}
 	b, _ := json.Marshal(payload)
@@ -88,7 +88,7 @@ func TestMatchNotifyConsumer_Pop_InvalidPayload_Skip(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// user_id=0 — invalid, должен вернуть nil
 	client.LPush(context.Background(), "match-notify", `{"user_id":0,"job_id":1,"match_score":0.5}`)
@@ -110,7 +110,7 @@ func TestMatchNotifyConsumer_Pop_BatchPayload(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	client.LPush(
 		context.Background(),
@@ -143,7 +143,7 @@ func TestMatchNotifyConsumer_Pop_InvalidBatchPayload_Skip(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	// batch с невалидным job_id
 	client.LPush(context.Background(), "match-notify", `{"user_id":10,"jobs":[{"job_id":0,"rank":1}]}`)
@@ -165,7 +165,7 @@ func TestMatchNotifyConsumer_Pop_InvalidJSON(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	client.LPush(context.Background(), "match-notify", `{invalid json}`)
 
@@ -185,7 +185,7 @@ func TestMatchNotifyConsumer_Pop_EmptyQueue_Timeout(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	consumer := NewMatchNotifyConsumer(client, "match-notify")
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -204,7 +204,7 @@ func TestMatchNotifyConsumer_Nack_RequeuesMessage(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	payload := port.MatchNotifyPayload{UserID: 10, JobID: 20, MatchScore: 0.9}
 	b, _ := json.Marshal(payload)
@@ -220,8 +220,8 @@ func TestMatchNotifyConsumer_Nack_RequeuesMessage(t *testing.T) {
 	if msg == nil {
 		t.Fatal("Pop: want message, got nil")
 	}
-	if err := consumer.Nack(ctx, msg); err != nil {
-		t.Fatalf("Nack: %v", err)
+	if nackErr := consumer.Nack(ctx, msg); nackErr != nil {
+		t.Fatalf("Nack: %v", nackErr)
 	}
 
 	got, err := client.LLen(ctx, "match-notify").Result()
@@ -256,7 +256,7 @@ func TestMatchNotifyConsumer_Requeue_DoesNotIncreaseRetryCount(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	client.LPush(context.Background(), "match-notify", `{"user_id":10,"job_id":20,"match_score":0.9,"_retry_count":5}`)
 
@@ -270,8 +270,8 @@ func TestMatchNotifyConsumer_Requeue_DoesNotIncreaseRetryCount(t *testing.T) {
 	if msg == nil {
 		t.Fatal("Pop: want message, got nil")
 	}
-	if err := consumer.Requeue(ctx, msg); err != nil {
-		t.Fatalf("Requeue: %v", err)
+	if requeueErr := consumer.Requeue(ctx, msg); requeueErr != nil {
+		t.Fatalf("Requeue: %v", requeueErr)
 	}
 
 	got, err := client.LLen(ctx, "match-notify").Result()
@@ -306,7 +306,7 @@ func TestMatchNotifyConsumer_Recover_MovesProcessingToSource(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	client.LPush(context.Background(), "match-notify:processing", `{"user_id":1,"job_id":2,"match_score":0.5}`)
 
@@ -337,7 +337,7 @@ func TestMatchNotifyConsumer_Recover_MovesMoreThanThousandMessages(t *testing.T)
 	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	ctx := context.Background()
 	const n = 1205
@@ -370,7 +370,7 @@ func TestMatchNotifyConsumer_Nack_MovesToDLQAfterRetryLimit(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	client.LPush(context.Background(), "match-notify", `{"user_id":10,"job_id":20,"match_score":0.9,"_retry_count":5}`)
 
@@ -384,8 +384,8 @@ func TestMatchNotifyConsumer_Nack_MovesToDLQAfterRetryLimit(t *testing.T) {
 	if msg == nil {
 		t.Fatal("Pop: want message, got nil")
 	}
-	if err := consumer.Nack(ctx, msg); err != nil {
-		t.Fatalf("Nack: %v", err)
+	if nackErr := consumer.Nack(ctx, msg); nackErr != nil {
+		t.Fatalf("Nack: %v", nackErr)
 	}
 
 	sourceLen, err := client.LLen(ctx, "match-notify").Result()

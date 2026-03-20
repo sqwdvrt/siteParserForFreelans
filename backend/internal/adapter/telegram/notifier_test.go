@@ -152,7 +152,7 @@ func TestNotifier_Send_BatchPayload_Success(t *testing.T) {
 	if !strings.Contains(text, "8.2/10") {
 		t.Fatalf("batch score missing: %q", text)
 	}
-	if strings.Index(text, "<b>1. First</b>") == -1 || strings.Index(text, "<b>2. Second</b>") == -1 {
+	if !strings.Contains(text, "<b>1. First</b>") || !strings.Contains(text, "<b>2. Second</b>") {
 		t.Fatalf("ranked titles missing: %q", text)
 	}
 	if !strings.Contains(text, `Открыть #1`) || !strings.Contains(text, `Открыть #2`) {

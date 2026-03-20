@@ -89,28 +89,28 @@ func (r *DispatchRepository) SaveAndStageJobForEmbedding(
 	).Scan(&id)
 	switch err {
 	case nil:
-		if err := r.stageJobForEmbeddingTx(ctx, tx, id, trace); err != nil {
-			return 0, false, err
+		if stageErr := r.stageJobForEmbeddingTx(ctx, tx, id, trace); stageErr != nil {
+			return 0, false, stageErr
 		}
-		if err := tx.Commit(ctx); err != nil {
-			return 0, false, err
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			return 0, false, commitErr
 		}
 		return id, true, nil
 	case pgx.ErrNoRows:
-		if _, err := tx.Exec(ctx, `
+		if _, execErr := tx.Exec(ctx, `
 			UPDATE jobs
 			SET raw_html = $2,
 			    status = 'active',
 			    last_seen_at = NOW()
 			WHERE url = $1
-		`, job.URL, job.RawHTML); err != nil {
-			return 0, false, err
+		`, job.URL, job.RawHTML); execErr != nil {
+			return 0, false, execErr
 		}
-		if err := tx.QueryRow(ctx, `SELECT id FROM jobs WHERE url = $1`, job.URL).Scan(&id); err != nil {
-			return 0, false, err
+		if queryErr := tx.QueryRow(ctx, `SELECT id FROM jobs WHERE url = $1`, job.URL).Scan(&id); queryErr != nil {
+			return 0, false, queryErr
 		}
-		if err := tx.Commit(ctx); err != nil {
-			return 0, false, err
+		if commitErr := tx.Commit(ctx); commitErr != nil {
+			return 0, false, commitErr
 		}
 		return id, false, nil
 	default:

@@ -175,7 +175,7 @@ func main() {
 		os.Exit(1)
 	}
 	rdb := redisclient.NewClient(redisOpt)
-	defer rdb.Close()
+	defer func() { _ = rdb.Close() }()
 	if err := rdb.Ping(ctx).Err(); err != nil {
 		slog.Error("redis ping", "err", err)
 		os.Exit(1)
@@ -526,32 +526,6 @@ func getPositiveIntEnv(key string, fallback int) int {
 	}
 	v, err := strconv.Atoi(raw)
 	if err != nil || v <= 0 {
-		slog.Warn("invalid env, fallback applied", "key", key, "value", raw, "fallback", fallback)
-		return fallback
-	}
-	return v
-}
-
-func getDurationEnv(key string, fallback time.Duration) time.Duration {
-	raw := os.Getenv(key)
-	if raw == "" {
-		return fallback
-	}
-	v, err := time.ParseDuration(raw)
-	if err != nil || v <= 0 {
-		slog.Warn("invalid env, fallback applied", "key", key, "value", raw, "fallback", fallback)
-		return fallback
-	}
-	return v
-}
-
-func getFloatEnvInRange(key string, fallback float64, min, max float64) float64 {
-	raw := os.Getenv(key)
-	if raw == "" {
-		return fallback
-	}
-	v, err := strconv.ParseFloat(raw, 64)
-	if err != nil || v < min || v > max {
 		slog.Warn("invalid env, fallback applied", "key", key, "value", raw, "fallback", fallback)
 		return fallback
 	}

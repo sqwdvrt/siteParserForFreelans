@@ -13,7 +13,7 @@ func TestQueue_Enqueue(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	queue := NewQueue(client, "ai-process")
 	ctx := context.Background()
@@ -46,7 +46,7 @@ func TestQueue_Enqueue(t *testing.T) {
 func TestQueue_Enqueue_PropagatesTraceIDFromContext(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	queue := NewQueue(client, "ai-process")
 	ctx := observability.WithTraceID(context.Background(), "trace-123")
@@ -74,7 +74,7 @@ func TestQueue_Enqueue_RejectsZero(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	queue := NewQueue(client, "ai-process")
 	ctx := context.Background()
@@ -89,7 +89,7 @@ func TestQueue_Enqueue_RejectsNegative(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	queue := NewQueue(client, "ai-process")
 	ctx := context.Background()
@@ -104,7 +104,7 @@ func TestQueue_NewDefaultQueue(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	q := NewQueue(client, "")
 	if q == nil {
@@ -125,7 +125,7 @@ func TestQueue_Ping(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	queue := NewQueue(client, "ai-process")
 	ctx := context.Background()

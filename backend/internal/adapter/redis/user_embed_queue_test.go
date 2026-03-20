@@ -13,7 +13,7 @@ func TestUserEmbedQueue_Enqueue(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	q := NewUserEmbedQueue(client, "user-embed")
 	ctx := context.Background()
@@ -49,7 +49,7 @@ func TestUserEmbedQueue_NewDefaultQueue(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	q := NewUserEmbedQueue(client, "")
 	if q == nil {
@@ -68,7 +68,7 @@ func TestUserEmbedQueue_NewDefaultQueue(t *testing.T) {
 func TestUserEmbedQueue_EnqueueInvalid(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	q := NewUserEmbedQueue(client, "user-embed")
 	ctx := context.Background()
@@ -84,7 +84,7 @@ func TestUserEmbedQueue_EnqueueInvalid(t *testing.T) {
 func TestUserEmbedQueue_Enqueue_PropagatesTraceIDFromContext(t *testing.T) {
 	mr := mustRunMiniRedis(t)
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	q := NewUserEmbedQueue(client, "user-embed")
 	ctx := observability.WithTraceID(context.Background(), "trace-ue-1")

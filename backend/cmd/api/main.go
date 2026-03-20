@@ -49,34 +49,34 @@ func main() {
 	if dbURL == "" {
 		fatal("DATABASE_URL not set")
 	}
-	if err := security.ValidateURLPassword("DATABASE_URL", dbURL, 16); err != nil {
-		fatal("invalid DATABASE_URL secret policy", "err", err)
+	if validateErr := security.ValidateURLPassword("DATABASE_URL", dbURL, 16); validateErr != nil {
+		fatal("invalid DATABASE_URL secret policy", "err", validateErr)
 	}
 	if isProd {
-		if err := security.ValidatePostgresTLSForProduction("DATABASE_URL", dbURL); err != nil {
-			fatal("invalid DATABASE_URL transport policy", "err", err)
+		if validateErr := security.ValidatePostgresTLSForProduction("DATABASE_URL", dbURL); validateErr != nil {
+			fatal("invalid DATABASE_URL transport policy", "err", validateErr)
 		}
 	}
 	apiToken := os.Getenv("API_AUTH_TOKEN")
 	if apiToken == "" {
 		fatal("API_AUTH_TOKEN not set")
 	}
-	if err := security.ValidateSecret("API_AUTH_TOKEN", apiToken, 32); err != nil {
-		fatal("invalid API_AUTH_TOKEN secret policy", "err", err)
+	if validateErr := security.ValidateSecret("API_AUTH_TOKEN", apiToken, 32); validateErr != nil {
+		fatal("invalid API_AUTH_TOKEN secret policy", "err", validateErr)
 	}
 	userHMACSecret := os.Getenv("API_USER_HMAC_SECRET")
 	if userHMACSecret == "" {
 		fatal("API_USER_HMAC_SECRET not set")
 	}
-	if err := security.ValidateSecret("API_USER_HMAC_SECRET", userHMACSecret, 32); err != nil {
-		fatal("invalid API_USER_HMAC_SECRET secret policy", "err", err)
+	if validateErr := security.ValidateSecret("API_USER_HMAC_SECRET", userHMACSecret, 32); validateErr != nil {
+		fatal("invalid API_USER_HMAC_SECRET secret policy", "err", validateErr)
 	}
 	adminToken := os.Getenv("ADMIN_AUTH_TOKEN")
 	if adminToken == "" {
 		fatal("ADMIN_AUTH_TOKEN not set")
 	}
-	if err := security.ValidateSecret("ADMIN_AUTH_TOKEN", adminToken, 32); err != nil {
-		fatal("invalid ADMIN_AUTH_TOKEN secret policy", "err", err)
+	if validateErr := security.ValidateSecret("ADMIN_AUTH_TOKEN", adminToken, 32); validateErr != nil {
+		fatal("invalid ADMIN_AUTH_TOKEN secret policy", "err", validateErr)
 	}
 	redisURL := os.Getenv("REDIS_URL")
 	if redisURL == "" {
@@ -86,12 +86,12 @@ func main() {
 	if err != nil {
 		fatal("invalid API_ALLOW_REDIS_DEGRADED", "err", err)
 	}
-	if err := validateRuntimeSecurityPolicy(isProd, allowRedisDegraded); err != nil {
-		fatal("invalid runtime security policy", "err", err)
+	if validateErr := validateRuntimeSecurityPolicy(isProd, allowRedisDegraded); validateErr != nil {
+		fatal("invalid runtime security policy", "err", validateErr)
 	}
 	if isProd {
-		if err := security.ValidateRedisTLSForProduction("REDIS_URL", redisURL, 16); err != nil {
-			fatal("invalid REDIS_URL transport policy", "err", err)
+		if validateErr := security.ValidateRedisTLSForProduction("REDIS_URL", redisURL, 16); validateErr != nil {
+			fatal("invalid REDIS_URL transport policy", "err", validateErr)
 		}
 	}
 
@@ -122,11 +122,11 @@ func main() {
 		slog.Warn("REDIS_URL parse error; starting in explicitly allowed degraded mode without redis-backed queue/rate-limit/nonce", "err", err)
 	} else {
 		rdb = redisclient.NewClient(opt)
-		if err := rdb.Ping(context.Background()).Err(); err != nil {
+		if pingErr := rdb.Ping(context.Background()).Err(); pingErr != nil {
 			if !allowRedisDegraded {
-				fatal("redis unavailable; refusing insecure degraded mode", "err", err)
+				fatal("redis unavailable; refusing insecure degraded mode", "err", pingErr)
 			}
-			slog.Warn("redis unavailable; starting in explicitly allowed degraded mode without redis-backed queue/rate-limit/nonce", "err", err)
+			slog.Warn("redis unavailable; starting in explicitly allowed degraded mode without redis-backed queue/rate-limit/nonce", "err", pingErr)
 			_ = rdb.Close()
 			rdb = nil
 		} else {
@@ -141,7 +141,7 @@ func main() {
 		}
 	}
 	if rdb != nil {
-		defer rdb.Close()
+		defer func() { _ = rdb.Close() }()
 	}
 
 	nonceTTLSec, _ := strconv.Atoi(os.Getenv("API_NONCE_TTL_SEC"))
