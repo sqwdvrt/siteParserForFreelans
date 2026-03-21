@@ -11,6 +11,7 @@ from ai_service.util.profile_structurer import extract_structured_profile
 
 _BUDGET_RE = re.compile(r"(\d[\d\s.,]*)(?:\s*([kк]))?", re.IGNORECASE)
 _YEARS_RE = re.compile(r"(\d+(?:[.,]\d+)?)\s*\+?\s*(?:лет|года|год|years?)", re.IGNORECASE)
+_MAX_EXPERIENCE_YEARS = 30  # защита от абсурдных значений типа "2025 лет"
 _TECH_TOKENS: tuple[str, ...] = (
     "python",
     "go",
@@ -143,8 +144,7 @@ def evaluate_preference_filter(
 
         excluded = False
         for keyword in prefs.exclude_keywords:
-            normalized = str(keyword or "").strip().casefold()
-            if normalized and normalized in haystack:
+            if _keyword_matches(keyword, haystack):
                 excluded = True
                 break
         if excluded:
@@ -246,15 +246,15 @@ def _extract_required_experience_years(haystack: str, classification: dict[str, 
             return 3.0
         if seniority == "senior":
             return 5.0
-    all_matches = _YEARS_RE.findall(haystack)
-    if not all_matches:
-        return None
-    normalized: list[float] = []
-    for raw in all_matches:
+    candidates: list[float] = []
+    for m in _YEARS_RE.finditer(haystack):
+        raw = m.group(1).replace(",", ".")
         try:
-            normalized.append(float(str(raw).replace(",", ".")))
+            val = float(raw)
         except ValueError:
             continue
-    if not normalized:
+        if val <= _MAX_EXPERIENCE_YEARS:
+            candidates.append(val)
+    if not candidates:
         return None
-    return max(normalized)
+    return max(candidates)

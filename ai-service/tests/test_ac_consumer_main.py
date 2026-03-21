@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import logging
 import threading
 from pathlib import Path
 
@@ -118,6 +119,22 @@ def test_main_exits_on_invalid_llm_provider(monkeypatch, tmp_path: Path) -> None
 
     with pytest.raises(SystemExit):
         module.main()
+
+
+def test_main_exits_when_llm_provider_missing(monkeypatch, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    module = _load_ac_consumer_main_module()
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(SystemExit) as exc_info:
+            module.main()
+
+    assert exc_info.value.code == 1
+    assert "LLM_PROVIDER not set" in caplog.text
 
 
 def test_schedule_pending_batches_passes_custom_lease_timeout() -> None:

@@ -3,7 +3,9 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+import socket
 import sys
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -20,12 +22,23 @@ class FakePage:
     goto_error: Exception | None = None
     wait_error: Exception | None = None
     content_error: Exception | None = None
+    request_urls: list[str] | None = None
+    on_goto: Any | None = None
+    context: Any | None = None
     goto_calls: list[dict[str, Any]] = field(default_factory=list)
     wait_calls: list[dict[str, Any]] = field(default_factory=list)
+    intercepted_routes: list[Any] = field(default_factory=list)
     closed: bool = False
 
     async def goto(self, url: str, *, wait_until: str, timeout: int) -> None:
         self.goto_calls.append({"url": url, "wait_until": wait_until, "timeout": timeout})
+        if self.on_goto is not None:
+            self.on_goto(url)
+        if self.context is not None and self.context.route_handler is not None:
+            for request_url in self.request_urls or [url]:
+                route = FakeRoute(request=FakeRequest(url=request_url))
+                self.intercepted_routes.append(route)
+                await self.context.route_handler(route)
         if self.goto_error is not None:
             raise self.goto_error
 
@@ -44,15 +57,45 @@ class FakePage:
 
 
 @dataclass
+class FakeRequest:
+    url: str
+    headers: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class FakeRoute:
+    request: FakeRequest
+    aborted: bool = False
+    continued: bool = False
+    continue_kwargs: dict[str, Any] | None = None
+
+    async def abort(self) -> None:
+        self.aborted = True
+
+    async def continue_(self, **kwargs: Any) -> None:
+        self.continued = True
+        self.continue_kwargs = kwargs
+
+
+@dataclass
 class FakeContext:
     page: FakePage
     new_page_error: Exception | None = None
+    route_handler: Any | None = None
+    route_calls: list[dict[str, Any]] = field(default_factory=list)
     closed: bool = False
+
+    def __post_init__(self) -> None:
+        self.page.context = self
 
     async def new_page(self) -> FakePage:
         if self.new_page_error is not None:
             raise self.new_page_error
         return self.page
+
+    async def route(self, url: str, handler: Any) -> None:
+        self.route_calls.append({"url": url})
+        self.route_handler = handler
 
     async def close(self) -> None:
         self.closed = True
@@ -87,6 +130,7 @@ def client(monkeypatch: pytest.MonkeyPatch):
     main.app.router.lifespan_context = test_lifespan
     monkeypatch.setattr(main, "_browser", None)
     monkeypatch.setattr(main, "_playwright", None)
+    monkeypatch.setattr(main, "_resolve_host_ips", lambda _host: ["93.184.216.34"])
     try:
         with TestClient(main.app) as test_client:
             yield test_client
@@ -144,6 +188,158 @@ def test_render_returns_503_when_browser_is_missing(client: TestClient, monkeypa
 
     assert response.status_code == 503
     assert response.json()["detail"] == "browser not ready"
+
+
+def test_render_returns_400_when_request_time_dns_resolution_fails(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = FakePage()
+    context = FakeContext(page=page)
+    browser = FakeBrowser(context=context)
+    set_browser(monkeypatch, browser)
+
+    def fail_resolution(_host: str) -> list[str]:
+        raise socket.gaierror("lookup failed")
+
+    monkeypatch.setattr(main, "_resolve_host_ips", fail_resolution)
+
+    response = client.get("/render", params={"url": "https://example.com/page"})
+
+    assert response.status_code == 400
+    assert "invalid target host" in response.json()["detail"]
+    assert browser.new_context_calls != []
+    assert "ignore_https_errors" not in browser.new_context_calls[0]
+    assert context.route_calls == [{"url": "**/*"}]
+    assert page.goto_calls == [{"url": "https://example.com/page", "wait_until": "domcontentloaded", "timeout": main._TIMEOUT_MS}]
+    assert page.closed is True
+    assert context.closed is True
+
+
+def test_render_enforces_host_policy_during_intercepted_request(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    page = FakePage(on_goto=lambda _url: events.append("goto"))
+    context = FakeContext(page=page)
+    browser = FakeBrowser(context=context)
+    set_browser(monkeypatch, browser)
+
+    def resolve_private_ip(_host: str) -> list[str]:
+        events.append("resolve")
+        return ["127.0.0.1"]
+
+    monkeypatch.setattr(main, "_resolve_host_ips", resolve_private_ip)
+
+    response = client.get("/render", params={"url": "https://example.com/page"})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "target host is not allowed"
+    assert events == ["goto", "resolve"]
+    assert context.route_calls == [{"url": "**/*"}]
+    assert page.intercepted_routes[0].aborted is True
+
+
+def test_render_keeps_hostname_requests_on_the_original_url(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = FakePage(html="<html><body>plain</body></html>")
+    context = FakeContext(page=page)
+    browser = FakeBrowser(context=context)
+    set_browser(monkeypatch, browser)
+    to_thread_calls: list[tuple[Any, tuple[Any, ...]]] = []
+
+    async def fake_to_thread(func: Any, *args: Any, **_kwargs: Any) -> Any:
+        to_thread_calls.append((func, args))
+        return func(*args)
+
+    monkeypatch.setattr(main, "asyncio", SimpleNamespace(to_thread=fake_to_thread), raising=False)
+    monkeypatch.setattr(main, "_resolve_host_ips", lambda _host: ["93.184.216.34"])
+
+    response = client.get("/render", params={"url": "https://example.com/page"})
+
+    assert response.status_code == 200
+    assert to_thread_calls == [(main._resolve_host_ips, ("example.com",))]
+    assert page.intercepted_routes[0].continue_kwargs == {}
+
+
+def test_render_keeps_subresource_hostnames_without_rewriting_to_ip(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = FakePage(
+        html="<html><body>plain</body></html>",
+        request_urls=["https://example.com/assets/app.js"],
+    )
+    context = FakeContext(page=page)
+    browser = FakeBrowser(context=context)
+    set_browser(monkeypatch, browser)
+    monkeypatch.setattr(main, "_resolve_host_ips", lambda _host: ["93.184.216.34"])
+
+    response = client.get("/render", params={"url": "https://example.com/page"})
+
+    assert response.status_code == 200
+    assert page.intercepted_routes[0].continue_kwargs == {}
+
+
+@pytest.mark.parametrize(
+    ("url", "resolved_ips"),
+    [
+        ("http://127.0.0.1/admin", ["127.0.0.1"]),
+        ("http://localhost/admin", ["127.0.0.1"]),
+        ("http://10.0.0.8/private", ["10.0.0.8"]),
+        ("http://169.254.169.254/latest/meta-data", ["169.254.169.254"]),
+    ],
+)
+def test_render_rejects_loopback_and_private_targets(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    url: str,
+    resolved_ips: list[str],
+) -> None:
+    browser = FakeBrowser(context=FakeContext(page=FakePage()))
+    set_browser(monkeypatch, browser)
+    monkeypatch.setattr(main, "_resolve_host_ips", lambda _host: resolved_ips)
+
+    response = client.get("/render", params={"url": url})
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "target host is not allowed"
+    assert browser.new_context_calls == []
+
+
+@pytest.mark.parametrize(
+    ("url", "resolved_ips", "expected_status"),
+    [
+        ("http://host.docker.internal:8080/index.html", ["172.17.0.1"], 200),
+        ("http://10.0.0.8/private", ["10.0.0.8"], 400),
+    ],
+)
+def test_render_honors_test_only_host_allowlist(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    url: str,
+    resolved_ips: list[str],
+    expected_status: int,
+) -> None:
+    page = FakePage(html="<html><body>allowed</body></html>")
+    context = FakeContext(page=page)
+    browser = FakeBrowser(context=context)
+    set_browser(monkeypatch, browser)
+    monkeypatch.setenv("BROWSER_SERVICE_TEST_HOST_ALLOWLIST", "host.docker.internal")
+    monkeypatch.setattr(main, "_resolve_host_ips", lambda _host: resolved_ips)
+
+    response = client.get("/render", params={"url": url})
+
+    assert response.status_code == expected_status
+    if expected_status == 200:
+        assert response.json() == {"html": "<html><body>allowed</body></html>", "url": url}
+        assert page.goto_calls == [{"url": url, "wait_until": "domcontentloaded", "timeout": main._TIMEOUT_MS}]
+    else:
+        assert response.json()["detail"] == "target host is not allowed"
+        assert browser.new_context_calls == []
 
 
 def test_render_returns_html_for_non_kwork_pages(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

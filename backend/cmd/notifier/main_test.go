@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/config"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/usecase"
@@ -83,19 +84,19 @@ func TestNotifierEnvParsing_InvalidValuesReturnErrors(t *testing.T) {
 	t.Setenv("NOTIFIER_BREAKER_OPEN_INTERVAL", "0s")
 	t.Setenv("NOTIFIER_BREAKER_OPEN_JITTER", "1.5")
 
-	if _, err := parsePositiveIntEnv("NOTIFIER_MAX_RETRIES", 3); err == nil {
+	if _, err := config.ParsePositiveIntEnv("NOTIFIER_MAX_RETRIES", 3); err == nil {
 		t.Fatal("expected error for invalid NOTIFIER_MAX_RETRIES")
 	}
-	if _, err := parsePositiveDurationEnv("NOTIFIER_RETRY_BASE_WAIT", time.Second); err == nil {
+	if _, err := config.ParsePositiveDurationEnv("NOTIFIER_RETRY_BASE_WAIT", time.Second); err == nil {
 		t.Fatal("expected error for invalid NOTIFIER_RETRY_BASE_WAIT")
 	}
-	if _, err := parsePositiveIntEnv("NOTIFIER_BREAKER_FAILURE_THRESHOLD", 3); err == nil {
+	if _, err := config.ParsePositiveIntEnv("NOTIFIER_BREAKER_FAILURE_THRESHOLD", 3); err == nil {
 		t.Fatal("expected error for invalid NOTIFIER_BREAKER_FAILURE_THRESHOLD")
 	}
-	if _, err := parsePositiveDurationEnv("NOTIFIER_BREAKER_OPEN_INTERVAL", 30*time.Second); err == nil {
+	if _, err := config.ParsePositiveDurationEnv("NOTIFIER_BREAKER_OPEN_INTERVAL", 30*time.Second); err == nil {
 		t.Fatal("expected error for invalid NOTIFIER_BREAKER_OPEN_INTERVAL")
 	}
-	if _, err := parseFloatEnvInRange("NOTIFIER_BREAKER_OPEN_JITTER", 0.2, 0, 1); err == nil {
+	if _, err := config.ParseFloatEnvInRange("NOTIFIER_BREAKER_OPEN_JITTER", 0.2, 0, 1); err == nil {
 		t.Fatal("expected error for invalid NOTIFIER_BREAKER_OPEN_JITTER")
 	}
 }
@@ -107,19 +108,19 @@ func TestNotifierEnvParsing_UsesValidValues(t *testing.T) {
 	t.Setenv("NOTIFIER_BREAKER_OPEN_INTERVAL", "45s")
 	t.Setenv("NOTIFIER_BREAKER_OPEN_JITTER", "0.35")
 
-	if got, err := parsePositiveIntEnv("NOTIFIER_MAX_RETRIES", 3); err != nil || got != 8 {
+	if got, err := config.ParsePositiveIntEnv("NOTIFIER_MAX_RETRIES", 3); err != nil || got != 8 {
 		t.Fatalf("NOTIFIER_MAX_RETRIES parsed = %d, want 8", got)
 	}
-	if got, err := parsePositiveDurationEnv("NOTIFIER_RETRY_BASE_WAIT", time.Second); err != nil || got != 750*time.Millisecond {
+	if got, err := config.ParsePositiveDurationEnv("NOTIFIER_RETRY_BASE_WAIT", time.Second); err != nil || got != 750*time.Millisecond {
 		t.Fatalf("NOTIFIER_RETRY_BASE_WAIT parsed = %v, want 750ms", got)
 	}
-	if got, err := parsePositiveIntEnv("NOTIFIER_BREAKER_FAILURE_THRESHOLD", 3); err != nil || got != 5 {
+	if got, err := config.ParsePositiveIntEnv("NOTIFIER_BREAKER_FAILURE_THRESHOLD", 3); err != nil || got != 5 {
 		t.Fatalf("NOTIFIER_BREAKER_FAILURE_THRESHOLD parsed = %d, want 5", got)
 	}
-	if got, err := parsePositiveDurationEnv("NOTIFIER_BREAKER_OPEN_INTERVAL", 30*time.Second); err != nil || got != 45*time.Second {
+	if got, err := config.ParsePositiveDurationEnv("NOTIFIER_BREAKER_OPEN_INTERVAL", 30*time.Second); err != nil || got != 45*time.Second {
 		t.Fatalf("NOTIFIER_BREAKER_OPEN_INTERVAL parsed = %v, want 45s", got)
 	}
-	if got, err := parseFloatEnvInRange("NOTIFIER_BREAKER_OPEN_JITTER", 0.2, 0, 1); err != nil || got != 0.35 {
+	if got, err := config.ParseFloatEnvInRange("NOTIFIER_BREAKER_OPEN_JITTER", 0.2, 0, 1); err != nil || got != 0.35 {
 		t.Fatalf("NOTIFIER_BREAKER_OPEN_JITTER parsed = %v, want 0.35", got)
 	}
 }
@@ -127,7 +128,7 @@ func TestNotifierEnvParsing_UsesValidValues(t *testing.T) {
 func TestNotifierEnvParsing_EmptyValueUsesFallback(t *testing.T) {
 	const key = "NOTIFIER_MAX_RETRIES"
 	_ = os.Unsetenv(key)
-	if got, err := parsePositiveIntEnv(key, 4); err != nil || got != 4 {
+	if got, err := config.ParsePositiveIntEnv(key, 4); err != nil || got != 4 {
 		t.Fatalf("empty env must use fallback, got %d", got)
 	}
 }
@@ -136,11 +137,11 @@ func TestNotifierEnvParsing_DefaultDurations(t *testing.T) {
 	t.Setenv("NOTIFIER_QUEUE_DEPTH_SAMPLE_PERIOD", "")
 	t.Setenv("NOTIFIER_MATCH_NOTIFY_POP_TIMEOUT", "")
 
-	gotQueueDepth, err := parsePositiveDurationEnv("NOTIFIER_QUEUE_DEPTH_SAMPLE_PERIOD", defaultQueueDepthSamplePeriod)
+	gotQueueDepth, err := config.ParsePositiveDurationEnv("NOTIFIER_QUEUE_DEPTH_SAMPLE_PERIOD", defaultQueueDepthSamplePeriod)
 	if err != nil || gotQueueDepth != 60*time.Second {
 		t.Fatalf("NOTIFIER_QUEUE_DEPTH_SAMPLE_PERIOD fallback = %v, want 60s (err=%v)", gotQueueDepth, err)
 	}
-	gotPopTimeout, err := parsePositiveDurationEnv("NOTIFIER_MATCH_NOTIFY_POP_TIMEOUT", 60*time.Second)
+	gotPopTimeout, err := config.ParsePositiveDurationEnv("NOTIFIER_MATCH_NOTIFY_POP_TIMEOUT", 60*time.Second)
 	if err != nil || gotPopTimeout != 60*time.Second {
 		t.Fatalf("NOTIFIER_MATCH_NOTIFY_POP_TIMEOUT fallback = %v, want 60s (err=%v)", gotPopTimeout, err)
 	}
@@ -234,8 +235,11 @@ type stubJobRepo struct {
 
 func (s *stubJobRepo) Save(ctx context.Context, job *domain.Job) (int64, error) { return 0, nil }
 func (s *stubJobRepo) TouchSeenAt(ctx context.Context, url string) error        { return nil }
-func (s *stubJobRepo) ExpireStaleJobs(ctx context.Context, olderThanDays int) (int64, error) {
-	return 0, nil
+func (s *stubJobRepo) ExpireStaleJobs(ctx context.Context, olderThanDays int) ([]int64, error) {
+	return nil, nil
+}
+func (s *stubJobRepo) ExpireByURL(ctx context.Context, url string) ([]int64, error) {
+	return nil, nil
 }
 func (s *stubJobRepo) GetByID(ctx context.Context, id int64) (*domain.Job, error) {
 	if s.getByID != nil {
@@ -314,6 +318,10 @@ func (s *stubNotifRepo) CountToday(ctx context.Context, userID int64) (int, erro
 	if s.countToday != nil {
 		return s.countToday(ctx, userID)
 	}
+	return 0, nil
+}
+
+func (s *stubNotifRepo) CancelPendingByJobIDs(_ context.Context, _ []int64) (int64, error) {
 	return 0, nil
 }
 

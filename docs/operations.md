@@ -177,10 +177,13 @@ Production monitoring запускай вместе с `docker-compose.prod.yml`
 - `POSTGRES_EXPORTER_DATA_SOURCE_NAME=postgresql://...?...sslmode=require`
 - `GRAFANA_POSTGRES_HOST`, `GRAFANA_POSTGRES_PORT`, `GRAFANA_POSTGRES_SSLMODE=require`
 
+На VPS добавь ещё `docker-compose.ssl.yml`, чтобы monitoring-контейнеры попали в `infra_default` и увидели self-hosted Redis/Postgres.
+
 Пример:
 ```bash
 docker compose --env-file .env.production \
   -f docker-compose.prod.yml \
+  -f docker-compose.ssl.yml \
   -f docker-compose.monitoring.yml \
   --profile monitoring up -d
 ```

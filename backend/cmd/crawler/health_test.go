@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/config"
 )
 
 type stubCrawlerPinger struct {
@@ -119,7 +121,7 @@ func TestCrawlerReadyz_BrowserServiceNotReady(t *testing.T) {
 
 func TestParsePositiveIntEnv_ValidAndInvalid(t *testing.T) {
 	t.Setenv("CRAWL_BREAKER_FAILURE_THRESHOLD", "5")
-	v, err := parsePositiveIntEnv("CRAWL_BREAKER_FAILURE_THRESHOLD", 3)
+	v, err := config.ParsePositiveIntEnv("CRAWL_BREAKER_FAILURE_THRESHOLD", 3)
 	if err != nil {
 		t.Fatalf("unexpected err for valid int: %v", err)
 	}
@@ -128,14 +130,14 @@ func TestParsePositiveIntEnv_ValidAndInvalid(t *testing.T) {
 	}
 
 	t.Setenv("CRAWL_BREAKER_FAILURE_THRESHOLD", "0")
-	if _, err := parsePositiveIntEnv("CRAWL_BREAKER_FAILURE_THRESHOLD", 3); err == nil {
+	if _, err := config.ParsePositiveIntEnv("CRAWL_BREAKER_FAILURE_THRESHOLD", 3); err == nil {
 		t.Fatal("expected error for non-positive int")
 	}
 }
 
 func TestParsePositiveDurationEnv_ValidAndInvalid(t *testing.T) {
 	t.Setenv("CRAWL_BREAKER_OPEN_INTERVAL", "45s")
-	v, err := parsePositiveDurationEnv("CRAWL_BREAKER_OPEN_INTERVAL", time.Minute)
+	v, err := config.ParsePositiveDurationEnv("CRAWL_BREAKER_OPEN_INTERVAL", time.Minute)
 	if err != nil {
 		t.Fatalf("unexpected err for valid duration: %v", err)
 	}
@@ -144,7 +146,7 @@ func TestParsePositiveDurationEnv_ValidAndInvalid(t *testing.T) {
 	}
 
 	t.Setenv("CRAWL_BREAKER_OPEN_INTERVAL", "0s")
-	if _, err := parsePositiveDurationEnv("CRAWL_BREAKER_OPEN_INTERVAL", time.Minute); err == nil {
+	if _, err := config.ParsePositiveDurationEnv("CRAWL_BREAKER_OPEN_INTERVAL", time.Minute); err == nil {
 		t.Fatal("expected error for non-positive duration")
 	}
 }

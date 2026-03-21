@@ -105,22 +105,79 @@ func (r *JobRepository) TouchSeenAt(ctx context.Context, url string) error {
 }
 
 // ExpireStaleJobs помечает активные jobs как 'expired' если last_seen_at старше olderThanDays дней.
-func (r *JobRepository) ExpireStaleJobs(ctx context.Context, olderThanDays int) (int64, error) {
-	tag, err := r.pool.Exec(ctx, `
+func (r *JobRepository) ExpireStaleJobs(ctx context.Context, olderThanDays int) ([]int64, error) {
+	rows, err := r.pool.Query(ctx, `
 		UPDATE jobs SET status = 'expired'
 		WHERE status = 'active'
 		  AND last_seen_at < NOW() - make_interval(days => $1)
+		RETURNING id
 	`, olderThanDays)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	return tag.RowsAffected(), nil
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }
 
-// ExistsByURL проверяет наличие job по URL.
+// ExpireByURL мгновенно помечает активный job как 'expired' по URL.
+func (r *JobRepository) ExpireByURL(ctx context.Context, url string) ([]int64, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	rows, err := tx.Query(ctx, `
+		UPDATE jobs
+		SET status = 'expired'
+		WHERE url = $1 AND status = 'active'
+		RETURNING id
+	`, url)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(ids) == 0 {
+		return ids, tx.Commit(ctx)
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM notifications
+		WHERE job_id = ANY($1) AND status = 'pending'
+	`, ids); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+// ExistsByURL проверяет наличие активного job по URL.
+// Expired jobs не считаются существующими: при следующем обходе краулер
+// повторно скачает детали и реактивирует job через Save().
 func (r *JobRepository) ExistsByURL(ctx context.Context, url string) (bool, error) {
 	var exists bool
-	err := r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM jobs WHERE url = $1)`, url).Scan(&exists)
+	err := r.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM jobs WHERE url = $1 AND status = 'active')`, url).Scan(&exists)
 	return exists, err
 }
 

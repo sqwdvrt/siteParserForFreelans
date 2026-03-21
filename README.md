@@ -123,7 +123,9 @@ docker compose up -d ai-user-rematch
   Запуск: `docker compose -f docker-compose.prod.yml -f docker-compose.ssl.yml --env-file .env.production up -d`.
   Подробнее: `docs/vps_deploy.md`.
 - `docker-compose.monitoring.yml` — профиль мониторинга (Prometheus + Alertmanager, profile `monitoring`).
-  По умолчанию он заточен под локальный dev-compose, а для production переопределяется env-переменными scrape/DB endpoints.
+  По умолчанию он заточен под локальный dev-compose, а для production на VPS должен запускаться вместе с `docker-compose.ssl.yml`
+  и переопределяться env-переменными scrape/DB endpoints.
+  Все compose-файлы снова используют project-scoped default network: не полагайтесь на общий hardcoded Docker network между разными окружениями/`-p` project names.
 
 ### Monitoring (Docker Compose)
 
@@ -149,14 +151,23 @@ docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile 
 # http://127.0.0.1:3000
 ```
 
+Если запускаешь app и monitoring не одной командой, держи одинаковый compose project name:
+```bash
+docker compose -p siteparser -f docker-compose.yml up -d
+docker compose -p siteparser -f docker-compose.yml -f docker-compose.monitoring.yml --profile monitoring up -d
+```
+Иначе monitoring окажется в другой project-scoped сети и не увидит `backend-api`/`redis`/`postgres`.
+
 Опционально можно переопределить источники exporter-метрик:
-- `REDIS_EXPORTER_REDIS_ADDR` (по умолчанию `redis://redis:6379`)
+- `REDIS_EXPORTER_REDIS_ADDR` (приоритет: `REDIS_EXPORTER_REDIS_ADDR` -> `REDIS_URL` -> `redis://redis:6379`)
 - `REDIS_EXPORTER_CHECK_KEYS` (по умолчанию ключи очередей `ai-process/user-embed/user-rematch/ac-batch/match-notify` + `:processing/:dlq`)
 
-Для production monitoring вместе с `docker-compose.prod.yml` переопредели:
+Для production monitoring вместе с `docker-compose.prod.yml` и `docker-compose.ssl.yml` переопредели:
 - `BACKEND_API_METRICS_TARGET=backend-api:8443`
 - `BACKEND_API_METRICS_SCHEME=https`
 - `BACKEND_API_METRICS_TLS_INSECURE_SKIP_VERIFY=true`
+- `REDIS_URL=rediss://default:replace_with_strong_redis_password@redis.example.com:6380/0`
+- `REDIS_EXPORTER_REDIS_ADDR` только если exporter должен смотреть в другой Redis, чем приложение
 - `POSTGRES_EXPORTER_DATA_SOURCE_NAME=postgresql://...?...sslmode=require`
 - `GRAFANA_POSTGRES_HOST`, `GRAFANA_POSTGRES_PORT`, `GRAFANA_POSTGRES_SSLMODE=require`
 
@@ -164,9 +175,12 @@ docker compose -f docker-compose.yml -f docker-compose.monitoring.yml --profile 
 ```bash
 docker compose --env-file .env.production \
   -f docker-compose.prod.yml \
+  -f docker-compose.ssl.yml \
   -f docker-compose.monitoring.yml \
   --profile monitoring up -d
 ```
+
+Если production app и monitoring поднимаются разными командами, используй один и тот же `-p <project>` на обеих командах.
 
 После старта monitoring-профиля в Grafana автоматически появляются:
 - Prometheus datasource
@@ -302,9 +316,10 @@ cd backend && go run ./cmd/crawler
 | `CRAWL_RETRY_MAX_BACKOFF` | Верхняя граница backoff между retry (по умолчанию `30s`) |
 | `DATABASE_MIGRATE_URL` | Отдельный DSN для миграций; в текущем проектном `.env` совпадает с `DATABASE_URL` |
 | `PG_POOL_MAX_CONNS`/`PG_POOL_MIN_CONNS`/`PG_POOL_ACQUIRE_TIMEOUT` | Тюнинг postgres pool для backend и `ai-service` |
-| `BROWSER_SERVICE_URL` | URL browser render service для crawler; в текущем `.env` используется `http://browser-service:8090` |
+| `BROWSER_SERVICE_URL` | URL browser render service для crawler; в текущем `.env` используется `http://browser-service:8090`. Сервис пропускает только `http/https` и блокирует localhost/private/link-local targets на request-time |
 | `LLM_PROVIDER` | Провайдер actor в `ai-ac-consumer`: только `ollama` или `gemini`; без него процесс завершится с ошибкой |
 | `GEMINI_API_KEY` | Обязателен при `LLM_PROVIDER=gemini` |
+| `ENABLE_GEMINI_CLASSIFIER` | Явный opt-in для Gemini classifier в обычном `ai-service` consumer. По умолчанию `0`: одного наличия `GEMINI_API_KEY` недостаточно |
 | `GEMINI_MODEL`/`GEMINI_ACTOR_MODEL` | Базовая и role-specific Gemini модель actor (`GEMINI_ACTOR_MODEL` имеет приоритет; по умолчанию `gemini-2.0-flash`) |
 | `ACTOR_GEMINI_TIMEOUT_SEC` | Таймаут запросов Actor к Gemini (по умолчанию `30`) |
 | `EMBEDDING_MODEL` | Модель эмбеддингов `sentence-transformers` (должна совпадать с preloaded моделью в Docker image) |

@@ -54,6 +54,7 @@ WARMUP_TEXT_ENV = "AI_WARMUP_TEXT"
 DEFAULT_WARMUP_TEXT = "Warmup embedding probe"
 WARMUP_ENABLED_ENV = "AI_WARMUP_ENABLED"
 DEFAULT_WARMUP_ENABLED = True
+CLASSIFIER_ENABLED_ENV = "ENABLE_GEMINI_CLASSIFIER"
 SHUTDOWN_GRACE_SEC_ENV = "AI_SHUTDOWN_GRACE_SEC"
 DEFAULT_SHUTDOWN_GRACE_SEC = 20.0
 POP_TIMEOUT_SEC_ENV = "AI_PROCESS_POP_TIMEOUT_SEC"
@@ -86,6 +87,11 @@ def _warmup_embedding(embedding: SentenceTransformerEmbedding) -> None:
 
 def _warmup_enabled() -> bool:
     raw = os.getenv(WARMUP_ENABLED_ENV, "1" if DEFAULT_WARMUP_ENABLED else "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _classifier_enabled() -> bool:
+    raw = os.getenv(CLASSIFIER_ENABLED_ENV, "0").strip().lower()
     return raw in {"1", "true", "yes", "on"}
 
 
@@ -175,6 +181,11 @@ def main() -> None:
         default_port=0,
     )
 
+    gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+    classifier_enabled = _classifier_enabled()
+    if classifier_enabled and not gemini_api_key:
+        logger.warning("GEMINI_API_KEY not set, classifier will be disabled")
+
     queue_name = os.getenv("AI_QUEUE", "ai-process")
     model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     rerank_model = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-base")
@@ -200,6 +211,11 @@ def main() -> None:
     accumulate_matches = AccumulateMatchesUseCase(pending_repo)
     embedding = SentenceTransformerEmbedding(model_name)
     reranker = CrossEncoderReranker(rerank_model)
+    classifier = None
+    if classifier_enabled and gemini_api_key:
+        from ai_service.adapter.gemini import GeminiClassifier
+
+        classifier = GeminiClassifier(api_key=gemini_api_key)
     if _warmup_enabled():
         _warmup_embedding(embedding)
     else:
@@ -207,7 +223,7 @@ def main() -> None:
     process_job = ProcessJobUseCase(
         repo,
         embedding,
-        classifier=None,
+        classifier=classifier,
         match_repo=match_repo,
         accumulate_matches=accumulate_matches,
         reranker=reranker,

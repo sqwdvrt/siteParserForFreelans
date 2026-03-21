@@ -97,17 +97,35 @@ func (r *DispatchRepository) SaveAndStageJobForEmbedding(
 		}
 		return id, true, nil
 	case pgx.ErrNoRows:
-		if _, execErr := tx.Exec(ctx, `
+		if queryErr := tx.QueryRow(ctx, `
 			UPDATE jobs
-			SET raw_html = $2,
+			SET source = $2,
+			    external_id = $3,
+			    title = $4,
+			    description = $5,
+			    budget = $6,
+			    skills = $7,
+			    posted_at = $8,
+			    raw_html = $9,
 			    status = 'active',
 			    last_seen_at = NOW()
 			WHERE url = $1
-		`, job.URL, job.RawHTML); execErr != nil {
-			return 0, false, execErr
-		}
-		if queryErr := tx.QueryRow(ctx, `SELECT id FROM jobs WHERE url = $1`, job.URL).Scan(&id); queryErr != nil {
+			RETURNING id
+		`,
+			job.URL,
+			job.Source,
+			nullIfEmpty(job.ExternalID),
+			job.Title,
+			nullIfEmpty(job.Description),
+			nullIfEmpty(job.Budget),
+			job.Skills,
+			job.PostedAt,
+			job.RawHTML,
+		).Scan(&id); queryErr != nil {
 			return 0, false, queryErr
+		}
+		if stageErr := r.stageJobForEmbeddingTx(ctx, tx, id, trace); stageErr != nil {
+			return 0, false, stageErr
 		}
 		if commitErr := tx.Commit(ctx); commitErr != nil {
 			return 0, false, commitErr

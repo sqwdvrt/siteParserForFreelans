@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/observability"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 )
@@ -22,6 +23,7 @@ func NewCrawlProjects(
 	extractor port.Extractor,
 	repo port.JobRepository,
 	stager port.JobEmbedDispatchRepository,
+	notifRepos ...port.NotificationRepository,
 ) *CrawlProjects {
 	return &CrawlProjects{
 		fetcher:   fetcher,
@@ -59,6 +61,16 @@ func (u *CrawlProjects) Execute(ctx context.Context, listURL string) (saved int,
 		detailHTML, err := u.fetcher.Fetch(ctx, detailURL)
 		if err != nil {
 			slog.Warn("crawl: fetch detail failed", "url", detailURL, "err", err)
+			if domain.IsGone(err) {
+				expiredIDs, expErr := u.repo.ExpireByURL(ctx, detailURL)
+				if expErr != nil {
+					slog.Warn("crawl: expire by url failed", "url", detailURL, "err", expErr)
+					continue
+				}
+				if len(expiredIDs) > 0 {
+					slog.Info("crawl: expired gone job", "count", len(expiredIDs), "url", detailURL)
+				}
+			}
 			continue
 		}
 		job, err := u.extractor.ExtractDetail(detailHTML, detailURL)

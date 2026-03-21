@@ -132,7 +132,11 @@ func (m *mockJobRepo) TouchSeenAt(ctx context.Context, url string) error { retur
 func (m *mockJobRepo) ExpireStaleJobs(ctx context.Context, days int) ([]int64, error) {
 	return nil, nil
 }
-func (m *mockJobRepo) ExpireByURL(ctx context.Context, url string) error { return nil }
+func (m *mockJobRepo) ExpireByURL(ctx context.Context, url string) ([]int64, error) {
+	_ = ctx
+	_ = url
+	return nil, nil
+}
 
 type mockNotifier struct {
 	sendFunc func(ctx context.Context, telegramID int64, p port.NotifyPayload) error

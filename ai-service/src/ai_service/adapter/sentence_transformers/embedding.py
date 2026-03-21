@@ -6,10 +6,10 @@ from pathlib import Path
 
 from sentence_transformers import SentenceTransformer
 
+from ai_service.domain.embedding import EMBEDDING_DIM
 from ai_service.port.embedding import EmbeddingService
 
 DEFAULT_MODEL = "all-MiniLM-L6-v2"
-EMBEDDING_DIM = 384
 DEFAULT_BUNDLED_MODELS_DIR = "/opt/models"
 MODELS_DIR_ENV = "EMBEDDING_MODELS_DIR"
 REQUIRE_LOCAL_ENV = "EMBEDDING_REQUIRE_LOCAL"

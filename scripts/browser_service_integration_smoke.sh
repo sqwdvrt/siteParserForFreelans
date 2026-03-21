@@ -6,6 +6,7 @@ FIXTURE_DIR="${ROOT_DIR}/browser-service/testdata/render-smoke"
 IMAGE_TAG="${BROWSER_SERVICE_TEST_IMAGE:-site-parser-browser-service:test}"
 HTTP_SERVER_PORT="${BROWSER_SMOKE_FIXTURE_PORT:-}"
 BROWSER_SERVICE_PORT="${BROWSER_SMOKE_SERVICE_PORT:-}"
+TEST_HOST_ALLOWLIST="${BROWSER_SERVICE_TEST_HOST_ALLOWLIST:-host.docker.internal}"
 CONTAINER_NAME="browser-service-smoke-$$"
 HTTP_SERVER_PID=""
 BODY_FILE=""
@@ -78,6 +79,7 @@ docker build -t "${IMAGE_TAG}" "${ROOT_DIR}/browser-service"
 run_container() {
   docker run -d --rm \
     --name "${CONTAINER_NAME}" \
+    -e "BROWSER_SERVICE_TEST_HOST_ALLOWLIST=${TEST_HOST_ALLOWLIST}" \
     --add-host host.docker.internal:host-gateway \
     -p "127.0.0.1:${BROWSER_SERVICE_PORT}:8090" \
     "${IMAGE_TAG}"
@@ -88,6 +90,7 @@ if ! run_container >/dev/null; then
   docker rm -f "${CONTAINER_NAME}" >/dev/null 2>&1 || true
   docker run -d --rm \
     --name "${CONTAINER_NAME}" \
+    -e "BROWSER_SERVICE_TEST_HOST_ALLOWLIST=${TEST_HOST_ALLOWLIST}" \
     -p "127.0.0.1:${BROWSER_SERVICE_PORT}:8090" \
     "${IMAGE_TAG}" >/dev/null
 fi

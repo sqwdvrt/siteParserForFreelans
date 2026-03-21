@@ -9,6 +9,7 @@ from pgvector import Vector
 from psycopg2.extras import RealDictCursor
 
 from ai_service.adapter.postgres._pooled_repository import PooledPostgresRepository
+from ai_service.domain.embedding import EMBEDDING_DIM
 from ai_service.domain.job import Job
 from ai_service.port.repository import JobEmbeddingRecord, JobRepository
 
@@ -148,7 +149,7 @@ class PostgresJobRepository(PooledPostgresRepository, JobRepository):
         """Load jobs by ids with similarity score against user embedding."""
         if not job_ids:
             return []
-        if user_embedding is None or len(user_embedding) == 0 or len(user_embedding) != 384:
+        if user_embedding is None or len(user_embedding) == 0 or len(user_embedding) != EMBEDDING_DIM:
             return []
 
         with self._conn() as conn:

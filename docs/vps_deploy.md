@@ -295,6 +295,22 @@ ssh -L 5050:localhost:5050 deploy@185.154.193.193
 - Password: значение `POSTGRES_PASSWORD` из `/home/deploy/infra/.env`
 - SSL mode: `Require`
 
+### 4.2 Monitoring stack
+
+Мониторинг на VPS поднимай в том же compose-контуре, что и приложение, то есть вместе с `docker-compose.ssl.yml`.
+Это сохраняет общую `infra_default` сеть для доступа к self-hosted Redis/Postgres и даёт monitoring-контейнерам тот же CA.
+
+```bash
+cd /home/deploy/app/siteParserForFreelans
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml \
+  -f docker-compose.ssl.yml \
+  -f docker-compose.monitoring.yml \
+  --profile monitoring up -d
+```
+
+Если приложение и мониторинг запускаешь разными командами, используй один и тот же `-p <project>` на обеих.
+
 ---
 
 ## 5. Проверка

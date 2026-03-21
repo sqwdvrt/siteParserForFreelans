@@ -6,9 +6,12 @@ Browser Render Service — рендерит JS-страницы через Playw
   GET /render?url=<url> — возвращает {"html": "...", "url": "..."} с полностью
                           отрендеренным HTML (после networkidle)
 """
+import asyncio
 from contextlib import asynccontextmanager
+import ipaddress
 import logging
 import os
+import socket
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Query
@@ -23,6 +26,8 @@ _TIMEOUT_MS = int(os.getenv("BROWSER_TIMEOUT_MS", "60000"))
 # Kwork: карточки проектов в .want-card или .wants-list__item
 _KWORK_READY_SELECTOR = os.getenv("KWORK_READY_SELECTOR", ".want-card,.wants-list__item,article[data-id]")
 _MAX_BODY = 10 * 1024 * 1024  # 10 MB
+_TEST_HOST_ALLOWLIST_ENV = "BROWSER_SERVICE_TEST_HOST_ALLOWLIST"
+_BLOCKED_HOSTS = {"localhost"}
 
 _playwright: Playwright | None = None
 _browser: Browser | None = None
@@ -56,6 +61,127 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="Browser Render Service", version="1.0.0", lifespan=lifespan)
 
 
+def _resolve_host_ips(host: str) -> list[str]:
+    infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
+    ips: list[str] = []
+    seen: set[str] = set()
+    for family, _socktype, _proto, _canonname, sockaddr in infos:
+        if family == socket.AF_INET:
+            ip = sockaddr[0]
+        elif family == socket.AF_INET6:
+            ip = sockaddr[0]
+        else:
+            continue
+        if ip not in seen:
+            seen.add(ip)
+            ips.append(ip)
+    return ips
+
+
+def _is_public_ip(raw_ip: str) -> bool:
+    try:
+        return ipaddress.ip_address(raw_ip).is_global
+    except ValueError:
+        return False
+
+
+def _is_test_allowed_host(host: str) -> bool:
+    allowed_hosts = {
+        allowed_host.strip().lower()
+        for allowed_host in os.getenv(_TEST_HOST_ALLOWLIST_ENV, "").split(",")
+        if allowed_host.strip()
+    }
+    return host in allowed_hosts
+
+
+async def _resolve_host_ips_async(host: str) -> list[str]:
+    return await asyncio.to_thread(_resolve_host_ips, host)
+
+
+def _validate_target_url(url: str):
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="invalid url scheme")
+    if not parsed.netloc:
+        raise HTTPException(status_code=400, detail="invalid url: missing host")
+
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        raise HTTPException(status_code=400, detail="invalid url: missing host")
+    if host in _BLOCKED_HOSTS or host.endswith(".localhost"):
+        raise HTTPException(status_code=400, detail="target host is not allowed")
+    if _is_test_allowed_host(host):
+        return parsed
+
+    try:
+        direct_ip = ipaddress.ip_address(host)
+    except ValueError:
+        return parsed
+
+    if not direct_ip.is_global:
+        raise HTTPException(status_code=400, detail="target host is not allowed")
+    return parsed
+
+
+async def _resolve_request_target(request_url: str, host_cache: dict[str, list[str]]) -> tuple[str, str | None]:
+    parsed = urlparse(request_url)
+    if parsed.scheme not in ("http", "https"):
+        return request_url, None
+
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        raise HTTPException(status_code=400, detail="invalid url: missing host")
+    if host in _BLOCKED_HOSTS or host.endswith(".localhost"):
+        raise HTTPException(status_code=400, detail="target host is not allowed")
+    if _is_test_allowed_host(host):
+        return request_url, None
+
+    try:
+        direct_ip = ipaddress.ip_address(host)
+    except ValueError:
+        resolved_ips = host_cache.get(host)
+        if resolved_ips is None:
+            try:
+                resolved_ips = await _resolve_host_ips_async(host)
+            except socket.gaierror as exc:
+                raise HTTPException(status_code=400, detail=f"invalid target host: {exc}") from exc
+            host_cache[host] = resolved_ips
+        if not resolved_ips or any(not _is_public_ip(ip) for ip in resolved_ips):
+            raise HTTPException(status_code=400, detail="target host is not allowed")
+        return request_url, None
+
+    if not direct_ip.is_global:
+        raise HTTPException(status_code=400, detail="target host is not allowed")
+    return request_url, None
+
+
+class _RequestGuard:
+    def __init__(self) -> None:
+        self.error: HTTPException | None = None
+        self._host_cache: dict[str, list[str]] = {}
+
+    async def handle(self, route) -> None:
+        try:
+            rewritten_url, original_host = await _resolve_request_target(route.request.url, self._host_cache)
+        except HTTPException as exc:
+            self.error = exc
+            await route.abort()
+            return
+
+        if rewritten_url != route.request.url:
+            headers = dict(getattr(route.request, "headers", {}) or {})
+            if original_host is not None:
+                headers["host"] = original_host
+            await route.continue_(url=rewritten_url, headers=headers)
+            return
+
+        await route.continue_()
+
+    def raise_if_blocked(self) -> None:
+        if self.error is not None:
+            raise self.error
+
+
 @app.get("/healthz")
 async def healthz() -> dict:
     if _browser is None or not _browser.is_connected():
@@ -65,14 +191,11 @@ async def healthz() -> dict:
 
 @app.get("/render")
 async def render(url: str = Query(..., description="URL страницы для рендера")) -> JSONResponse:
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise HTTPException(status_code=400, detail="invalid url scheme")
-    if not parsed.netloc:
-        raise HTTPException(status_code=400, detail="invalid url: missing host")
-
     if _browser is None:
         raise HTTPException(status_code=503, detail="browser not ready")
+
+    parsed = _validate_target_url(url)
+    request_guard = _RequestGuard()
 
     context = None
     page = None
@@ -87,12 +210,14 @@ async def render(url: str = Query(..., description="URL страницы для 
             locale="ru-RU",
             timezone_id="Europe/Moscow",
         )
+        await context.route("**/*", request_guard.handle)
         page = await context.new_page()
         log.info("render start url=%s", url)
 
         # Шаг 1: грузим страницу до DOMContentLoaded — это быстро.
         # networkidle на kwork.ru никогда не наступает (фоновые поллинги).
         await page.goto(url, wait_until="domcontentloaded", timeout=_TIMEOUT_MS)
+        request_guard.raise_if_blocked()
 
         # Шаг 2: ждём появления контента, загружаемого через JS.
         # Для kwork.ru — карточки проектов; для других сайтов пропускаем.
@@ -107,16 +232,24 @@ async def render(url: str = Query(..., description="URL страницы для 
                 # Селектор не появился — возможно, другая страница или бот-защита.
                 # Берём что есть.
                 log.warning("render kwork selector timeout url=%s — returning current DOM", url)
+        request_guard.raise_if_blocked()
 
         html = await page.content()
+        request_guard.raise_if_blocked()
         if len(html) > _MAX_BODY:
             html = html[:_MAX_BODY]
         log.info("render ok url=%s html_len=%d", url, len(html))
         return JSONResponse({"html": html, "url": url})
+    except HTTPException:
+        raise
     except PWTimeoutError as exc:
+        if request_guard.error is not None:
+            raise request_guard.error from exc
         log.warning("render timeout url=%s err=%s", url, exc)
         raise HTTPException(status_code=504, detail=f"render timeout: {exc}") from exc
     except Exception as exc:
+        if request_guard.error is not None:
+            raise request_guard.error from exc
         log.warning("render failed url=%s err=%s", url, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:

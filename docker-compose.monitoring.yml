@@ -19,9 +19,6 @@ services:
       - prometheus_data:/prometheus
     ports:
       - "${PROMETHEUS_BIND_IP:-127.0.0.1}:${PROMETHEUS_PORT:-9090}:9090"
-    depends_on:
-      backend-api:
-        condition: service_started
     deploy:
       resources:
         limits:
@@ -67,11 +64,8 @@ services:
     profiles:
       - monitoring
     command:
-      - --redis.addr=${REDIS_EXPORTER_REDIS_ADDR:-redis://redis:6379}
+      - --redis.addr=${REDIS_EXPORTER_REDIS_ADDR:-${REDIS_URL:-redis://redis:6379}}
       - --check-keys=${REDIS_EXPORTER_CHECK_KEYS:-ai-process,ai-process:processing,ai-process:dlq,user-embed,user-embed:processing,user-embed:dlq,user-rematch,user-rematch:processing,user-rematch:dlq,ac-batch,ac-batch:processing,ac-batch:dlq,match-notify,match-notify:processing,match-notify:dlq}
-    depends_on:
-      redis:
-        condition: service_healthy
     deploy:
       resources:
         limits:

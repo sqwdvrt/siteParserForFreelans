@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import builtins
 import importlib.util
+import sys
 import threading
 from pathlib import Path
 
@@ -17,6 +19,26 @@ def _load_consumer_main_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_main_imports_without_gemini_when_classifier_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("ENABLE_GEMINI_CLASSIFIER", "0")
+    for module_name in list(sys.modules):
+        if module_name == "ai_service.adapter.gemini" or module_name.startswith("ai_service.adapter.gemini."):
+            monkeypatch.delitem(sys.modules, module_name, raising=False)
+
+    real_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "ai_service.adapter.gemini" or name.startswith("ai_service.adapter.gemini."):
+            raise ModuleNotFoundError("No module named 'ai_service.adapter.gemini'")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    module = _load_consumer_main_module()
+
+    assert module._classifier_enabled() is False
 
 
 def test_shutdown_grace_sec_invalid_env_fallback(monkeypatch) -> None:

@@ -2,10 +2,44 @@
 
 from __future__ import annotations
 
+import builtins
 import contextlib
+import importlib
+import sys
 from unittest.mock import MagicMock
 
 from ai_service.adapter.postgres import PostgresMatchRepository
+
+
+def test_postgres_repository_modules_import_without_sentence_transformers(
+    monkeypatch,
+) -> None:
+    for module_name in [
+        "ai_service.adapter.postgres",
+        "ai_service.adapter.postgres.repository",
+        "ai_service.adapter.postgres.match_repository",
+        "ai_service.adapter.sentence_transformers",
+        "ai_service.adapter.sentence_transformers.embedding",
+    ]:
+        monkeypatch.delitem(sys.modules, module_name, raising=False)
+
+    attempted_imports: list[str] = []
+    original_import = builtins.__import__
+
+    def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "sentence_transformers" or name.startswith("sentence_transformers."):
+            attempted_imports.append(name)
+            raise AssertionError(f"unexpected import: {name}")
+        return original_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+
+    repo_module = importlib.import_module("ai_service.adapter.postgres.repository")
+    match_module = importlib.import_module("ai_service.adapter.postgres.match_repository")
+
+    assert repo_module.EMBEDDING_DIM == 384
+    assert match_module.EMBEDDING_DIM == 384
+    assert attempted_imports == []
 
 
 def test_invalid_embedding_returns_empty() -> None:

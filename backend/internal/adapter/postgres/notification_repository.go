@@ -133,6 +133,19 @@ func (r *NotificationRepository) CountToday(ctx context.Context, userID int64) (
 	return n, err
 }
 
+// CancelPendingByJobIDs удаляет pending-уведомления для экспайренных jobs.
+func (r *NotificationRepository) CancelPendingByJobIDs(ctx context.Context, jobIDs []int64) (int64, error) {
+	if len(jobIDs) == 0 {
+		return 0, nil
+	}
+	tag, err := r.pool.Exec(ctx,
+		`DELETE FROM notifications WHERE job_id = ANY($1) AND status = 'pending'`, jobIDs)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
 // GetPendingForUser возвращает все pending-записи пользователя для дайджеста (по убыванию final_score).
 func (r *NotificationRepository) GetPendingForUser(ctx context.Context, userID int64) ([]port.PendingNotification, error) {
 	rows, err := r.pool.Query(ctx, `

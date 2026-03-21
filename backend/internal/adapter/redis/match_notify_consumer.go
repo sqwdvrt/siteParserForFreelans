@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -25,12 +27,19 @@ return 0
 
 // MatchNotifyConsumer реализует port.MatchNotifyConsumer через Redis BRPOPLPUSH + processing queue.
 type MatchNotifyConsumer struct {
-	client          *redis.Client
+	client          matchNotifyRedisClient
 	queue           string
 	processingQueue string
 	dlqQueue        string
 	maxNackRetries  int
 	popTimeout      time.Duration
+}
+
+type matchNotifyRedisClient interface {
+	redis.Scripter
+	BRPopLPush(ctx context.Context, source string, destination string, timeout time.Duration) *redis.StringCmd
+	RPopLPush(ctx context.Context, source string, destination string) *redis.StringCmd
+	LRem(ctx context.Context, key string, count int64, value interface{}) *redis.IntCmd
 }
 
 type MatchNotifyConsumerOption func(*MatchNotifyConsumer)
@@ -44,7 +53,7 @@ func WithMatchNotifyPopTimeout(timeout time.Duration) MatchNotifyConsumerOption 
 }
 
 // NewMatchNotifyConsumer создаёт consumer.
-func NewMatchNotifyConsumer(client *redis.Client, queueName string, opts ...MatchNotifyConsumerOption) *MatchNotifyConsumer {
+func NewMatchNotifyConsumer(client matchNotifyRedisClient, queueName string, opts ...MatchNotifyConsumerOption) *MatchNotifyConsumer {
 	if queueName == "" {
 		queueName = defaultMatchNotifyQueue
 	}
@@ -92,12 +101,24 @@ func (c *MatchNotifyConsumer) Pop(ctx context.Context) (*port.MatchNotifyMessage
 	}
 	var p port.MatchNotifyPayload
 	if err := json.Unmarshal([]byte(raw), &p); err != nil {
-		_ = c.ackRaw(ctx, raw) // poison payload: remove from processing
-		return nil, err
+		slog.Warn("match_notify_consumer: poison message (json parse error), routing to DLQ",
+			"error", err,
+			"dlq", c.dlqQueue,
+		)
+		if moveErr := c.moveProcessingMessage(ctx, c.dlqQueue, raw, raw); moveErr != nil {
+			return nil, moveErr
+		}
+		return nil, nil
 	}
 	if !isValidMatchNotifyPayload(p) {
-		_ = c.ackRaw(ctx, raw) // invalid payload: discard
-		return nil, nil        // skip invalid payload
+		slog.Warn("match_notify_consumer: invalid payload, routing to DLQ",
+			"payload", raw,
+			"dlq", c.dlqQueue,
+		)
+		if err := c.moveProcessingMessage(ctx, c.dlqQueue, raw, raw); err != nil {
+			return nil, err
+		}
+		return nil, nil // skip invalid payload
 	}
 	return &port.MatchNotifyMessage{
 		Payload: p,
@@ -127,14 +148,7 @@ func (c *MatchNotifyConsumer) Nack(ctx context.Context, msg *port.MatchNotifyMes
 	if toDLQ {
 		targetQueue = c.dlqQueue
 	}
-	_, err = requeueScript.Run(
-		ctx,
-		c.client,
-		[]string{c.processingQueue, targetQueue},
-		msg.Receipt,
-		outRaw,
-	).Int()
-	return err
+	return c.moveProcessingMessage(ctx, targetQueue, msg.Receipt, outRaw)
 }
 
 // Requeue возвращает delivery в основную очередь без изменения payload/retry-счётчика.
@@ -142,14 +156,7 @@ func (c *MatchNotifyConsumer) Requeue(ctx context.Context, msg *port.MatchNotify
 	if msg == nil || msg.Receipt == "" {
 		return nil
 	}
-	_, err := requeueScript.Run(
-		ctx,
-		c.client,
-		[]string{c.processingQueue, c.queue},
-		msg.Receipt,
-		msg.Receipt,
-	).Int()
-	return err
+	return c.moveProcessingMessage(ctx, c.queue, msg.Receipt, msg.Receipt)
 }
 
 func (c *MatchNotifyConsumer) ackRaw(ctx context.Context, raw string) error {
@@ -176,6 +183,23 @@ func (c *MatchNotifyConsumer) prepareNackPayload(raw string) (string, bool, erro
 		return "", false, err
 	}
 	return string(out), retries > c.maxNackRetries, nil
+}
+
+func (c *MatchNotifyConsumer) moveProcessingMessage(ctx context.Context, targetQueue, receipt, outRaw string) error {
+	moved, err := requeueScript.Run(
+		ctx,
+		c.client,
+		[]string{c.processingQueue, targetQueue},
+		receipt,
+		outRaw,
+	).Int()
+	if err != nil {
+		return err
+	}
+	if moved == 0 {
+		return fmt.Errorf("match_notify_consumer: move from %s to %s failed: message not found", c.processingQueue, targetQueue)
+	}
+	return nil
 }
 
 func asInt(v interface{}) int {

@@ -21,6 +21,7 @@ import (
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/postgres"
 	redisadapter "github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/redis"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/telegram"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/config"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/security"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/telemetry"
@@ -110,7 +111,7 @@ func main() {
 	)
 	notifierMetrics := telemetry.NewNotifierMetrics(registry, queueName)
 
-	rateSec, err := parsePositiveIntEnv("NOTIFY_RATE_LIMIT_SEC", 300)
+	rateSec, err := config.ParsePositiveIntEnv("NOTIFY_RATE_LIMIT_SEC", 300)
 	if err != nil {
 		slog.Error("invalid NOTIFY_RATE_LIMIT_SEC", "err", err)
 		os.Exit(1)
@@ -118,37 +119,37 @@ func main() {
 	rateLimit := time.Duration(rateSec) * time.Second
 
 	maxPerDay := getNotifierMaxPerDay()
-	notifierMaxRetries, err := parsePositiveIntEnv("NOTIFIER_MAX_RETRIES", defaultNotifierMaxRetries)
+	notifierMaxRetries, err := config.ParsePositiveIntEnv("NOTIFIER_MAX_RETRIES", defaultNotifierMaxRetries)
 	if err != nil {
 		slog.Error("invalid NOTIFIER_MAX_RETRIES", "err", err)
 		os.Exit(1)
 	}
-	notifierRetryBaseWait, err := parsePositiveDurationEnv("NOTIFIER_RETRY_BASE_WAIT", defaultNotifierRetryBaseWait)
+	notifierRetryBaseWait, err := config.ParsePositiveDurationEnv("NOTIFIER_RETRY_BASE_WAIT", defaultNotifierRetryBaseWait)
 	if err != nil {
 		slog.Error("invalid NOTIFIER_RETRY_BASE_WAIT", "err", err)
 		os.Exit(1)
 	}
-	breakerFailureThreshold, err := parsePositiveIntEnv("NOTIFIER_BREAKER_FAILURE_THRESHOLD", defaultBreakerFailureThreshold)
+	breakerFailureThreshold, err := config.ParsePositiveIntEnv("NOTIFIER_BREAKER_FAILURE_THRESHOLD", defaultBreakerFailureThreshold)
 	if err != nil {
 		slog.Error("invalid NOTIFIER_BREAKER_FAILURE_THRESHOLD", "err", err)
 		os.Exit(1)
 	}
-	breakerOpenInterval, err := parsePositiveDurationEnv("NOTIFIER_BREAKER_OPEN_INTERVAL", defaultBreakerOpenInterval)
+	breakerOpenInterval, err := config.ParsePositiveDurationEnv("NOTIFIER_BREAKER_OPEN_INTERVAL", defaultBreakerOpenInterval)
 	if err != nil {
 		slog.Error("invalid NOTIFIER_BREAKER_OPEN_INTERVAL", "err", err)
 		os.Exit(1)
 	}
-	breakerOpenJitter, err := parseFloatEnvInRange("NOTIFIER_BREAKER_OPEN_JITTER", defaultBreakerOpenJitter, 0, 1)
+	breakerOpenJitter, err := config.ParseFloatEnvInRange("NOTIFIER_BREAKER_OPEN_JITTER", defaultBreakerOpenJitter, 0, 1)
 	if err != nil {
 		slog.Error("invalid NOTIFIER_BREAKER_OPEN_JITTER", "err", err)
 		os.Exit(1)
 	}
-	queueDepthSamplePeriod, err := parsePositiveDurationEnv("NOTIFIER_QUEUE_DEPTH_SAMPLE_PERIOD", defaultQueueDepthSamplePeriod)
+	queueDepthSamplePeriod, err := config.ParsePositiveDurationEnv("NOTIFIER_QUEUE_DEPTH_SAMPLE_PERIOD", defaultQueueDepthSamplePeriod)
 	if err != nil {
 		slog.Error("invalid NOTIFIER_QUEUE_DEPTH_SAMPLE_PERIOD", "err", err)
 		os.Exit(1)
 	}
-	matchNotifyPopTimeout, err := parsePositiveDurationEnv("NOTIFIER_MATCH_NOTIFY_POP_TIMEOUT", redisadapter.DefaultMatchNotifyPopTimeout)
+	matchNotifyPopTimeout, err := config.ParsePositiveDurationEnv("NOTIFIER_MATCH_NOTIFY_POP_TIMEOUT", redisadapter.DefaultMatchNotifyPopTimeout)
 	if err != nil {
 		slog.Error("invalid NOTIFIER_MATCH_NOTIFY_POP_TIMEOUT", "err", err)
 		os.Exit(1)
@@ -456,50 +457,6 @@ func getNotifierMaxPerDay() int {
 	return getPositiveIntEnvWithFallback("NOTIFY_PRO_MAX_PER_DAY", "NOTIFY_MAX_PER_DAY", 5)
 }
 
-func parsePositiveIntEnv(key string, fallback int) (int, error) {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return fallback, nil
-	}
-	v, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0, fmt.Errorf("%s must be positive integer: %w", key, err)
-	}
-	if v <= 0 {
-		return 0, fmt.Errorf("%s must be > 0", key)
-	}
-	return v, nil
-}
-
-func parsePositiveDurationEnv(key string, fallback time.Duration) (time.Duration, error) {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return fallback, nil
-	}
-	v, err := time.ParseDuration(raw)
-	if err != nil {
-		return 0, fmt.Errorf("%s must be valid duration: %w", key, err)
-	}
-	if v <= 0 {
-		return 0, fmt.Errorf("%s must be > 0", key)
-	}
-	return v, nil
-}
-
-func parseFloatEnvInRange(key string, fallback float64, min, max float64) (float64, error) {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return fallback, nil
-	}
-	v, err := strconv.ParseFloat(raw, 64)
-	if err != nil {
-		return 0, fmt.Errorf("%s must be number: %w", key, err)
-	}
-	if v < min || v > max {
-		return 0, fmt.Errorf("%s must be within [%.2f, %.2f]", key, min, max)
-	}
-	return v, nil
-}
 
 func getPositiveIntEnvWithFallback(primaryKey, secondaryKey string, fallback int) int {
 	primaryRaw := os.Getenv(primaryKey)

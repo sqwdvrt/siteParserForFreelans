@@ -8,7 +8,6 @@ import (
 	stdhttp "net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -27,6 +26,7 @@ import (
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/postgres"
 	redisqueue "github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/redis"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/weblancer"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/config"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/observability"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/security"
@@ -73,32 +73,32 @@ func main() {
 		}
 	}
 
-	breakerFailureThreshold, err := parsePositiveIntEnv("CRAWL_BREAKER_FAILURE_THRESHOLD", 3)
+	breakerFailureThreshold, err := config.ParsePositiveIntEnv("CRAWL_BREAKER_FAILURE_THRESHOLD", 3)
 	if err != nil {
 		slog.Error("invalid CRAWL_BREAKER_FAILURE_THRESHOLD", "err", err)
 		os.Exit(1)
 	}
-	breakerOpenInterval, err := parsePositiveDurationEnv("CRAWL_BREAKER_OPEN_INTERVAL", time.Minute)
+	breakerOpenInterval, err := config.ParsePositiveDurationEnv("CRAWL_BREAKER_OPEN_INTERVAL", time.Minute)
 	if err != nil {
 		slog.Error("invalid CRAWL_BREAKER_OPEN_INTERVAL", "err", err)
 		os.Exit(1)
 	}
-	retryMaxAttempts, err := parsePositiveIntEnv("CRAWL_RETRY_MAX_ATTEMPTS", 3)
+	retryMaxAttempts, err := config.ParsePositiveIntEnv("CRAWL_RETRY_MAX_ATTEMPTS", 3)
 	if err != nil {
 		slog.Error("invalid CRAWL_RETRY_MAX_ATTEMPTS", "err", err)
 		os.Exit(1)
 	}
-	retryBaseBackoff, err := parsePositiveDurationEnv("CRAWL_RETRY_BASE_BACKOFF", time.Second)
+	retryBaseBackoff, err := config.ParsePositiveDurationEnv("CRAWL_RETRY_BASE_BACKOFF", time.Second)
 	if err != nil {
 		slog.Error("invalid CRAWL_RETRY_BASE_BACKOFF", "err", err)
 		os.Exit(1)
 	}
-	retryMaxBackoff, err := parsePositiveDurationEnv("CRAWL_RETRY_MAX_BACKOFF", 30*time.Second)
+	retryMaxBackoff, err := config.ParsePositiveDurationEnv("CRAWL_RETRY_MAX_BACKOFF", 30*time.Second)
 	if err != nil {
 		slog.Error("invalid CRAWL_RETRY_MAX_BACKOFF", "err", err)
 		os.Exit(1)
 	}
-	crawlRunTimeout, err := parsePositiveDurationEnv("CRAWL_RUN_TIMEOUT", 10*time.Minute)
+	crawlRunTimeout, err := config.ParsePositiveDurationEnv("CRAWL_RUN_TIMEOUT", 10*time.Minute)
 	if err != nil {
 		slog.Error("invalid CRAWL_RUN_TIMEOUT", "err", err)
 		os.Exit(1)
@@ -107,7 +107,7 @@ func main() {
 		slog.Error("invalid retry backoff config: CRAWL_RETRY_MAX_BACKOFF must be >= CRAWL_RETRY_BASE_BACKOFF")
 		os.Exit(1)
 	}
-	rateSec, err := parsePositiveIntEnv("CRAWL_RATE_SEC", 15)
+	rateSec, err := config.ParsePositiveIntEnv("CRAWL_RATE_SEC", 15)
 	if err != nil {
 		slog.Error("invalid CRAWL_RATE_SEC", "err", err)
 		os.Exit(1)
@@ -164,12 +164,12 @@ func main() {
 		slog.Info("crawler proxy configured", "proxy", proxyURL)
 	}
 
-	jobExpireDays, err := parsePositiveIntEnv("JOB_EXPIRE_DAYS", 14)
+	jobExpireDays, err := config.ParsePositiveIntEnv("JOB_EXPIRE_DAYS", 14)
 	if err != nil {
 		slog.Error("invalid JOB_EXPIRE_DAYS", "err", err)
 		os.Exit(1)
 	}
-	jobExpireCheckSec, err := parsePositiveIntEnv("JOB_EXPIRE_CHECK_SEC", 3600)
+	jobExpireCheckSec, err := config.ParsePositiveIntEnv("JOB_EXPIRE_CHECK_SEC", 3600)
 	if err != nil {
 		slog.Error("invalid JOB_EXPIRE_CHECK_SEC", "err", err)
 		os.Exit(1)
@@ -294,7 +294,8 @@ func main() {
 	}
 	slog.Info("crawler sources configured", "sources", enabledSourcesRaw)
 
-	expireJobs := usecase.NewExpireJobs(repo, jobExpireDays)
+	notifRepo := postgres.NewNotificationRepository(pool)
+	expireJobs := usecase.NewExpireJobs(repo, notifRepo, jobExpireDays)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -468,35 +469,6 @@ func crawlerReadyz(db crawlerDBPinger, redis crawlerRedisPinger, browser crawler
 	}
 }
 
-func parsePositiveIntEnv(key string, fallback int) (int, error) {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return fallback, nil
-	}
-	v, err := strconv.Atoi(raw)
-	if err != nil {
-		return 0, fmt.Errorf("%s must be positive integer: %w", key, err)
-	}
-	if v <= 0 {
-		return 0, fmt.Errorf("%s must be > 0", key)
-	}
-	return v, nil
-}
-
-func parsePositiveDurationEnv(key string, fallback time.Duration) (time.Duration, error) {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return fallback, nil
-	}
-	v, err := time.ParseDuration(raw)
-	if err != nil {
-		return 0, fmt.Errorf("%s must be valid duration: %w", key, err)
-	}
-	if v <= 0 {
-		return 0, fmt.Errorf("%s must be > 0", key)
-	}
-	return v, nil
-}
 
 func observeCrawlerQueueDepth(client *redisclient.Client, metrics *telemetry.CrawlerMetrics, queueName string) {
 	if client == nil || metrics == nil || queueName == "" {

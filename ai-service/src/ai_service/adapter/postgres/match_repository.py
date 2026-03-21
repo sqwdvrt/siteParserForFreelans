@@ -6,6 +6,7 @@ from pgvector import Vector
 from psycopg2.extras import RealDictCursor
 
 from ai_service.adapter.postgres._pooled_repository import PooledPostgresRepository
+from ai_service.domain.embedding import EMBEDDING_DIM
 from ai_service.port.match_repository import MatchCandidate, MatchRepository
 
 
@@ -37,7 +38,7 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
         Исключает user_id уже в notifications для job_id.
         ORDER BY score DESC. match_score = similarity (0–1).
         """
-        if embedding is None or len(embedding) == 0 or len(embedding) != 384:
+        if embedding is None or len(embedding) == 0 or len(embedding) != EMBEDDING_DIM:
             return []
         if allowed_user_ids is not None and not allowed_user_ids:
             return []
@@ -106,7 +107,7 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
         days_back: int = 7,
     ) -> list[MatchCandidate]:
         """Find recent jobs for user by similarity, excluding already notified jobs."""
-        if embedding is None or len(embedding) == 0 or len(embedding) != 384:
+        if embedding is None or len(embedding) == 0 or len(embedding) != EMBEDDING_DIM:
             return []
         with self._conn() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:

@@ -15,9 +15,14 @@ type JobRepository interface {
 	// Вызывается краулером при каждом обходе, даже если job уже существует.
 	TouchSeenAt(ctx context.Context, url string) error
 	// ExpireStaleJobs помечает активные jobs как 'expired' если last_seen_at
-	// старше olderThanDays дней. Возвращает количество обновлённых строк.
-	ExpireStaleJobs(ctx context.Context, olderThanDays int) (int64, error)
+	// старше olderThanDays дней. Возвращает ID обновлённых jobs.
+	ExpireStaleJobs(ctx context.Context, olderThanDays int) ([]int64, error)
 	// GetUnembeddedIDs returns IDs of jobs that have no entry in job_embeddings.
 	// Used by the crawler to recover jobs that were saved but never enqueued.
 	GetUnembeddedIDs(ctx context.Context, limit int) ([]int64, error)
+	// ExpireByURL мгновенно помечает job как 'expired' по URL.
+	// Вызывается при получении 404/410 чтобы не ждать TTL.
+	// Реализация должна атомарно зафиксировать и экспирацию job, и очистку pending-уведомлений.
+	// Возвращает IDs затронутых jobs.
+	ExpireByURL(ctx context.Context, url string) ([]int64, error)
 }

@@ -128,7 +128,11 @@ func (m *digestJobRepo) ExpireStaleJobs(ctx context.Context, days int) ([]int64,
 	return nil, nil
 }
 
-func (m *digestJobRepo) ExpireByURL(ctx context.Context, url string) error { return nil }
+func (m *digestJobRepo) ExpireByURL(ctx context.Context, url string) ([]int64, error) {
+	_ = ctx
+	_ = url
+	return nil, nil
+}
 
 type digestNotifier struct {
 	sendFunc func(ctx context.Context, telegramID int64, payload port.NotifyPayload) error

@@ -4,6 +4,7 @@ from ai_service.domain.job import Job
 from ai_service.domain.user import User, UserPreferences
 from ai_service.util.preference_filter import (
     PREFERENCE_FILTER_REASON_BUDGET,
+    PREFERENCE_FILTER_REASON_EXCLUDE_KEYWORD,
     PREFERENCE_FILTER_REASON_INCLUDE_KEYWORD,
     apply_preference_filter,
     evaluate_preference_filter,
@@ -213,6 +214,35 @@ def test_include_keywords_match_short_exact_word() -> None:
     result = apply_preference_filter(job, [user])
 
     assert result == [user]
+
+
+def test_exclude_keywords_do_not_match_substrings_inside_other_words() -> None:
+    # Regression: "go" must NOT exclude a job mentioning "django" or "google"
+    job = Job(id=1, title="Django backend", description="google cloud, algorithm", raw_html="")
+    user = User(
+        id=7,
+        telegram_id=7,
+        profile_text="Навыки: Django",
+        embedding=None,
+        preferences=UserPreferences(exclude_keywords=("go",)),
+    )
+    result = apply_preference_filter(job, [user])
+    assert result == [user]
+
+
+def test_exclude_keywords_match_exact_word() -> None:
+    # "go" must exclude a job that contains the standalone word "go"
+    job = Job(id=1, title="Go backend developer", description="microservices", raw_html="")
+    user = User(
+        id=8,
+        telegram_id=8,
+        profile_text="Навыки: Go",
+        embedding=None,
+        preferences=UserPreferences(exclude_keywords=("go",)),
+    )
+    result = evaluate_preference_filter(job, [user])
+    assert result.passed == []
+    assert PREFERENCE_FILTER_REASON_EXCLUDE_KEYWORD in result.filtered_user_reasons[8]
 
 
 def test_include_keywords_empty_means_no_filter() -> None:

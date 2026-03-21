@@ -45,4 +45,8 @@ type NotificationRepository interface {
 
 	// GetPendingForUser возвращает все pending-записи пользователя для дайджеста.
 	GetPendingForUser(ctx context.Context, userID int64) ([]PendingNotification, error)
+
+	// CancelPendingByJobIDs удаляет все pending-уведомления для указанных job_id.
+	// Вызывается при экспирации jobs, чтобы не отправлять уведомления о закрытых вакансиях.
+	CancelPendingByJobIDs(ctx context.Context, jobIDs []int64) (int64, error)
 }

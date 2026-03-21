@@ -61,13 +61,29 @@ func TestValidatePostgresTLSForProduction(t *testing.T) {
 }
 
 func TestValidateRedisTLSForProduction(t *testing.T) {
-	okURL := "rediss://default:a16e9c0dbf67aa50831ed2a1bc4e9f0f@redis.example.com:6380/0"
-	if err := ValidateRedisTLSForProduction("REDIS_URL", okURL, 16); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	for _, tc := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "rediss external host", raw: "rediss://default:a16e9c0dbf67aa50831ed2a1bc4e9f0f@redis.example.com:6380/0"},
+		{name: "redis localhost", raw: "redis://default:a16e9c0dbf67aa50831ed2a1bc4e9f0f@localhost:6379/0"},
+		{name: "redis loopback ipv4", raw: "redis://default:a16e9c0dbf67aa50831ed2a1bc4e9f0f@127.0.0.1:6379/0"},
+		{name: "redis private ipv4", raw: "redis://default:a16e9c0dbf67aa50831ed2a1bc4e9f0f@10.0.0.12:6379/0"},
+		{name: "redis docker service name", raw: "redis://default:a16e9c0dbf67aa50831ed2a1bc4e9f0f@infra-redis-1:6379/0"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := ValidateRedisTLSForProduction("REDIS_URL", tc.raw, 16); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
-	badURL := "redis://:a16e9c0dbf67aa50831ed2a1bc4e9f0f@redis.example.com:6379/0"
-	if err := ValidateRedisTLSForProduction("REDIS_URL", badURL, 16); err == nil {
-		t.Fatal("want error for non-TLS redis scheme")
+	badSchemeURL := "redis://:a16e9c0dbf67aa50831ed2a1bc4e9f0f@redis.example.com:6379/0"
+	if err := ValidateRedisTLSForProduction("REDIS_URL", badSchemeURL, 16); err == nil {
+		t.Fatal("want error for non-TLS redis scheme on external host")
+	}
+	missingPasswordURL := "redis://localhost:6379/0"
+	if err := ValidateRedisTLSForProduction("REDIS_URL", missingPasswordURL, 16); err == nil {
+		t.Fatal("want error for missing password")
 	}
 }
 

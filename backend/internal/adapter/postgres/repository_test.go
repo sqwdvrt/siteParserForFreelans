@@ -117,6 +117,20 @@ func TestJobRepository_ExistsByURL(t *testing.T) {
 	if !exists {
 		t.Error("want true after Save")
 	}
+
+	// Expired job не должен считаться существующим — краулер должен
+	// повторно скачать и реактивировать его через Save().
+	_, err = pool.Exec(ctx, `UPDATE jobs SET status = 'expired' WHERE url = $1`, uniqueURL)
+	if err != nil {
+		t.Fatalf("expire job: %v", err)
+	}
+	exists, err = repo.ExistsByURL(ctx, uniqueURL)
+	if err != nil {
+		t.Fatalf("ExistsByURL after expire: %v", err)
+	}
+	if exists {
+		t.Error("want false for expired job")
+	}
 }
 
 func TestJobRepository_GetByID_NotFound(t *testing.T) {
@@ -270,5 +284,65 @@ func TestJobRepository_TouchSeenAt_ReactivatesExpiredJob(t *testing.T) {
 	}
 	if status != "active" {
 		t.Fatalf("status = %q, want active", status)
+	}
+}
+
+func TestJobRepository_ExpireByURL_DeletesPendingNotifications(t *testing.T) {
+	pool := setupTestDB(t)
+	repo := NewJobRepository(pool)
+	notifRepo := NewNotificationRepository(pool)
+	ctx := context.Background()
+
+	userTelegramID := int64(8800000000 + time.Now().UnixNano()%1000000)
+	var userID int64
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO users (telegram_id)
+		VALUES ($1)
+		ON CONFLICT (telegram_id) DO UPDATE SET updated_at = NOW()
+		RETURNING id
+	`, userTelegramID).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+
+	url := "https://kwork.ru/projects/expire-atomic-" + time.Now().Format("20060102150405.000000000") + "/view"
+	var jobID int64
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO jobs (source, url, title, raw_html)
+		VALUES ('kwork', $1, 'Expire Atomic Test', '<html>pending</html>')
+		ON CONFLICT (url) DO UPDATE SET raw_html = EXCLUDED.raw_html, status = 'active', last_seen_at = NOW()
+		RETURNING id
+	`, url).Scan(&jobID); err != nil {
+		t.Fatalf("insert job: %v", err)
+	}
+	if _, _, err := notifRepo.EnsurePending(ctx, userID, jobID, 0.9, 0.9, "v2", []string{"close_match"}, "atomic cleanup"); err != nil {
+		t.Fatalf("EnsurePending: %v", err)
+	}
+
+	expiredIDs, err := repo.ExpireByURL(ctx, url)
+	if err != nil {
+		t.Fatalf("ExpireByURL: %v", err)
+	}
+	if len(expiredIDs) != 1 || expiredIDs[0] != jobID {
+		t.Fatalf("ExpireByURL ids = %v, want [%d]", expiredIDs, jobID)
+	}
+
+	var status string
+	if err := pool.QueryRow(ctx, `SELECT status FROM jobs WHERE id = $1`, jobID).Scan(&status); err != nil {
+		t.Fatalf("query job status: %v", err)
+	}
+	if status != "expired" {
+		t.Fatalf("job status = %q, want expired", status)
+	}
+
+	var pendingCount int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM notifications
+		WHERE job_id = $1 AND status = 'pending'
+	`, jobID).Scan(&pendingCount); err != nil {
+		t.Fatalf("query pending notifications: %v", err)
+	}
+	if pendingCount != 0 {
+		t.Fatalf("pending notifications = %d, want 0", pendingCount)
 	}
 }
