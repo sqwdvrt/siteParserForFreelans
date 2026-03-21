@@ -58,6 +58,12 @@ func (m *mockNotifRepo) CountToday(ctx context.Context, userID int64) (int, erro
 	return 0, nil
 }
 
+func (m *mockNotifRepo) CancelPendingByJobIDs(ctx context.Context, jobIDs []int64) (int64, error) {
+	_ = ctx
+	_ = jobIDs
+	return 0, nil
+}
+
 type mockUserRepo struct {
 	getByIDFunc func(ctx context.Context, userID int64) (*domain.User, error)
 }
@@ -123,9 +129,10 @@ func (m *mockJobRepo) GetUnembeddedIDs(ctx context.Context, limit int) ([]int64,
 	return nil, nil
 }
 func (m *mockJobRepo) TouchSeenAt(ctx context.Context, url string) error { return nil }
-func (m *mockJobRepo) ExpireStaleJobs(ctx context.Context, days int) (int64, error) {
-	return 0, nil
+func (m *mockJobRepo) ExpireStaleJobs(ctx context.Context, days int) ([]int64, error) {
+	return nil, nil
 }
+func (m *mockJobRepo) ExpireByURL(ctx context.Context, url string) error { return nil }
 
 type mockNotifier struct {
 	sendFunc func(ctx context.Context, telegramID int64, p port.NotifyPayload) error

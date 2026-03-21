@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 )
 
 // mockTransport возвращает заданные ответы, не делая реальных запросов.
@@ -152,8 +154,12 @@ func TestFetcher_Fetch_4xx(t *testing.T) {
 	if err == nil {
 		t.Fatal("want error on 404")
 	}
-	if err.Error() != "http 404" {
-		t.Errorf("want 'http 404', got %v", err)
+	var httpErr *domain.HttpStatusError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("want HttpStatusError, got %T: %v", err, err)
+	}
+	if httpErr.StatusCode != http.StatusNotFound || httpErr.URL != "https://kwork.ru/projects" {
+		t.Fatalf("httpErr=%+v", httpErr)
 	}
 }
 

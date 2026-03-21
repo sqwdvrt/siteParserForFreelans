@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	domainpkg "github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 )
 
 const (
@@ -190,8 +192,8 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) {
 	}
 	ctx = nextCtx
 
-	domain := normalizeHost(f.extractDomain(rawURL))
-	if err := f.waitForRateLimitAndOpenCircuitCheck(ctx, domain); err != nil {
+	domainName := normalizeHost(f.extractDomain(rawURL))
+	if err := f.waitForRateLimitAndOpenCircuitCheck(ctx, domainName); err != nil {
 		return nil, err
 	}
 
@@ -211,7 +213,7 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) {
 		resp, err := f.client.Do(req)
 		if err != nil {
 			if ctx.Err() == nil {
-				f.recordFailure(domain)
+				f.recordFailure(domainName)
 			}
 			return nil, fmt.Errorf("fetch: %w", err)
 		}
@@ -222,21 +224,21 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) {
 				continue
 			}
 			if shouldTripCircuitOnStatus(statusCode) {
-				f.recordFailure(domain)
+				f.recordFailure(domainName)
 			} else {
-				f.recordSuccess(domain)
+				f.recordSuccess(domainName)
 			}
-			return nil, fmt.Errorf("http %d", statusCode)
+			return nil, &domainpkg.HttpStatusError{StatusCode: statusCode, URL: rawURL}
 		}
 
 		body := io.LimitReader(resp.Body, maxBodySize)
 		data, err := io.ReadAll(body)
 		_ = resp.Body.Close()
 		if err != nil {
-			f.recordFailure(domain)
+			f.recordFailure(domainName)
 			return nil, fmt.Errorf("read body: %w", err)
 		}
-		f.recordSuccess(domain)
+		f.recordSuccess(domainName)
 		return data, nil
 	}
 	return nil, fmt.Errorf("fetch retries exhausted")

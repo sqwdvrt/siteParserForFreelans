@@ -95,6 +95,12 @@ func (m *digestNotifRepo) GetPendingForUser(ctx context.Context, userID int64) (
 	return nil, nil
 }
 
+func (m *digestNotifRepo) CancelPendingByJobIDs(ctx context.Context, jobIDs []int64) (int64, error) {
+	_ = ctx
+	_ = jobIDs
+	return 0, nil
+}
+
 type digestJobRepo struct {
 	getByIDsFunc func(ctx context.Context, ids []int64) (map[int64]*domain.Job, error)
 }
@@ -118,9 +124,11 @@ func (m *digestJobRepo) GetUnembeddedIDs(ctx context.Context, limit int) ([]int6
 	return nil, nil
 }
 func (m *digestJobRepo) TouchSeenAt(ctx context.Context, url string) error { return nil }
-func (m *digestJobRepo) ExpireStaleJobs(ctx context.Context, days int) (int64, error) {
-	return 0, nil
+func (m *digestJobRepo) ExpireStaleJobs(ctx context.Context, days int) ([]int64, error) {
+	return nil, nil
 }
+
+func (m *digestJobRepo) ExpireByURL(ctx context.Context, url string) error { return nil }
 
 type digestNotifier struct {
 	sendFunc func(ctx context.Context, telegramID int64, payload port.NotifyPayload) error

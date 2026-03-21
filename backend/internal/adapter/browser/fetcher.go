@@ -13,6 +13,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 )
 
 const defaultTimeout = 60 * time.Second
@@ -101,7 +103,8 @@ func (f *Fetcher) Fetch(ctx context.Context, rawURL string) ([]byte, error) {
 			if shouldRetryStatus(resp.StatusCode) && attempt < f.retryMaxAttempts {
 				continue
 			}
-			return nil, fmt.Errorf("browser fetcher: http %d: %s", resp.StatusCode, truncate(string(body), 200))
+			httpErr := &domain.HttpStatusError{StatusCode: resp.StatusCode, URL: rawURL}
+			return nil, fmt.Errorf("browser fetcher: %w body=%s", httpErr, truncate(string(body), 200))
 		}
 
 		var r renderResponse
