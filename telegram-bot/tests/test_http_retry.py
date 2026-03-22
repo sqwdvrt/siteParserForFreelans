@@ -77,7 +77,15 @@ def test_http_post_does_not_retry_on_400(bot, monkeypatch):
         code=400,
         msg="bad request",
         hdrs=None,
-        fp=io.BytesIO(b"bad"),
+        fp=io.BytesIO(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error_code": 400,
+                    "description": "Bad Request: chat not found",
+                }
+            ).encode("utf-8")
+        ),
     )
     safe_open = MagicMock(side_effect=err)
     monkeypatch.setattr(bot, "_safe_open", safe_open)
@@ -85,7 +93,11 @@ def test_http_post_does_not_retry_on_400(bot, monkeypatch):
 
     status, data = bot._http_post("https://api.telegram.org/bot/x/sendMessage", {"text": "hi"})
     assert status == 400
-    assert data is None
+    assert data == {
+        "ok": False,
+        "error_code": 400,
+        "description": "Bad Request: chat not found",
+    }
     assert safe_open.call_count == 1
 
 

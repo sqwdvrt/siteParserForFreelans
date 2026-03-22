@@ -32,6 +32,9 @@ type NotificationRepository interface {
 	// Вызывается только после подтверждённой доставки в Telegram.
 	MarkSent(ctx context.Context, userID, jobID int64) error
 
+	// MarkFailed переводит запись в статус 'failed' после перманентной ошибки доставки.
+	MarkFailed(ctx context.Context, userID, jobID int64) error
+
 	// Delete удаляет pending-запись (используется при отмене по rate limit / daily limit).
 	Delete(ctx context.Context, userID, jobID int64) error
 

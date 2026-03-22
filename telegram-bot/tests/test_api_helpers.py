@@ -140,6 +140,36 @@ def test_send_message_returns_true_on_200(bot, monkeypatch):
     assert bot.send_message("token", 123, "hello")
 
 
+def test_send_message_omits_parse_mode_by_default(bot, monkeypatch):
+    captured = {}
+
+    def fake_http_post(url, data, headers=None):
+        _ = url
+        _ = headers
+        captured["data"] = data
+        return 200, {"ok": True}
+
+    monkeypatch.setattr(bot, "_http_post", fake_http_post)
+
+    assert bot.send_message("token", 123, "hello")
+    assert "parse_mode" not in captured["data"]
+
+
+def test_send_message_can_opt_in_to_html(bot, monkeypatch):
+    captured = {}
+
+    def fake_http_post(url, data, headers=None):
+        _ = url
+        _ = headers
+        captured["data"] = data
+        return 200, {"ok": True}
+
+    monkeypatch.setattr(bot, "_http_post", fake_http_post)
+
+    assert bot.send_message("token", 123, "<b>hello</b>", parse_html=True)
+    assert captured["data"]["parse_mode"] == "HTML"
+
+
 def test_safe_open_uses_http_only_opener(bot, monkeypatch):
     called = {}
 

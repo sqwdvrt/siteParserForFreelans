@@ -76,6 +76,13 @@ func (m *digestNotifRepo) MarkSent(ctx context.Context, userID, jobID int64) err
 	return nil
 }
 
+func (m *digestNotifRepo) MarkFailed(ctx context.Context, userID, jobID int64) error {
+	_ = ctx
+	_ = userID
+	_ = jobID
+	return nil
+}
+
 func (m *digestNotifRepo) Delete(ctx context.Context, userID, jobID int64) error { return nil }
 func (m *digestNotifRepo) SentRecently(ctx context.Context, userID int64, within time.Duration) (bool, error) {
 	return false, nil

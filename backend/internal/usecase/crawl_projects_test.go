@@ -148,6 +148,8 @@ func (m *mockCrawlNotifRepo) EnsurePending(context.Context, int64, int64, float6
 
 func (m *mockCrawlNotifRepo) MarkSent(context.Context, int64, int64) error { return nil }
 
+func (m *mockCrawlNotifRepo) MarkFailed(context.Context, int64, int64) error { return nil }
+
 func (m *mockCrawlNotifRepo) Delete(context.Context, int64, int64) error { return nil }
 
 func (m *mockCrawlNotifRepo) SentRecently(context.Context, int64, time.Duration) (bool, error) {

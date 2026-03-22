@@ -277,6 +277,7 @@ func (s *captureNotifier) Send(ctx context.Context, telegramID int64, p port.Not
 type stubNotifRepo struct {
 	ensurePending func(ctx context.Context, userID, jobID int64, matchScore float64, finalScore float64, rankerVersion string, reasonCodes []string, whyItFits string) (bool, bool, error)
 	markSent      func(ctx context.Context, userID, jobID int64) error
+	markFailed    func(ctx context.Context, userID, jobID int64) error
 	deleteFunc    func(ctx context.Context, userID, jobID int64) error
 	sentRecently  func(ctx context.Context, userID int64, within time.Duration) (bool, error)
 	countToday    func(ctx context.Context, userID int64) (int, error)
@@ -296,6 +297,13 @@ func (s *stubNotifRepo) GetPendingForUser(ctx context.Context, userID int64) ([]
 func (s *stubNotifRepo) MarkSent(ctx context.Context, userID, jobID int64) error {
 	if s.markSent != nil {
 		return s.markSent(ctx, userID, jobID)
+	}
+	return nil
+}
+
+func (s *stubNotifRepo) MarkFailed(ctx context.Context, userID, jobID int64) error {
+	if s.markFailed != nil {
+		return s.markFailed(ctx, userID, jobID)
 	}
 	return nil
 }

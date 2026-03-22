@@ -2,6 +2,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -31,6 +32,10 @@ type batchDeliveryItem struct {
 	jobID       int64
 	wasInserted bool
 	payload     port.BatchNotifyItem
+}
+
+type permanentNotifierError interface {
+	Permanent() bool
 }
 
 // NewSendNotification создаёт usecase.
@@ -156,6 +161,14 @@ func (u *SendNotification) Execute(
 		WhyItFits:     whyItFits,
 	}
 	if err := u.notifier.Send(ctx, user.TelegramID, payload); err != nil {
+		if isPermanentNotifierError(err) {
+			if markErr := u.notifRepo.MarkFailed(ctx, userID, jobID); markErr != nil {
+				return fmt.Errorf("mark failed notification: %w", markErr)
+			}
+			slog.Error("send notification: telegram failed permanently, notification marked failed",
+				"user_id", userID, "job_id", jobID, "err", err)
+			return nil
+		}
 		// Запись остаётся 'pending' — Redis-очередь повторит через Nack.
 		slog.Error("send notification: telegram failed, pending record kept for retry",
 			"user_id", userID, "job_id", jobID, "err", err)
@@ -307,6 +320,16 @@ func (u *SendNotification) ExecuteBatch(
 	}
 
 	if err := u.notifier.Send(ctx, user.TelegramID, payload); err != nil {
+		if isPermanentNotifierError(err) {
+			for _, item := range deliverable {
+				if markErr := u.notifRepo.MarkFailed(ctx, userID, item.jobID); markErr != nil {
+					return fmt.Errorf("mark failed notification: %w", markErr)
+				}
+			}
+			slog.Error("send batch notification: telegram failed permanently, notifications marked failed",
+				"user_id", userID, "jobs", len(deliverable), "err", err)
+			return nil
+		}
 		// Pending-записи остаются для retry через Redis Nack.
 		slog.Error("send batch notification: telegram failed, pending records kept for retry",
 			"user_id", userID, "jobs", len(deliverable), "err", err)
@@ -354,6 +377,14 @@ func sortBatchDeliveryItems(items []batchDeliveryItem) {
 		}
 		return left > right
 	})
+}
+
+func isPermanentNotifierError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var permanent permanentNotifierError
+	return errors.As(err, &permanent) && permanent.Permanent()
 }
 
 func topReasonCodes(items []batchDeliveryItem, limit int) []string {

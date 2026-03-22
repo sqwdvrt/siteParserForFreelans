@@ -204,9 +204,10 @@ func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayl
 			continue
 		}
 		status := resp.StatusCode
+		detail := parseTelegramErrorDescription(resp.Body)
 		var rateLimitDelay time.Duration
 		if status == http.StatusTooManyRequests {
-			rateLimitDelay = parseTelegramRetryAfter(resp.Body)
+			rateLimitDelay = parseTelegramRetryAfter(strings.NewReader(detail.rawBody))
 		}
 		_ = resp.Body.Close()
 
@@ -215,7 +216,7 @@ func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayl
 			return nil
 		}
 
-		lastErr = fmt.Errorf("telegram api: http %d", status)
+		lastErr = formatTelegramHTTPError(status, detail.description)
 		if status == http.StatusTooManyRequests {
 			delay := rateLimitDelay
 			if delay <= 0 {
@@ -252,7 +253,7 @@ func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayl
 		}
 
 		n.breaker.markPermanentFailure()
-		return lastErr
+		return newPermanentError(lastErr.Error())
 	}
 	if transientFailed {
 		n.breaker.markTransientFailure(time.Now(), transientDelay, transientImmediateOpen)
@@ -277,11 +278,19 @@ type retryableError struct {
 	noAttempt  bool
 }
 
+type permanentError struct {
+	msg string
+}
+
 func newRetryableError(msg string, retryAfter time.Duration) *retryableError {
 	if retryAfter <= 0 {
 		retryAfter = retryBaseWait
 	}
 	return &retryableError{msg: msg, retryAfter: retryAfter}
+}
+
+func newPermanentError(msg string) *permanentError {
+	return &permanentError{msg: msg}
 }
 
 func newCircuitOpenError(retryAfter time.Duration) *retryableError {
@@ -300,6 +309,14 @@ func (e *retryableError) RetryAfter() time.Duration {
 
 func (e *retryableError) NoAttempt() bool {
 	return e.noAttempt
+}
+
+func (e *permanentError) Error() string {
+	return e.msg
+}
+
+func (e *permanentError) Permanent() bool {
+	return true
 }
 
 // RetryAfter возвращает задержку до следующей попытки, если ошибка retryable.
@@ -350,6 +367,36 @@ func parseTelegramRetryAfter(body io.Reader) time.Duration {
 		return 0
 	}
 	return time.Duration(payload.Parameters.RetryAfter) * time.Second
+}
+
+type telegramErrorDescription struct {
+	description string
+	rawBody     string
+}
+
+func parseTelegramErrorDescription(body io.Reader) telegramErrorDescription {
+	if body == nil {
+		return telegramErrorDescription{}
+	}
+	raw, err := io.ReadAll(io.LimitReader(body, 8*1024))
+	if err != nil || len(raw) == 0 {
+		return telegramErrorDescription{}
+	}
+	result := telegramErrorDescription{rawBody: string(raw)}
+	var payload struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(raw, &payload); err == nil {
+		result.description = strings.TrimSpace(payload.Description)
+	}
+	return result
+}
+
+func formatTelegramHTTPError(status int, description string) error {
+	if description == "" {
+		return fmt.Errorf("telegram api: http %d", status)
+	}
+	return fmt.Errorf("telegram api: http %d: %s", status, description)
 }
 
 type breakerState uint8

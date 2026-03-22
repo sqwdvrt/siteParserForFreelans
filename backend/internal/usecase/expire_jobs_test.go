@@ -53,6 +53,7 @@ func (m *mockExpireNotifRepo) EnsurePending(_ context.Context, _, _ int64, _, _ 
 	return false, false, nil
 }
 func (m *mockExpireNotifRepo) MarkSent(_ context.Context, _, _ int64) error { return nil }
+func (m *mockExpireNotifRepo) MarkFailed(_ context.Context, _, _ int64) error { return nil }
 func (m *mockExpireNotifRepo) Delete(_ context.Context, _, _ int64) error   { return nil }
 func (m *mockExpireNotifRepo) SentRecently(_ context.Context, _ int64, _ time.Duration) (bool, error) {
 	return false, nil

@@ -162,6 +162,45 @@ func TestNotificationRepository_MarkSent(t *testing.T) {
 	}
 }
 
+func TestNotificationRepository_MarkFailed(t *testing.T) {
+	pool := setupTestDBForNotification(t)
+	repo := NewNotificationRepository(pool)
+	ctx := context.Background()
+	userID, jobID := createTestUserAndJob(t, pool, "MarkFailed")
+
+	if _, _, err := repo.EnsurePending(ctx, userID, jobID, 0.85, 0.85, "v2", []string{"strong_similarity"}, ""); err != nil {
+		t.Fatalf("EnsurePending: %v", err)
+	}
+
+	if err := repo.MarkFailed(ctx, userID, jobID); err != nil {
+		t.Fatalf("MarkFailed: %v", err)
+	}
+
+	var status string
+	var sentAt *time.Time
+	if err := pool.QueryRow(ctx, `
+		SELECT status, sent_at
+		FROM notifications
+		WHERE user_id = $1 AND job_id = $2
+	`, userID, jobID).Scan(&status, &sentAt); err != nil {
+		t.Fatalf("query notification: %v", err)
+	}
+	if status != "failed" {
+		t.Fatalf("status = %q, want failed", status)
+	}
+	if sentAt != nil {
+		t.Fatalf("sent_at must be NULL for failed notification, got %v", *sentAt)
+	}
+
+	wasInserted, shouldSend, err := repo.EnsurePending(ctx, userID, jobID, 0.9, 0.9, "v3", []string{"retry"}, "")
+	if err != nil {
+		t.Fatalf("EnsurePending after MarkFailed: %v", err)
+	}
+	if !wasInserted || !shouldSend {
+		t.Fatalf("want EnsurePending to recreate failed row, got wasInserted=%v shouldSend=%v", wasInserted, shouldSend)
+	}
+}
+
 func TestNotificationRepository_Delete(t *testing.T) {
 	pool := setupTestDBForNotification(t)
 	repo := NewNotificationRepository(pool)

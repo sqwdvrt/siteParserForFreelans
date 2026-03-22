@@ -79,6 +79,23 @@ func (r *NotificationRepository) EnsurePending(
 			return false, false, err
 		}
 	}
+	if status == "failed" {
+		if _, err := r.pool.Exec(ctx, `
+			UPDATE notifications
+			SET
+				status = 'pending',
+				sent_at = NULL,
+				match_score = $3,
+				final_score = $4,
+				ranker_version = NULLIF($5, ''),
+				reason_codes = $6,
+				why_it_fits = NULLIF($7, '')
+			WHERE user_id = $1 AND job_id = $2 AND status = 'failed'
+		`, userID, jobID, matchScore, finalScore, rankerVersion, reasonCodes, whyItFits); err != nil {
+			return false, false, err
+		}
+		return true, true, nil
+	}
 	// pending → нужно повторить отправку; sent → уже доставлено.
 	return false, status == "pending", nil
 }
@@ -87,6 +104,15 @@ func (r *NotificationRepository) EnsurePending(
 func (r *NotificationRepository) MarkSent(ctx context.Context, userID, jobID int64) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE notifications SET status = 'sent', sent_at = NOW()
+		WHERE user_id = $1 AND job_id = $2
+	`, userID, jobID)
+	return err
+}
+
+// MarkFailed переводит запись в статус 'failed' и сбрасывает sent_at.
+func (r *NotificationRepository) MarkFailed(ctx context.Context, userID, jobID int64) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE notifications SET status = 'failed', sent_at = NULL
 		WHERE user_id = $1 AND job_id = $2
 	`, userID, jobID)
 	return err

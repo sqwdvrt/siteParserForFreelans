@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import hashlib
+import html
 import hmac
 import json
 import logging
@@ -725,10 +726,17 @@ def _http_post(url: str, data: dict, headers: dict[str, str] | None = None) -> t
                 logger.warning("API POST retry after status=%s in %.2fs", e.code, delay)
                 time.sleep(delay)
                 continue
-            if e.code >= 500 and err_body:
-                logger.warning("API error %s: %s", e.code, err_body[:200])
+            parsed_body = None
+            if err_body:
+                try:
+                    parsed = json.loads(err_body)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    parsed_body = parsed
+            logger.warning("HTTP POST failed: status=%s detail=%s", e.code, _http_error_log_detail(e))
             _observe_http_request("POST", url, e.code)
-            return e.code, None
+            return e.code, parsed_body
         except Exception as e:
             if attempt < API_RETRY_ATTEMPTS - 1:
                 delay = _retry_delay_sec(attempt)
@@ -1292,12 +1300,20 @@ def run_polling_standby(reason: str, *, sleep_sec: float = POLLING_STANDBY_SLEEP
     logger.info("polling standby stopped")
 
 
-def send_message(token: str, chat_id: int, text: str) -> bool:
+def send_message(token: str, chat_id: int, text: str, *, parse_html: bool = False) -> bool:
     """Отправить сообщение в чат."""
     url = f"{TELEGRAM_BASE}{token}/sendMessage"
-    status, _ = _http_post(url, {"chat_id": chat_id, "text": text, "parse_mode": "HTML"})
+    payload = {"chat_id": chat_id, "text": text}
+    if parse_html:
+        payload["parse_mode"] = "HTML"
+    status, data = _http_post(url, payload)
     if status != 200:
-        logger.warning("sendMessage failed: status=%s", status)
+        detail = ""
+        if isinstance(data, dict):
+            description = data.get("description")
+            if isinstance(description, str) and description.strip():
+                detail = f" detail={_compact_log_text(description)}"
+        logger.warning("sendMessage failed: status=%s%s", status, detail)
         return False
     return True
 
@@ -1346,7 +1362,12 @@ def send_keyboard(token: str, chat_id: int, text: str, keyboard: list[list[dict]
         "reply_markup": {"inline_keyboard": keyboard},
     })
     if status != 200 or data is None:
-        logger.warning("sendMessage(keyboard) failed: status=%s", status)
+        detail = ""
+        if isinstance(data, dict):
+            description = data.get("description")
+            if isinstance(description, str) and description.strip():
+                detail = f" detail={_compact_log_text(description)}"
+        logger.warning("sendMessage(keyboard) failed: status=%s%s", status, detail)
         return None
     return (data.get("result") or {}).get("message_id")
 
@@ -1363,9 +1384,14 @@ def edit_message_text(
     payload: dict = {"chat_id": chat_id, "message_id": message_id, "text": text, "parse_mode": "HTML"}
     if keyboard is not None:
         payload["reply_markup"] = {"inline_keyboard": keyboard}
-    status, _ = _http_post(url, payload)
+    status, data = _http_post(url, payload)
     if status != 200:
-        logger.warning("editMessageText failed: status=%s", status)
+        detail = ""
+        if isinstance(data, dict):
+            description = data.get("description")
+            if isinstance(description, str) and description.strip():
+                detail = f" detail={_compact_log_text(description)}"
+        logger.warning("editMessageText failed: status=%s%s", status, detail)
 
 
 def _build_category_keyboard() -> list[list[dict]]:
@@ -1568,7 +1594,7 @@ def _onboarding_handle_callback(
         profile_text = _build_onboarding_profile_text(ob)
         edit_message_text(
             token, chat_id, message_id,
-            f"Ваш профиль:\n\n<i>{profile_text}</i>\n\nСохранить или написать свой текст?",
+            f"Ваш профиль:\n\n<i>{html.escape(profile_text)}</i>\n\nСохранить или написать свой текст?",
             [
                 [{"text": "✅ Сохранить", "callback_data": "ob:confirm"}],
                 [{"text": "✏️ Написать вручную", "callback_data": "ob:edit"}],
@@ -1594,7 +1620,7 @@ def _onboarding_handle_callback(
         if status == 204:
             _clear_conversation_state(telegram_id)
             _record_command("onboarding", "ok")
-            edit_message_text(token, chat_id, message_id, f"✅ Профиль сохранён:\n\n<i>{profile_text}</i>")
+            edit_message_text(token, chat_id, message_id, f"✅ Профиль сохранён:\n\n<i>{html.escape(profile_text)}</i>")
             send_message(
                 token,
                 chat_id,
@@ -1812,7 +1838,7 @@ def _profile_backend_unavailable_message() -> str:
 def _profile_empty_message() -> str:
     return (
         "Пустой профиль не сохраню. Отправьте текст профиля одним сообщением "
-        "или используйте /profile &lt;текст профиля&gt;."
+        "или используйте /profile <текст профиля>."
     )
 
 
@@ -1986,6 +2012,7 @@ def _handle_update(
                 "После обновления профиля ИИ подберёт подходящие заказы и пришлёт уведомления.\n"
                 "Нажмите 👍 или 👎 под каждым заказом, чтобы обучить алгоритм."
             ),
+            parse_html=True,
         )
         return True
 

@@ -14,6 +14,7 @@ import (
 type mockNotifRepo struct {
 	ensurePendingFunc func(ctx context.Context, userID, jobID int64, score float64, finalScore float64, rankerVersion string, reasonCodes []string, whyItFits string) (bool, bool, error)
 	markSentFunc      func(ctx context.Context, userID, jobID int64) error
+	markFailedFunc    func(ctx context.Context, userID, jobID int64) error
 	deleteFunc        func(ctx context.Context, userID, jobID int64) error
 	sentRecentlyFunc  func(ctx context.Context, userID int64, within time.Duration) (bool, error)
 	countTodayFunc    func(ctx context.Context, userID int64) (int, error)
@@ -33,6 +34,13 @@ func (m *mockNotifRepo) GetPendingForUser(ctx context.Context, userID int64) ([]
 func (m *mockNotifRepo) MarkSent(ctx context.Context, userID, jobID int64) error {
 	if m.markSentFunc != nil {
 		return m.markSentFunc(ctx, userID, jobID)
+	}
+	return nil
+}
+
+func (m *mockNotifRepo) MarkFailed(ctx context.Context, userID, jobID int64) error {
+	if m.markFailedFunc != nil {
+		return m.markFailedFunc(ctx, userID, jobID)
 	}
 	return nil
 }
@@ -62,6 +70,18 @@ func (m *mockNotifRepo) CancelPendingByJobIDs(ctx context.Context, jobIDs []int6
 	_ = ctx
 	_ = jobIDs
 	return 0, nil
+}
+
+type permanentNotifyError struct {
+	msg string
+}
+
+func (e permanentNotifyError) Error() string {
+	return e.msg
+}
+
+func (e permanentNotifyError) Permanent() bool {
+	return true
 }
 
 type mockUserRepo struct {
@@ -563,6 +583,49 @@ func TestSendNotification_Execute_SendFailed_KeepsPending(t *testing.T) {
 	}
 }
 
+func TestSendNotification_Execute_PermanentSendFailed_MarksFailed(t *testing.T) {
+	markFailedCalled := false
+	deleteCalled := false
+	uc := NewSendNotification(
+		&mockNotifRepo{
+			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
+				return true, true, nil
+			},
+			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
+			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
+			markFailedFunc: func(context.Context, int64, int64) error {
+				markFailedCalled = true
+				return nil
+			},
+			deleteFunc: func(context.Context, int64, int64) error {
+				deleteCalled = true
+				return nil
+			},
+		},
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 888}, nil
+		}},
+		&mockJobRepo{getByIDFunc: func(context.Context, int64) (*domain.Job, error) {
+			return &domain.Job{ID: 1, Title: "T", URL: "https://kwork.ru/p/1"}, nil
+		}},
+		&mockNotifier{sendFunc: func(context.Context, int64, port.NotifyPayload) error {
+			return permanentNotifyError{msg: "telegram api: http 400"}
+		}},
+		5*time.Minute,
+		5,
+	)
+
+	if err := uc.Execute(context.Background(), 1, 1, 0.85, 0.85, "v2", nil, ""); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if !markFailedCalled {
+		t.Fatal("must mark notification failed on permanent telegram error")
+	}
+	if deleteCalled {
+		t.Fatal("must not delete notification on permanent telegram error")
+	}
+}
+
 // TestSendNotification_Execute_RateLimited_DeletesRecord проверяет, что при rate limit
 // только что созданная pending-запись удаляется.
 func TestSendNotification_Execute_RateLimited_DeletesRecord(t *testing.T) {
@@ -887,5 +950,50 @@ func TestSendNotification_ExecuteBatch_SortsByFinalScore(t *testing.T) {
 	}
 	if gotPayload.Batch[0].Rank != 1 || gotPayload.Batch[1].Rank != 2 || gotPayload.Batch[2].Rank != 3 {
 		t.Fatalf("unexpected ranks: %+v", gotPayload.Batch)
+	}
+}
+
+func TestSendNotification_ExecuteBatch_PermanentSendFailed_MarksFailed(t *testing.T) {
+	markedFailed := make(map[int64]bool)
+	uc := NewSendNotification(
+		&mockNotifRepo{
+			ensurePendingFunc: func(_ context.Context, _ int64, _ int64, _ float64, _ float64, _ string, _ []string, _ string) (bool, bool, error) {
+				return true, true, nil
+			},
+			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
+			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
+			markFailedFunc: func(_ context.Context, _ int64, jobID int64) error {
+				markedFailed[jobID] = true
+				return nil
+			},
+		},
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 777}, nil
+		}},
+		&mockJobRepo{
+			getByIDsFunc: func(_ context.Context, ids []int64) (map[int64]*domain.Job, error) {
+				result := make(map[int64]*domain.Job, len(ids))
+				for _, id := range ids {
+					result[id] = &domain.Job{ID: id, Title: "Job", URL: "https://kwork.ru/p/1"}
+				}
+				return result, nil
+			},
+		},
+		&mockNotifier{sendFunc: func(context.Context, int64, port.NotifyPayload) error {
+			return permanentNotifyError{msg: "telegram api: http 403"}
+		}},
+		5*time.Minute,
+		5,
+	)
+
+	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{
+		{JobID: 10, FinalScore: 0.9, Rank: 1},
+		{JobID: 20, FinalScore: 0.8, Rank: 2},
+	}, 0.9)
+	if err != nil {
+		t.Fatalf("ExecuteBatch: %v", err)
+	}
+	if !markedFailed[10] || !markedFailed[20] {
+		t.Fatalf("must mark all batch items failed, got %#v", markedFailed)
 	}
 }
