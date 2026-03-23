@@ -4,22 +4,13 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 TMP_DIR="$(mktemp -d)"
-CREATED_ENV_FILE=0
 # Docker containers reading bind-mounted files need execute permission on the
 # parent temp directory to traverse it on the host filesystem.
 chmod 755 "$TMP_DIR"
 cleanup() {
-  if [[ "${CREATED_ENV_FILE}" -eq 1 ]]; then
-    rm -f "${ROOT_DIR}/.env"
-  fi
   rm -rf "$TMP_DIR"
 }
 trap cleanup EXIT
-
-if [[ ! -f "${ROOT_DIR}/.env" ]]; then
-  cp "${ROOT_DIR}/.env.example" "${ROOT_DIR}/.env"
-  CREATED_ENV_FILE=1
-fi
 
 echo "[monitoring] promtool check config"
 BACKEND_API_METRICS_TARGET="${BACKEND_API_METRICS_TARGET:-backend-api:8080}" \
@@ -58,11 +49,12 @@ docker run --rm \
   prom/alertmanager:v0.27.0 \
   check-config /tmp/alertmanager/alertmanager.yml
 
-echo "[monitoring] docker compose check"
-set -a
-# shellcheck disable=SC1091
-. "${ROOT_DIR}/.env.example"
-set +a
-docker compose --env-file .env.example -f docker-compose.yml -f docker-compose.monitoring.yml config >/dev/null
+echo "[monitoring] docker compose check (production stack)"
+docker compose --env-file .env.production.example \
+  -f docker-compose.prod.yml \
+  -f docker-compose.ssl.yml \
+  -f docker-compose.monitoring.yml \
+  --profile monitoring \
+  config >/dev/null
 
 echo "[monitoring] configuration checks passed"

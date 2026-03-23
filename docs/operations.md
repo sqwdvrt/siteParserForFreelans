@@ -34,9 +34,17 @@ export PROD_COMPOSE="docker compose --env-file .env.production -f docker-compose
 ```bash
 docker compose --env-file .env.example -f docker-compose.yml --profile workers --profile ai-user-embed config -q
 ```
-2. Проверить production compose contract:
+2. Проверить production app compose contract:
 ```bash
 docker compose --env-file .env.production.example -f docker-compose.prod.yml -f docker-compose.ssl.yml config -q
+```
+3. Проверить production monitoring compose contract:
+```bash
+docker compose --env-file .env.production.example \
+  -f docker-compose.prod.yml \
+  -f docker-compose.ssl.yml \
+  -f docker-compose.monitoring.yml \
+  --profile monitoring config -q
 ```
 
 ### 0.3 Env validation
@@ -177,7 +185,7 @@ Production monitoring запускай вместе с `docker-compose.prod.yml`
 - `POSTGRES_EXPORTER_DATA_SOURCE_NAME=postgresql://...?...sslmode=require`
 - `GRAFANA_POSTGRES_HOST`, `GRAFANA_POSTGRES_PORT`, `GRAFANA_POSTGRES_SSLMODE=require`
 
-На VPS добавь ещё `docker-compose.ssl.yml`, чтобы monitoring-контейнеры попали в `infra_default` и увидели self-hosted Redis/Postgres.
+На VPS обязательно добавь ещё `docker-compose.ssl.yml`, чтобы monitoring-контейнеры попали в `infra_default`, увидели self-hosted Redis/Postgres и соответствовали production contract.
 
 Пример:
 ```bash
@@ -186,6 +194,15 @@ docker compose --env-file .env.production \
   -f docker-compose.ssl.yml \
   -f docker-compose.monitoring.yml \
   --profile monitoring up -d
+```
+
+Проверка рендера для production monitoring всегда должна включать `docker-compose.ssl.yml`:
+```bash
+docker compose --env-file .env.production.example \
+  -f docker-compose.prod.yml \
+  -f docker-compose.ssl.yml \
+  -f docker-compose.monitoring.yml \
+  --profile monitoring config -q
 ```
 
 После старта открыть:

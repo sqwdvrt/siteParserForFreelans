@@ -21,11 +21,9 @@ sudo ufw allow 80 && sudo ufw allow 443 && sudo ufw allow 22/tcp
 
 # Получить сертификат (порт 80 должен быть свободен)
 sudo certbot certonly --standalone -d api.freematch.ru
-
-# Исправить права для чтения без root
-sudo chmod 755 /etc/letsencrypt/live/ /etc/letsencrypt/archive/
-sudo chmod 644 /etc/letsencrypt/archive/api.freematch.ru/*.pem
 ```
+
+Certbot оставляет `privkey.pem` недоступным для world-readable доступа, и для текущего nginx это нормально: master-process читает TLS-ключ как root при старте. Не делай `chmod 644` для приватного ключа. Если когда-то понадобится доступ к ключу из non-root процесса, используй точечный `group ownership` или ACL только для конкретного читателя, а не общий read для всех.
 
 Конфиг nginx `/etc/nginx/sites-available/api.freematch.ru`:
 
@@ -297,8 +295,8 @@ ssh -L 5050:localhost:5050 deploy@185.154.193.193
 
 ### 4.2 Monitoring stack
 
-Мониторинг на VPS поднимай в том же compose-контуре, что и приложение, то есть вместе с `docker-compose.ssl.yml`.
-Это сохраняет общую `infra_default` сеть для доступа к self-hosted Redis/Postgres и даёт monitoring-контейнерам тот же CA.
+Мониторинг на VPS поднимай в том же production compose-контуре, что и приложение: `docker-compose.prod.yml` + `docker-compose.ssl.yml` + `docker-compose.monitoring.yml`.
+Это сохраняет общую `infra_default` сеть для доступа к self-hosted Redis/Postgres, даёт monitoring-контейнерам тот же CA и соответствует production contract.
 
 ```bash
 cd /home/deploy/app/siteParserForFreelans
@@ -307,6 +305,15 @@ docker compose --env-file .env.production \
   -f docker-compose.ssl.yml \
   -f docker-compose.monitoring.yml \
   --profile monitoring up -d
+```
+
+Перед запуском мониторинга проверь тот же production render-контракт:
+```bash
+docker compose --env-file .env.production.example \
+  -f docker-compose.prod.yml \
+  -f docker-compose.ssl.yml \
+  -f docker-compose.monitoring.yml \
+  --profile monitoring config -q
 ```
 
 Если приложение и мониторинг запускаешь разными командами, используй один и тот же `-p <project>` на обеих.
