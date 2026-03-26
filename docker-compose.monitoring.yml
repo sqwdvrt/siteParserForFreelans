@@ -66,6 +66,8 @@ services:
     command:
       - --redis.addr=${REDIS_EXPORTER_REDIS_ADDR:-${REDIS_URL:-redis://redis:6379}}
       - --check-keys=${REDIS_EXPORTER_CHECK_KEYS:-ai-process,ai-process:processing,ai-process:dlq,user-embed,user-embed:processing,user-embed:dlq,user-rematch,user-rematch:processing,user-rematch:dlq,ac-batch,ac-batch:processing,ac-batch:dlq,match-notify,match-notify:processing,match-notify:dlq}
+      - --tls-ca-cert-file=/certs/ca.crt
+      - --tls-skip-tls-verification=false
     deploy:
       resources:
         limits:
