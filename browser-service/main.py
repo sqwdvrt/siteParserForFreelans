@@ -12,7 +12,7 @@ import ipaddress
 import logging
 import os
 import socket
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
@@ -148,6 +148,15 @@ async def _resolve_request_target(request_url: str, host_cache: dict[str, list[s
             host_cache[host] = resolved_ips
         if not resolved_ips or any(not _is_public_ip(ip) for ip in resolved_ips):
             raise HTTPException(status_code=400, detail="target host is not allowed")
+        # HTTP only: rewrite hostname → resolved IP to prevent DNS rebinding (TOCTOU).
+        # HTTPS is protected by TLS certificate validation — no rewrite needed.
+        if parsed.scheme == "http":
+            first_ip = resolved_ips[0]
+            ip_host = f"[{first_ip}]" if ":" in first_ip else first_ip
+            port_part = f":{parsed.port}" if parsed.port else ""
+            new_netloc = f"{ip_host}{port_part}"
+            rewritten_url = urlunparse((parsed.scheme, new_netloc, parsed.path, parsed.params, parsed.query, parsed.fragment))
+            return rewritten_url, host
         return request_url, None
 
     if not direct_ip.is_global:
