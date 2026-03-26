@@ -82,7 +82,7 @@
           "type": "nonempty",
           "documentation": "active"
         }
-      },
+      }
     }
   },
   "compose_contract": {
