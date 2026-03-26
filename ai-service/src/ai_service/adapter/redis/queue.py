@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
+import time
 from collections import defaultdict, deque
 from typing import Any
 
@@ -16,6 +18,17 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_QUEUE = "ai-process"
 DEFAULT_MAX_NACK_RETRIES = 5
+_RECLAIM_THRESHOLD_ENV = "AI_RECLAIM_STUCK_SEC"
+_DEFAULT_RECLAIM_THRESHOLD_SEC = 300.0
+
+
+def _reclaim_threshold_sec() -> float:
+    raw = os.getenv(_RECLAIM_THRESHOLD_ENV, str(_DEFAULT_RECLAIM_THRESHOLD_SEC))
+    try:
+        v = float(raw)
+        return v if v > 0 else _DEFAULT_RECLAIM_THRESHOLD_SEC
+    except ValueError:
+        return _DEFAULT_RECLAIM_THRESHOLD_SEC
 
 
 class RedisQueueConsumer(JobQueueConsumer):
@@ -57,8 +70,15 @@ class RedisQueueConsumer(JobQueueConsumer):
             return None
         trace_id = self._normalize_trace_id(data.get("trace_id"))
         traceparent = self._normalize_trace_id(data.get("traceparent"))
+        # Stamp claim time so reclaim_stuck() can distinguish active vs. stuck items.
+        data["_claimed_at"] = time.time()
+        stamped = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
+        pipe = self._client.pipeline(transaction=True)
+        pipe.lrem(self._processing_queue, 1, payload)
+        pipe.lpush(self._processing_queue, stamped)
+        pipe.execute()
         with self._inflight_lock:
-            self._inflight_by_job_id[jid].append((payload, trace_id, traceparent))
+            self._inflight_by_job_id[jid].append((stamped, trace_id, traceparent))
         return jid
 
     def ack(self, job_id: int) -> None:
@@ -101,10 +121,28 @@ class RedisQueueConsumer(JobQueueConsumer):
         self._drop_inflight(job_id, raw)
 
     def reclaim_stuck(self) -> None:
-        while True:
-            moved = self._client.rpoplpush(self._processing_queue, self._queue)
-            if moved is None:
-                break
+        """Reclaim only items whose lease has expired.
+
+        Items with a fresh ``_claimed_at`` timestamp (within threshold) are
+        skipped so that a replica restart does not steal jobs actively processed
+        by another replica.  Items without ``_claimed_at`` (legacy or corrupt)
+        are always reclaimed.
+        """
+        threshold = _reclaim_threshold_sec()
+        now = time.time()
+        items = self._client.lrange(self._processing_queue, 0, -1)
+        for raw in items:
+            try:
+                data = json.loads(raw)
+                claimed_at = float(data.get("_claimed_at", 0))
+                if claimed_at > 0 and (now - claimed_at) < threshold:
+                    continue  # lease still valid — another replica is processing this
+            except (json.JSONDecodeError, TypeError, ValueError):
+                pass  # malformed: treat as stuck
+            pipe = self._client.pipeline(transaction=True)
+            pipe.lrem(self._processing_queue, 1, raw)
+            pipe.rpush(self._queue, raw)
+            pipe.execute()
 
     def nack_all_inflight(self) -> int:
         with self._inflight_lock:
