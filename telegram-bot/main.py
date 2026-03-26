@@ -194,7 +194,12 @@ class _ConversationStateCache(OrderedDict[int, tuple[str, float]]):
         self.ttl_sec = ttl_sec
 
 
-class _ProcessedUpdateCache(OrderedDict[int, float]):
+_UPDATE_CLAIMED = "claimed"
+_UPDATE_INFLIGHT = "inflight"
+_UPDATE_DONE = "done"
+
+
+class _ProcessedUpdateCache(OrderedDict[int, tuple[str, float]]):
     def __init__(self, *, maxsize: int, ttl_sec: int):
         super().__init__()
         self.maxsize = maxsize
@@ -347,9 +352,10 @@ def _start_metrics_server(bind: str, port: int) -> ThreadingHTTPServer | None:
 
 
 def _prune_expired_entries(
-    cache: OrderedDict[int, tuple[int, float]]
-    | OrderedDict[int, tuple[str, float]]
-    | OrderedDict[int, float],
+    cache: (
+        OrderedDict[int, tuple[int, float]]
+        | OrderedDict[int, tuple[str, float]]
+    ),
     now: float,
 ) -> None:
     expired_keys: list[int] = []
@@ -454,21 +460,38 @@ class _RedisStateStore:
         self._client.delete(self._key("conversation", telegram_id))
         _METRICS.inc("telegram_bot_state_store_operations_total", operation="clear_conversation_state", result="ok")
 
-    def claim_update_id(self, update_id: int) -> bool:
+    def claim_update_id(self, update_id: int) -> str:
         claimed = bool(
             self._client.set(
                 self._key("processed-update", update_id),
-                "1",
+                _UPDATE_INFLIGHT,
                 ex=self._processed_update_ttl_sec,
                 nx=True,
             )
         )
+        if claimed:
+            result = _UPDATE_CLAIMED
+        else:
+            raw = self._client.get(self._key("processed-update", update_id))
+            if isinstance(raw, bytes):
+                state = raw.decode("utf-8", errors="ignore").strip().lower()
+            else:
+                state = str(raw or "").strip().lower()
+            result = _UPDATE_DONE if state == _UPDATE_DONE else _UPDATE_INFLIGHT
         _METRICS.inc(
             "telegram_bot_state_store_operations_total",
             operation="claim_update_id",
-            result="claim" if claimed else "duplicate",
+            result=result,
         )
-        return claimed
+        return result
+
+    def complete_update_id(self, update_id: int) -> None:
+        self._client.set(
+            self._key("processed-update", update_id),
+            _UPDATE_DONE,
+            ex=self._processed_update_ttl_sec,
+        )
+        _METRICS.inc("telegram_bot_state_store_operations_total", operation="complete_update_id", result="ok")
 
     def forget_update_id(self, update_id: int) -> None:
         self._client.delete(self._key("processed-update", update_id))
@@ -1136,36 +1159,9 @@ def _get_first_seen_ts(telegram_id: int) -> int | None:
         return None
 
 
-def _claim_update_id(update_id: int, *, now_monotonic: float | None = None) -> bool:
-    now = now_monotonic if now_monotonic is not None else time.monotonic()
-    if _STATE_STORE is not None:
-        try:
-            claimed = _STATE_STORE.claim_update_id(update_id)
-        except Exception as e:
-            logger.warning("redis state store claim_update_id failed: %s", _exception_name(e))
-            _METRICS.inc("telegram_bot_state_store_operations_total", operation="claim_update_id", result="error")
-        else:
-            if not claimed:
-                _METRICS.inc("telegram_bot_cache_operations_total", cache="processed_update", result="redis_duplicate")
-                return False
-            with _CACHE_LOCK:
-                _prune_expired_entries(_PROCESSED_UPDATE_CACHE, now)
-                maxsize = getattr(_PROCESSED_UPDATE_CACHE, "maxsize", PROCESSED_UPDATE_MAXSIZE)
-                ttl_sec = getattr(_PROCESSED_UPDATE_CACHE, "ttl_sec", PROCESSED_UPDATE_TTL_SEC)
-                if update_id in _PROCESSED_UPDATE_CACHE:
-                    _PROCESSED_UPDATE_CACHE.pop(update_id, None)
-                elif maxsize > 0 and len(_PROCESSED_UPDATE_CACHE) >= maxsize:
-                    oldest_key = next(iter(_PROCESSED_UPDATE_CACHE))
-                    _PROCESSED_UPDATE_CACHE.pop(oldest_key, None)
-                _PROCESSED_UPDATE_CACHE[update_id] = now + ttl_sec
-            _METRICS.inc("telegram_bot_cache_operations_total", cache="processed_update", result="redis_claim")
-            return True
+def _set_processed_update_state(update_id: int, state: str, *, now_monotonic: float) -> None:
     with _CACHE_LOCK:
-        _prune_expired_entries(_PROCESSED_UPDATE_CACHE, now)
-        expires_at = _PROCESSED_UPDATE_CACHE.get(update_id)
-        if expires_at is not None and now < expires_at:
-            _METRICS.inc("telegram_bot_cache_operations_total", cache="processed_update", result="duplicate")
-            return False
+        _prune_expired_entries(_PROCESSED_UPDATE_CACHE, now_monotonic)
         maxsize = getattr(_PROCESSED_UPDATE_CACHE, "maxsize", PROCESSED_UPDATE_MAXSIZE)
         ttl_sec = getattr(_PROCESSED_UPDATE_CACHE, "ttl_sec", PROCESSED_UPDATE_TTL_SEC)
         if update_id in _PROCESSED_UPDATE_CACHE:
@@ -1173,9 +1169,45 @@ def _claim_update_id(update_id: int, *, now_monotonic: float | None = None) -> b
         elif maxsize > 0 and len(_PROCESSED_UPDATE_CACHE) >= maxsize:
             oldest_key = next(iter(_PROCESSED_UPDATE_CACHE))
             _PROCESSED_UPDATE_CACHE.pop(oldest_key, None)
-        _PROCESSED_UPDATE_CACHE[update_id] = now + ttl_sec
+        _PROCESSED_UPDATE_CACHE[update_id] = (state, now_monotonic + ttl_sec)
+
+
+def _claim_update_id(update_id: int, *, now_monotonic: float | None = None) -> str:
+    now = now_monotonic if now_monotonic is not None else time.monotonic()
+    if _STATE_STORE is not None:
+        try:
+            result = _STATE_STORE.claim_update_id(update_id)
+        except Exception as e:
+            logger.warning("redis state store claim_update_id failed: %s", _exception_name(e))
+            _METRICS.inc("telegram_bot_state_store_operations_total", operation="claim_update_id", result="error")
+        else:
+            cache_state = _UPDATE_INFLIGHT if result == _UPDATE_CLAIMED else result
+            _set_processed_update_state(update_id, cache_state, now_monotonic=now)
+            _METRICS.inc("telegram_bot_cache_operations_total", cache="processed_update", result=f"redis_{result}")
+            return result
+    with _CACHE_LOCK:
+        _prune_expired_entries(_PROCESSED_UPDATE_CACHE, now)
+        cached = _PROCESSED_UPDATE_CACHE.get(update_id)
+        if cached is not None:
+            state, expires_at = cached
+            if now < expires_at:
+                _METRICS.inc("telegram_bot_cache_operations_total", cache="processed_update", result=f"duplicate_{state}")
+                return state
+    _set_processed_update_state(update_id, _UPDATE_INFLIGHT, now_monotonic=now)
     _METRICS.inc("telegram_bot_cache_operations_total", cache="processed_update", result="claim")
-    return True
+    return _UPDATE_CLAIMED
+
+
+def _complete_update_id(update_id: int, *, now_monotonic: float | None = None) -> None:
+    now = now_monotonic if now_monotonic is not None else time.monotonic()
+    _set_processed_update_state(update_id, _UPDATE_DONE, now_monotonic=now)
+    if _STATE_STORE is not None:
+        try:
+            _STATE_STORE.complete_update_id(update_id)
+        except Exception as e:
+            logger.warning("redis state store complete_update_id failed: %s", _exception_name(e))
+            _METRICS.inc("telegram_bot_state_store_operations_total", operation="complete_update_id", result="error")
+    _METRICS.inc("telegram_bot_cache_operations_total", cache="processed_update", result="complete")
 
 
 def _forget_update_id(update_id: int) -> None:
@@ -2134,10 +2166,16 @@ def _process_update(
     api_user_hmac_secret: str,
 ) -> bool:
     update_id = _extract_update_id(update)
-    if update_id is not None and not _claim_update_id(update_id):
-        logger.info("%s update skipped as duplicate: update_id=%s", transport, update_id)
-        _METRICS.inc("telegram_bot_updates_total", transport=transport, result="duplicate")
-        return True
+    if update_id is not None:
+        claim_result = _claim_update_id(update_id)
+        if claim_result == _UPDATE_DONE:
+            logger.info("%s update skipped as duplicate: update_id=%s", transport, update_id)
+            _METRICS.inc("telegram_bot_updates_total", transport=transport, result="duplicate")
+            return True
+        if claim_result == _UPDATE_INFLIGHT:
+            logger.warning("%s update duplicate while in-flight: update_id=%s", transport, update_id)
+            _METRICS.inc("telegram_bot_updates_total", transport=transport, result="inflight_duplicate")
+            return False
     try:
         handled = _handle_update(update, token, api_url, api_auth_token, api_user_hmac_secret)
     except KeyboardInterrupt:
@@ -2150,6 +2188,8 @@ def _process_update(
         logger.error("%s update failed: update_id=%s err=%s", transport, update_id, _exception_name(e), exc_info=True)
         _METRICS.inc("telegram_bot_updates_total", transport=transport, result="failed")
         return False
+    if update_id is not None:
+        _complete_update_id(update_id)
     _METRICS.inc("telegram_bot_updates_total", transport=transport, result="handled" if handled else "ignored")
     return True
 

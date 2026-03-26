@@ -80,9 +80,9 @@ def test_claim_update_id_deduplicates_until_ttl_expires(bot, monkeypatch):
         bot._build_processed_update_cache(maxsize=10, ttl_sec=5),
     )
 
-    assert bot._claim_update_id(1, now_monotonic=10.0) is True
-    assert bot._claim_update_id(1, now_monotonic=10.1) is False
-    assert bot._claim_update_id(1, now_monotonic=15.1) is True
+    assert bot._claim_update_id(1, now_monotonic=10.0) == bot._UPDATE_CLAIMED
+    assert bot._claim_update_id(1, now_monotonic=10.1) == bot._UPDATE_INFLIGHT
+    assert bot._claim_update_id(1, now_monotonic=15.1) == bot._UPDATE_CLAIMED
 
 
 def test_get_cached_user_id_restores_from_durable_state_store_after_local_restart(bot, monkeypatch):
@@ -124,20 +124,24 @@ def test_get_conversation_state_restores_from_durable_state_store_after_local_re
 def test_claim_update_id_deduplicates_via_durable_state_store_after_local_restart(bot, monkeypatch):
     class FakeStateStore:
         def __init__(self) -> None:
-            self.claimed: set[int] = set()
+            self.claimed: dict[int, str] = {}
 
-        def claim_update_id(self, update_id: int) -> bool:
-            if update_id in self.claimed:
-                return False
-            self.claimed.add(update_id)
-            return True
+        def claim_update_id(self, update_id: int) -> str:
+            state = self.claimed.get(update_id)
+            if state is not None:
+                return state
+            self.claimed[update_id] = bot._UPDATE_INFLIGHT
+            return bot._UPDATE_CLAIMED
+
+        def complete_update_id(self, update_id: int) -> None:
+            self.claimed[update_id] = bot._UPDATE_DONE
 
         def forget_update_id(self, update_id: int) -> None:
-            self.claimed.discard(update_id)
+            self.claimed.pop(update_id, None)
 
     monkeypatch.setattr(bot, "_STATE_STORE", FakeStateStore())
     bot._PROCESSED_UPDATE_CACHE.clear()
 
-    assert bot._claim_update_id(1, now_monotonic=10.0) is True
+    assert bot._claim_update_id(1, now_monotonic=10.0) == bot._UPDATE_CLAIMED
     bot._PROCESSED_UPDATE_CACHE.clear()
-    assert bot._claim_update_id(1, now_monotonic=10.1) is False
+    assert bot._claim_update_id(1, now_monotonic=10.1) == bot._UPDATE_INFLIGHT

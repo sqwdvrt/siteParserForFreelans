@@ -150,6 +150,53 @@ def test_webhook_returns_500_when_processing_fails(bot, monkeypatch):
     assert statuses == [500]
 
 
+def test_webhook_returns_500_for_duplicate_retry_while_first_request_is_inflight(bot, monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+    call_count = 0
+
+    def _handle_update(update, token, api_url, api_auth_token, api_user_hmac_secret):
+        nonlocal call_count
+        _ = update
+        _ = token
+        _ = api_url
+        _ = api_auth_token
+        _ = api_user_hmac_secret
+        call_count += 1
+        started.set()
+        assert release.wait(timeout=1)
+        return True
+
+    monkeypatch.setattr(bot, "_handle_update", _handle_update)
+    payload = {"update_id": 1, "message": {"chat": {"id": 1}, "from": {"id": 2}, "text": "/start"}}
+    first_handler, first_statuses = _make_handler(
+        bot,
+        path="/webhook",
+        payload=payload,
+        secret="a" * 32,
+    )
+    second_handler, second_statuses = _make_handler(
+        bot,
+        path="/webhook",
+        payload=payload,
+        secret="a" * 32,
+    )
+
+    first_request_thread = threading.Thread(target=first_handler.do_POST)
+    first_request_thread.start()
+
+    assert started.wait(timeout=1)
+    second_handler.do_POST()
+
+    assert second_statuses == [500]
+    assert call_count == 1
+
+    release.set()
+    first_request_thread.join(timeout=1)
+    assert first_request_thread.is_alive() is False
+    assert first_statuses == [200]
+
+
 def test_handle_update_routes_callback_query(bot, monkeypatch):
     handle_callback = MagicMock()
     monkeypatch.setattr(bot, "handle_callback", handle_callback)
