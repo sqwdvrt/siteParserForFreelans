@@ -92,7 +92,7 @@ def test_webhook_handles_message_update(bot, monkeypatch):
     assert handled[0]["token"] == "bot-token"
 
 
-def test_webhook_returns_200_before_processing_completes(bot, monkeypatch):
+def test_webhook_waits_for_processing_before_sending_200(bot, monkeypatch):
     started = threading.Event()
     release = threading.Event()
     finished = threading.Event()
@@ -115,13 +115,39 @@ def test_webhook_returns_200_before_processing_completes(bot, monkeypatch):
         secret="a" * 32,
     )
 
-    handler.do_POST()
+    request_thread = threading.Thread(target=handler.do_POST)
+    request_thread.start()
 
-    assert statuses == [200]
     assert started.wait(timeout=1)
+    assert statuses == []
     assert finished.is_set() is False
     release.set()
     assert finished.wait(timeout=1)
+    request_thread.join(timeout=1)
+    assert request_thread.is_alive() is False
+    assert statuses == [200]
+
+
+def test_webhook_returns_500_when_processing_fails(bot, monkeypatch):
+    def _handle_update(update, token, api_url, api_auth_token, api_user_hmac_secret):
+        _ = update
+        _ = token
+        _ = api_url
+        _ = api_auth_token
+        _ = api_user_hmac_secret
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(bot, "_handle_update", _handle_update)
+    handler, statuses = _make_handler(
+        bot,
+        path="/webhook",
+        payload={"update_id": 1, "message": {"chat": {"id": 1}, "from": {"id": 2}, "text": "/start"}},
+        secret="a" * 32,
+    )
+
+    handler.do_POST()
+
+    assert statuses == [500]
 
 
 def test_handle_update_routes_callback_query(bot, monkeypatch):

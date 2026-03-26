@@ -1710,23 +1710,16 @@ class _WebhookHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        self.send_response(200)
+        processed_ok = self._process_update(update)
+        self.send_response(200 if processed_ok else 500)
         self.end_headers()
         try:
             self.wfile.flush()
         except Exception:
             pass
 
-        t = threading.Thread(
-            target=self._process_update,
-            args=(update,),
-            daemon=True,
-            name="telegram-webhook-update",
-        )
-        t.start()
-
-    def _process_update(self, update: dict) -> None:
-        _process_update(
+    def _process_update(self, update: dict) -> bool:
+        return _process_update(
             update,
             "webhook",
             self.bot_token,
