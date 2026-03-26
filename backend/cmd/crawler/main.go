@@ -25,6 +25,7 @@ import (
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/kwork"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/postgres"
 	redisqueue "github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/redis"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/tgchannel"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/weblancer"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/config"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/observability"
@@ -152,6 +153,10 @@ func main() {
 	if weblancerListURL == "" {
 		weblancerListURL = "https://www.weblancer.net/jobs/"
 	}
+
+	// TELEGRAM_CHANNELS — comma-separated список username'ов без @
+	// Пример: "freegolup,pomogator,freelance_joob"
+	tgChannelsRaw := strings.TrimSpace(os.Getenv("TELEGRAM_CHANNELS"))
 
 	proxyURL := strings.TrimSpace(os.Getenv("CRAWL_PROXY_URL"))
 	if proxyURL != "" {
@@ -287,6 +292,19 @@ func main() {
 			listURL: weblancerListURL,
 			crawl:   usecase.NewCrawlProjects(fetcher, weblancer.NewExtractor(), repo, dispatchRepo),
 		})
+	}
+	if enabledSources["tgchannel"] {
+		for _, username := range strings.Split(tgChannelsRaw, ",") {
+			username = strings.TrimPrefix(strings.TrimSpace(username), "@")
+			if username == "" {
+				continue
+			}
+			sources = append(sources, crawlSource{
+				name:    "tgchannel:" + username,
+				listURL: "https://t.me/s/" + username,
+				crawl:   usecase.NewCrawlProjects(fetcher, tgchannel.NewExtractor(username), repo, dispatchRepo),
+			})
+		}
 	}
 	if len(sources) == 0 {
 		slog.Error("no valid sources configured in ENABLED_SOURCES", "raw", enabledSourcesRaw)
