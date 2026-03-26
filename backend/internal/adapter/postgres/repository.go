@@ -96,11 +96,11 @@ func (r *JobRepository) GetByIDs(ctx context.Context, ids []int64) (map[int64]*d
 	return result, rows.Err()
 }
 
-// TouchSeenAt обновляет last_seen_at = NOW() для job по URL и
-// возвращает ранее истёкшую вакансию в active-состояние.
+// TouchSeenAt обновляет last_seen_at = NOW() только для активных jobs по URL.
+// Истёкшие вакансии намеренно игнорируются, чтобы избежать гонки реактивации.
 func (r *JobRepository) TouchSeenAt(ctx context.Context, url string) error {
 	_, err := r.pool.Exec(ctx,
-		`UPDATE jobs SET last_seen_at = NOW(), status = 'active' WHERE url = $1`, url)
+		`UPDATE jobs SET last_seen_at = NOW() WHERE url = $1 AND status = 'active'`, url)
 	return err
 }
 

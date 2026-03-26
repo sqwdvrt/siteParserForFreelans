@@ -249,16 +249,16 @@ func TestJobRepository_GetByIDs_FiltersExpired(t *testing.T) {
 	}
 }
 
-func TestJobRepository_TouchSeenAt_ReactivatesExpiredJob(t *testing.T) {
+func TestJobRepository_TouchSeenAt_DoesNotReactivateExpiredJob(t *testing.T) {
 	pool := setupTestDB(t)
 	repo := NewJobRepository(pool)
 	ctx := context.Background()
 
-	url := "https://kwork.ru/projects/reactivate-" + time.Now().Format("20060102150405") + "/view"
+	url := "https://kwork.ru/projects/no-reactivate-" + time.Now().Format("20060102150405") + "/view"
 	job := &domain.Job{
 		Source:    "kwork",
 		URL:       url,
-		Title:     "Reactivate Test",
+		Title:     "No-Reactivate Test",
 		RawHTML:   "<html>expired</html>",
 		CreatedAt: time.Now(),
 	}
@@ -274,6 +274,7 @@ func TestJobRepository_TouchSeenAt_ReactivatesExpiredJob(t *testing.T) {
 		t.Fatalf("prepare expired job: %v", err)
 	}
 
+	// TouchSeenAt must be a no-op for expired jobs — it must not reactivate them.
 	if err := repo.TouchSeenAt(ctx, url); err != nil {
 		t.Fatalf("TouchSeenAt: %v", err)
 	}
@@ -282,8 +283,8 @@ func TestJobRepository_TouchSeenAt_ReactivatesExpiredJob(t *testing.T) {
 	if err := pool.QueryRow(ctx, `SELECT status FROM jobs WHERE url = $1`, url).Scan(&status); err != nil {
 		t.Fatalf("QueryRow: %v", err)
 	}
-	if status != "active" {
-		t.Fatalf("status = %q, want active", status)
+	if status != "expired" {
+		t.Fatalf("status = %q, want expired (TouchSeenAt must not reactivate expired jobs)", status)
 	}
 }
 

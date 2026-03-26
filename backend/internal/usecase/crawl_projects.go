@@ -52,12 +52,8 @@ func (u *CrawlProjects) Execute(ctx context.Context, listURL string) (saved int,
 			slog.Warn("crawl: check exists failed", "url", detailURL, "err", err)
 			continue
 		}
-		if exists {
-			if touchErr := u.repo.TouchSeenAt(ctx, detailURL); touchErr != nil {
-				slog.Warn("crawl: touch seen_at failed", "url", detailURL, "err", touchErr)
-			}
-			continue
-		}
+
+		// Fetch detail for ALL URLs — this is the only way to detect 404/410 for existing jobs too.
 		detailHTML, err := u.fetcher.Fetch(ctx, detailURL)
 		if err != nil {
 			slog.Warn("crawl: fetch detail failed", "url", detailURL, "err", err)
@@ -73,6 +69,14 @@ func (u *CrawlProjects) Execute(ctx context.Context, listURL string) (saved int,
 			}
 			continue
 		}
+
+		if exists {
+			if touchErr := u.repo.TouchSeenAt(ctx, detailURL); touchErr != nil {
+				slog.Warn("crawl: touch seen_at failed", "url", detailURL, "err", touchErr)
+			}
+			continue
+		}
+
 		job, err := u.extractor.ExtractDetail(detailHTML, detailURL)
 		if err != nil || job == nil {
 			slog.Warn("crawl: extract detail failed", "url", detailURL, "err", err)
