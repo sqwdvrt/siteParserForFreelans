@@ -75,8 +75,7 @@ services:
   redis-exporter:
     image: oliver006/redis_exporter:v1.67.0
     command:
-      - --redis.addr=rediss://redis:6379
-      - --redis.password=${REDIS_PASSWORD}
+      - --redis.addr=${REDIS_EXPORTER_REDIS_ADDR}
       - --tls-ca-cert-file=/certs/ca.crt
       - -skip-tls-verification=false
     environment:
