@@ -5,6 +5,16 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+FIXED_TIME = 1000.0
+
+
+def _stamped(base: dict) -> str:
+    return json.dumps({**base, "_claimed_at": FIXED_TIME}, separators=(",", ":"), ensure_ascii=False)
+
+
+def _nacked(base: dict, retries: int = 1) -> str:
+    return json.dumps({**base, "_claimed_at": FIXED_TIME, "_retry_count": retries}, separators=(",", ":"), ensure_ascii=False)
+
 from ai_service.adapter.redis.user_rematch_queue import RedisUserRematchQueue, RedisUserRematchQueueConsumer
 
 
@@ -51,14 +61,18 @@ def test_pop_blocking_uses_user_rematch_queue_name(mock_from_url: MagicMock) -> 
     mock_client.brpoplpush.assert_called_once_with("user-rematch", "user-rematch:processing", timeout=1)
 
 
+@patch("ai_service.adapter.redis.user_embed_queue.time.time", return_value=FIXED_TIME)
 @patch("ai_service.adapter.redis.user_embed_queue.redis.from_url")
-def test_ack_failure_keeps_message_inflight_for_shutdown_requeue(mock_from_url: MagicMock) -> None:
+def test_ack_failure_keeps_message_inflight_for_shutdown_requeue(
+    mock_from_url: MagicMock, _mock_time: MagicMock
+) -> None:
     mock_client = MagicMock()
     mock_from_url.return_value = mock_client
-    raw = json.dumps({"user_id": 42})
-    mock_client.brpoplpush.return_value = raw
-    pipe = MagicMock()
-    mock_client.pipeline.return_value = pipe
+    original = json.dumps({"user_id": 42})
+    mock_client.brpoplpush.return_value = original
+    pipe_stamp = MagicMock()
+    pipe_nack = MagicMock()
+    mock_client.pipeline.side_effect = [pipe_stamp, pipe_nack]
     mock_client.lrem.side_effect = RuntimeError("redis down")
     queue = RedisUserRematchQueueConsumer("redis://localhost:6379/0")
     assert queue.pop_blocking(timeout_sec=1) == 42
@@ -68,7 +82,8 @@ def test_ack_failure_keeps_message_inflight_for_shutdown_requeue(mock_from_url: 
     except RuntimeError:
         pass
 
+    stamped = _stamped({"user_id": 42})
     assert queue.nack_all_inflight() == 1
-    pipe.lrem.assert_called_once_with("user-rematch:processing", 1, raw)
-    pipe.rpush.assert_called_once_with("user-rematch", '{"user_id":42,"_retry_count":1}')
-    pipe.execute.assert_called_once()
+    pipe_nack.lrem.assert_called_once_with("user-rematch:processing", 1, stamped)
+    pipe_nack.rpush.assert_called_once_with("user-rematch", _nacked({"user_id": 42}))
+    pipe_nack.execute.assert_called_once()
