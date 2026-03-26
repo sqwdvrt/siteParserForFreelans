@@ -78,7 +78,7 @@ services:
       - --redis.addr=rediss://redis:6379
       - --redis.password=${REDIS_PASSWORD}
       - --tls-ca-cert-file=/certs/ca.crt
-      - --tls-skip-tls-verification=false
+      - -skip-tls-verification=false
     environment:
       SSL_CERT_FILE: /certs/ca.crt
     volumes:
