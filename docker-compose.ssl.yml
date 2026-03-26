@@ -73,6 +73,7 @@ services:
       - ${INFRA_CERTS_DIR:-/home/deploy/infra/certs}/server.crt:/certs/ca.crt:ro
 
   redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0
     environment:
       SSL_CERT_FILE: /certs/ca.crt
     volumes:
