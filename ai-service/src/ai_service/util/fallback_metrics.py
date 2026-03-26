@@ -1,4 +1,4 @@
-"""In-process counters for Ollama primary/fallback behavior with Prometheus text endpoint.
+"""In-process counters for LLM primary/fallback behavior with Prometheus text endpoint.
 
 Also exposes PostgreSQL connection pool gauges (active/idle/max) registered by
 PooledPostgresRepository instances via register_pool_provider / deregister_pool_provider.
@@ -18,8 +18,8 @@ from typing import TypedDict
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BIND = "0.0.0.0"
-_PRIMARY_METRIC_NAME = "ai_ollama_primary_total"
-_FALLBACK_METRIC_NAME = "ai_ollama_fallback_total"
+_PRIMARY_METRIC_NAME = "ai_llm_primary_total"
+_FALLBACK_METRIC_NAME = "ai_llm_fallback_total"
 _PG_POOL_ACTIVE_METRIC = "ai_pg_pool_connections_active"
 _PG_POOL_IDLE_METRIC = "ai_pg_pool_connections_idle"
 _PG_POOL_MAX_METRIC = "ai_pg_pool_connections_max"
@@ -124,7 +124,7 @@ def increment_counter(
 def render_prometheus_text() -> str:
     snapshot = snapshot_counters()
     lines = [
-        f"# HELP {_PRIMARY_METRIC_NAME} Count of primary Ollama attempts by pipeline and outcome.",
+        f"# HELP {_PRIMARY_METRIC_NAME} Count of primary LLM attempts by pipeline and outcome.",
         f"# TYPE {_PRIMARY_METRIC_NAME} counter",
     ]
     for (pipeline, outcome), value in sorted(snapshot["primary"].items()):
@@ -137,7 +137,7 @@ def render_prometheus_text() -> str:
 
     lines.extend(
         [
-            f"# HELP {_FALLBACK_METRIC_NAME} Count of fallback activations when primary Ollama path is unusable.",
+            f"# HELP {_FALLBACK_METRIC_NAME} Count of fallback activations when primary LLM path is unusable.",
             f"# TYPE {_FALLBACK_METRIC_NAME} counter",
         ]
     )

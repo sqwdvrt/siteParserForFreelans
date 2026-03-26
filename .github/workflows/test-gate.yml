@@ -444,7 +444,7 @@ jobs:
 
       - name: Start backend API stack
         # Brings up postgres → redis → backend-migrate → backend-api.
-        # No --profile workers: ai-service / ollama / crawler / notifier are excluded.
+        # No --profile workers: ai-service / crawler / notifier are excluded.
         run: docker compose up -d backend-api
 
       - name: Wait for API to become healthy

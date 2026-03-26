@@ -30,7 +30,7 @@ def test_resolve_llm_provider_requires_known_value() -> None:
     with pytest.raises(ValueError, match="LLM_PROVIDER not set"):
         resolve_llm_provider("")
 
-    with pytest.raises(ValueError, match="LLM_PROVIDER must be 'gemini' or 'ollama'"):
+    with pytest.raises(ValueError, match="LLM_PROVIDER must be 'gemini'"):
         resolve_llm_provider("claude")
 
     assert resolve_llm_provider(" Gemini ") == "gemini"

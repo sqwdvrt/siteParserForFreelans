@@ -23,6 +23,6 @@ def resolve_llm_provider(value: str | None) -> str:
     normalized = (value or "").strip().lower()
     if not normalized:
         raise ValueError("LLM_PROVIDER not set")
-    if normalized not in {"gemini", "ollama"}:
-        raise ValueError("LLM_PROVIDER must be 'gemini' or 'ollama'")
+    if normalized != "gemini":
+        raise ValueError("LLM_PROVIDER must be 'gemini'")
     return normalized

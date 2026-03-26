@@ -19,7 +19,7 @@ PLACEHOLDER_PREFIXES = (
     "dummy_",
     "test_",
 )
-PLACEHOLDER_PATTERNS = ("example.com", "your-ollama-host", "replace/me", "placeholder")
+PLACEHOLDER_PATTERNS = ("example.com", "replace/me", "placeholder")
 
 
 def load_contract() -> dict:

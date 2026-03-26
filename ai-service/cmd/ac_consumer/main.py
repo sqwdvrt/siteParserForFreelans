@@ -21,7 +21,7 @@ try:
 except ImportError:
     pass  # python-dotenv is optional in container/runtime envs
 
-from ai_service.adapter.actor import FallbackActorAgent, OllamaActorAgent, RuleBasedActorAgent
+from ai_service.adapter.actor import FallbackActorAgent, RuleBasedActorAgent
 from ai_service.adapter.gemini import GeminiActorAgent
 from ai_service.adapter.postgres import (
     PostgresFeedbackRepository,
@@ -33,7 +33,6 @@ from ai_service.adapter.redis import ACBatchMessage, RedisACBatchQueueConsumer, 
 from ai_service.tracing.setup import extract_context, init_tracer
 from ai_service.usecase.process_ac_batch import ACBatch, ProcessACBatchUseCase
 from ai_service.util.fallback_metrics import increment_counter, set_gauge, start_metrics_server_from_env
-from ai_service.util.ollama_probe import probe_ollama
 from ai_service.util.postgres_pool_config import load_postgres_pool_settings
 from ai_service.util.queue_retry import reclaim_with_retry, wait_before_retry
 from ai_service.util.runtime_env import require_env, resolve_llm_provider, resolve_redis_url
@@ -259,28 +258,14 @@ def main() -> None:
     rerank_threshold = float(os.getenv("RERANK_THRESHOLD", "0.55"))
     max_jobs_to_send = 5
 
-    if llm_provider == "gemini":
-        gemini_api_key = os.getenv("GEMINI_API_KEY", "")
-        if not gemini_api_key:
-            logger.error("GEMINI_API_KEY not set (required when LLM_PROVIDER=gemini)")
-            sys.exit(1)
-        actor_model = os.getenv("GEMINI_ACTOR_MODEL", os.getenv("GEMINI_MODEL", "gemini-2.0-flash"))
-        actor_timeout = int(os.getenv("ACTOR_GEMINI_TIMEOUT_SEC", "30"))
-        actor_primary = GeminiActorAgent(api_key=gemini_api_key, model=actor_model, timeout_sec=actor_timeout)
-        logger.info("actor provider=gemini model_actor=%s", actor_model)
-    else:
-        ollama_url = os.getenv("OLLAMA_URL", "http://ollama:11434")
-        actor_model = os.getenv("ACTOR_OLLAMA_MODEL", "llama3.2:3b-instruct-q4_K_M")
-        actor_timeout = int(os.getenv("ACTOR_OLLAMA_TIMEOUT_SEC", "45"))
-        ollama_required = os.getenv("OLLAMA_REQUIRED", "1" if is_production_env(app_env) else "0") == "1"
-        if not probe_ollama(
-            ollama_url,
-            required=ollama_required,
-            required_models=[actor_model],
-        ) and ollama_required:
-            sys.exit(1)
-        actor_primary = OllamaActorAgent(base_url=ollama_url, model=actor_model, timeout_sec=actor_timeout)
-        logger.info("actor provider=ollama url=%s", ollama_url)
+    gemini_api_key = os.getenv("GEMINI_API_KEY", "")
+    if not gemini_api_key:
+        logger.error("GEMINI_API_KEY not set (required when LLM_PROVIDER=gemini)")
+        sys.exit(1)
+    actor_model = os.getenv("GEMINI_ACTOR_MODEL", os.getenv("GEMINI_MODEL", "gemini-2.0-flash"))
+    actor_timeout = int(os.getenv("ACTOR_GEMINI_TIMEOUT_SEC", "30"))
+    actor_primary = GeminiActorAgent(api_key=gemini_api_key, model=actor_model, timeout_sec=actor_timeout)
+    logger.info("actor provider=gemini model_actor=%s", actor_model)
 
     init_tracer("site-parser-ac")
 

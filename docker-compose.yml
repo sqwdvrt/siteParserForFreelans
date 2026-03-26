@@ -242,7 +242,6 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
       REDIS_URL: redis://redis:6379/0
-      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
       EMBEDDING_REQUIRE_LOCAL: "${EMBEDDING_REQUIRE_LOCAL:-1}"
       AI_READY_FILE: /tmp/ai-consumer-ready
       AI_METRICS_BIND: ${AI_METRICS_BIND:-0.0.0.0}
@@ -252,10 +251,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
-      ollama-bootstrap:
-        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "test -f /tmp/ai-consumer-ready"]
       interval: 5s
@@ -276,48 +271,6 @@ services:
     tmpfs:
       - /tmp:mode=1777,size=512m
       - /home/app:mode=0700,size=64m
-
-  ollama:
-    profiles:
-      - workers
-    image: ${OLLAMA_IMAGE:-ollama/ollama@sha256:006ad593108a705eafc8ea8496a30765222bdab17b1a1b0bbe3d50ff2e70fbf4}
-    ports:
-      - "${OLLAMA_BIND_IP:-127.0.0.1}:${OLLAMA_PORT:-11434}:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    healthcheck:
-      test: ["CMD", "ollama", "list"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
-      start_period: 20s
-    deploy:
-      resources:
-        limits:
-          memory: ${OLLAMA_MEM_LIMIT:-8g}
-          cpus: '4.0'
-        reservations:
-          memory: 4g
-    security_opt:
-      - no-new-privileges:true
-
-  ollama-bootstrap:
-    profiles:
-      - workers
-    image: ${OLLAMA_IMAGE:-ollama/ollama@sha256:006ad593108a705eafc8ea8496a30765222bdab17b1a1b0bbe3d50ff2e70fbf4}
-    environment:
-      OLLAMA_HOST: http://ollama:11434
-      ACTOR_OLLAMA_MODEL: ${ACTOR_OLLAMA_MODEL:-llama3.2:3b-instruct-q4_K_M}
-    entrypoint: ["/bin/sh"]
-    command: ["/opt/bootstrap/ollama_bootstrap.sh"]
-    volumes:
-      - ./scripts/ollama_bootstrap.sh:/opt/bootstrap/ollama_bootstrap.sh:ro
-    depends_on:
-      ollama:
-        condition: service_healthy
-    restart: "no"
-    security_opt:
-      - no-new-privileges:true
 
   ai-user-embed:
     image: ${AI_IMAGE:-siteparserforfreelans-ai-runtime:local}
@@ -400,7 +353,6 @@ services:
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
       REDIS_URL: redis://redis:6379/0
-      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
       AI_READY_FILE: /tmp/ai-ac-consumer-ready
       AI_METRICS_BIND: ${AI_METRICS_BIND:-0.0.0.0}
       AI_AC_CONSUMER_METRICS_PORT: ${AI_AC_CONSUMER_METRICS_PORT:-9109}
@@ -409,10 +361,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
-      ollama-bootstrap:
-        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "test -f /tmp/ai-ac-consumer-ready"]
       interval: 5s
@@ -496,4 +444,3 @@ services:
 
 volumes:
   postgres_data:
-  ollama_data:

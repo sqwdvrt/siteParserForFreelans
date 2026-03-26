@@ -29,7 +29,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(ai_ollama_primary_total{pipeline=\"classifier\",outcome=\"success\"}[5m])) / clamp_min(sum(rate(ai_ollama_primary_total{pipeline=\"classifier\"}[5m])), 0.0001)",
+          "expr": "sum(rate(ai_llm_primary_total{pipeline=\"classifier\",outcome=\"success\"}[5m])) / clamp_min(sum(rate(ai_llm_primary_total{pipeline=\"classifier\"}[5m])), 0.0001)",
           "legendFormat": "success rate",
           "refId": "A"
         }
@@ -63,7 +63,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(ai_ollama_primary_total{pipeline=\"actor\",outcome=\"success\"}[5m])) / clamp_min(sum(rate(ai_ollama_primary_total{pipeline=\"actor\"}[5m])), 0.0001)",
+          "expr": "sum(rate(ai_llm_primary_total{pipeline=\"actor\",outcome=\"success\"}[5m])) / clamp_min(sum(rate(ai_llm_primary_total{pipeline=\"actor\"}[5m])), 0.0001)",
           "legendFormat": "success rate",
           "refId": "A"
         }
@@ -97,7 +97,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum(rate(ai_ollama_primary_total{pipeline=\"critic\",outcome=\"success\"}[5m])) / clamp_min(sum(rate(ai_ollama_primary_total{pipeline=\"critic\"}[5m])), 0.0001)",
+          "expr": "sum(rate(ai_llm_primary_total{pipeline=\"critic\",outcome=\"success\"}[5m])) / clamp_min(sum(rate(ai_llm_primary_total{pipeline=\"critic\"}[5m])), 0.0001)",
           "legendFormat": "success rate",
           "refId": "A"
         }
@@ -131,7 +131,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by(pipeline, outcome)(rate(ai_ollama_primary_total[5m]))",
+          "expr": "sum by(pipeline, outcome)(rate(ai_llm_primary_total[5m]))",
           "legendFormat": "{{pipeline}} / {{outcome}}",
           "refId": "A"
         }
@@ -157,7 +157,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by(pipeline, reason)(rate(ai_ollama_fallback_total[5m]))",
+          "expr": "sum by(pipeline, reason)(rate(ai_llm_fallback_total[5m]))",
           "legendFormat": "{{pipeline}} / {{reason}}",
           "refId": "A"
         }
@@ -189,7 +189,7 @@
       "targets": [
         {
           "datasource": { "type": "prometheus", "uid": "${datasource}" },
-          "expr": "sum by(pipeline)(rate(ai_ollama_fallback_total[5m])) / clamp_min(sum by(pipeline)(rate(ai_ollama_primary_total[5m])), 0.0001)",
+          "expr": "sum by(pipeline)(rate(ai_llm_fallback_total[5m])) / clamp_min(sum by(pipeline)(rate(ai_llm_primary_total[5m])), 0.0001)",
           "legendFormat": "{{pipeline}}",
           "refId": "A"
         }

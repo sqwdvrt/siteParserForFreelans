@@ -41,8 +41,8 @@ def test_render_prometheus_text_contains_primary_and_fallback_counters() -> None
 
     rendered = fallback_metrics.render_prometheus_text()
 
-    assert 'ai_ollama_primary_total{pipeline="classifier",outcome="success"} 1' in rendered
-    assert 'ai_ollama_fallback_total{pipeline="classifier",reason="primary_error"} 1' in rendered
+    assert 'ai_llm_primary_total{pipeline="classifier",outcome="success"} 1' in rendered
+    assert 'ai_llm_fallback_total{pipeline="classifier",reason="primary_error"} 1' in rendered
 
 
 def test_render_prometheus_text_contains_custom_metrics() -> None:

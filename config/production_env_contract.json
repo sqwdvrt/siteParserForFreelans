@@ -57,8 +57,7 @@
     "LLM_PROVIDER": {
       "type": "enum",
       "allowed": [
-        "gemini",
-        "ollama"
+        "gemini"
       ],
       "documentation": "active"
     }
@@ -84,12 +83,6 @@
           "documentation": "active"
         }
       },
-      "ollama": {
-        "OLLAMA_URL": {
-          "type": "nonempty",
-          "documentation": "commented_or_active"
-        }
-      }
     }
   },
   "compose_contract": {
@@ -205,7 +198,7 @@
       "must_contain": [
         "REDIS_URL not set",
         "LLM_PROVIDER not set",
-        "LLM_PROVIDER must be 'gemini' or 'ollama'"
+        "LLM_PROVIDER must be 'gemini'"
       ]
     },
     {

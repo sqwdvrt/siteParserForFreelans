@@ -15,14 +15,10 @@
 | **REDIS_URL** | Redis URL. Локально: `redis://localhost:6379/0`. В production: только `rediss://...` + пароль |
 | **API_URL** | URL Backend API. Локально: `http://localhost:8080`. В production (telegram-bot): только `https://` |
 | **BROWSER_SERVICE_URL** | URL browser render service для crawler. В текущем проектном `.env` используется `http://browser-service:8090` |
-| **LLM_PROVIDER** | Провайдер actor для `ai-ac-consumer`: `ollama` или `gemini`. Переменная обязательна для этого процесса |
-| **GEMINI_API_KEY** | Ключ Gemini API. Обязателен при `LLM_PROVIDER=gemini` |
+| **LLM_PROVIDER** | Провайдер actor для `ai-ac-consumer`: только `gemini`. Переменная обязательна для этого процесса |
+| **GEMINI_API_KEY** | Ключ Gemini API. Обязателен |
 | **GEMINI_MODEL / GEMINI_ACTOR_MODEL** | Базовая и role-specific Gemini модель actor. По умолчанию `gemini-2.0-flash` |
 | **ACTOR_GEMINI_TIMEOUT_SEC** | Таймаут actor-запроса к Gemini. По умолчанию `30` |
-| **OLLAMA_URL** | URL Ollama для actor при `LLM_PROVIDER=ollama`. По умолчанию `http://ollama:11434` |
-| **ACTOR_OLLAMA_MODEL** | Модель Ollama для batch explanations. По умолчанию `llama3.2:3b-instruct-q4_K_M` |
-| **ACTOR_OLLAMA_TIMEOUT_SEC** | Таймаут actor-запроса к Ollama. По умолчанию `45` |
-| **OLLAMA_REQUIRED** | Если `1`, `ai-ac-consumer` завершится при недоступном Ollama. По умолчанию `0` в dev и `1` в production |
 | **EMBEDDING_MODEL / RERANK_MODEL** | Модели embedding и rerank. По умолчанию `all-MiniLM-L6-v2` и `BAAI/bge-reranker-base` |
 | **EMBEDDING_MODELS_DIR / RERANK_MODELS_DIR** | Каталоги с локально предзагруженными моделями. По умолчанию `/opt/models` |
 | **EMBEDDING_REQUIRE_LOCAL / RERANK_REQUIRE_LOCAL** | В текущем проектном `.env` `EMBEDDING_REQUIRE_LOCAL=0`; для `RERANK_REQUIRE_LOCAL` unset-значение наследует `EMBEDDING_REQUIRE_LOCAL` |
