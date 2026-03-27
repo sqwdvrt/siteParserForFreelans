@@ -265,6 +265,7 @@ class _PinnedProxy:
         self._server = None
 
     async def _handle_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        upstream_writer: asyncio.StreamWriter | None = None
         try:
             head = await reader.readuntil(b"\r\n\r\n")
             request_head = head.decode("latin1")
@@ -282,7 +283,8 @@ class _PinnedProxy:
                 upstream_reader, upstream_writer = await _open_pinned_connection(host, port)
                 writer.write(f"{version} 200 Connection Established\r\n\r\n".encode("latin1"))
                 await writer.drain()
-                await self._proxy_bidirectional(reader, writer, upstream_reader, upstream_writer)
+                _uw, upstream_writer = upstream_writer, None  # transfer ownership to _proxy_bidirectional
+                await self._proxy_bidirectional(reader, writer, upstream_reader, _uw)
                 return
 
             parsed = urlparse(target)
@@ -317,7 +319,8 @@ class _PinnedProxy:
             ).encode("latin1")
             upstream_writer.write(forwarded_head)
             await upstream_writer.drain()
-            await self._proxy_bidirectional(reader, writer, upstream_reader, upstream_writer)
+            _uw, upstream_writer = upstream_writer, None  # transfer ownership to _proxy_bidirectional
+            await self._proxy_bidirectional(reader, writer, upstream_reader, _uw)
         except HTTPException as exc:
             await self._write_error(writer, 403 if exc.status_code == 400 else 502, exc.detail)
         except (ConnectionError, OSError, asyncio.IncompleteReadError, ValueError) as exc:
@@ -326,6 +329,12 @@ class _PinnedProxy:
             log.warning("pinned proxy unexpected failure: %s", exc)
             await self._write_error(writer, 500, "proxy failure")
         finally:
+            if upstream_writer is not None:
+                try:
+                    upstream_writer.close()
+                    await upstream_writer.wait_closed()
+                except Exception:
+                    pass
             writer.close()
             await writer.wait_closed()
 

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 import sys
 from typing import Any
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -127,6 +129,71 @@ def test_pinned_proxy_keeps_https_url_but_pins_connect_target() -> None:
     assert result["url"] == "https://example.com/login"
     assert result["connect_ip"] == "93.184.216.34"
     assert result["sni_hostname"] == "example.com"
+
+
+def _make_mock_writer(*, drain_side_effect: BaseException | None = None) -> MagicMock:
+    w = MagicMock()
+    w.write = MagicMock()
+    w.drain = AsyncMock(side_effect=drain_side_effect)
+    w.close = MagicMock()
+    w.wait_closed = AsyncMock()
+    return w
+
+
+def test_proxy_closes_upstream_writer_when_client_drain_fails_after_connect() -> None:
+    """upstream_writer must be closed even when client drain() raises after CONNECT."""
+
+    async def run() -> None:
+        client_reader = asyncio.StreamReader()
+        client_reader.feed_data(
+            b"CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"
+        )
+        # drain raises once (on the 200 Connection Established response); _write_error's drain succeeds
+        client_writer = _make_mock_writer(drain_side_effect=[ConnectionResetError("client reset"), None])
+
+        upstream_writer = _make_mock_writer()
+        upstream_reader = asyncio.StreamReader()
+        upstream_reader.feed_eof()
+
+        proxy = main._PinnedProxy()
+        with patch.object(
+            main,
+            "_open_pinned_connection",
+            AsyncMock(return_value=(upstream_reader, upstream_writer)),
+        ):
+            await proxy._handle_client(client_reader, client_writer)
+
+        assert upstream_writer.close.called, "upstream_writer.close() must be called when client drain fails"
+
+    asyncio.run(run())
+
+
+def test_proxy_closes_upstream_writer_when_upstream_drain_fails_for_http() -> None:
+    """upstream_writer must be closed even when upstream drain() raises for HTTP proxy."""
+
+    async def run() -> None:
+        client_reader = asyncio.StreamReader()
+        client_reader.feed_data(
+            b"GET http://example.com/path HTTP/1.1\r\nHost: example.com\r\n\r\n"
+        )
+        client_writer = _make_mock_writer()
+
+        upstream_writer = _make_mock_writer(drain_side_effect=ConnectionResetError("upstream reset"))
+        upstream_reader = asyncio.StreamReader()
+        upstream_reader.feed_eof()
+
+        proxy = main._PinnedProxy()
+        with patch("asyncio.open_connection", AsyncMock(return_value=(upstream_reader, upstream_writer))):
+            with patch.object(
+                main,
+                "_resolve_and_validate_host",
+                AsyncMock(return_value=["93.184.216.34"]),
+            ):
+                await proxy._handle_client(client_reader, client_writer)
+
+        assert upstream_writer.close.called, "upstream_writer.close() must be called when upstream drain fails"
+
+    asyncio.run(run())
 
 
 def test_request_scoped_allowlist_is_removed_after_scope_exits() -> None:
