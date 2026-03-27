@@ -1168,3 +1168,35 @@ func TestSendNotification_ExecuteBatch_SendFailed_LeavesDispatched(t *testing.T)
 		t.Fatalf("unexpected order: %v", order)
 	}
 }
+
+func TestSendNotification_ExecuteBatch_DeduplicatesDuplicateJobIDs(t *testing.T) {
+	// When the same jobID appears twice and the second entry has a higher FinalScore,
+	// EnsurePending must be called exactly once (not twice due to the uniqueIDs append bug).
+	ensureCalls := 0
+	uc := NewSendNotification(
+		&mockNotifRepo{
+			ensurePendingFunc: func(_ context.Context, _ int64, _ int64, _, _ float64, _ string, _ []string, _ string) (bool, bool, error) {
+				ensureCalls++
+				return true, true, nil
+			},
+			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
+			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
+		},
+		&mockUserRepo{},
+		&mockJobRepo{},
+		&mockNotifier{},
+		5*time.Minute,
+		5,
+	)
+
+	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{
+		{JobID: 42, FinalScore: 0.5, Rank: 2},
+		{JobID: 42, FinalScore: 0.9, Rank: 1}, // same job, higher score — must NOT append ID again
+	}, 0.9)
+	if err != nil {
+		t.Fatalf("ExecuteBatch: %v", err)
+	}
+	if ensureCalls != 1 {
+		t.Fatalf("EnsurePending called %d times for one unique job, want 1", ensureCalls)
+	}
+}

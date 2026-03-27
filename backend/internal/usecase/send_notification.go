@@ -219,7 +219,9 @@ func (u *SendNotification) ExecuteBatch(
 				rankerVersion: item.RankerVersion,
 				reasonCodes:   cloneStrings(item.ReasonCodes),
 			}
-			uniqueIDs = append(uniqueIDs, item.JobID)
+			if !dup {
+				uniqueIDs = append(uniqueIDs, item.JobID)
+			}
 		}
 	}
 
