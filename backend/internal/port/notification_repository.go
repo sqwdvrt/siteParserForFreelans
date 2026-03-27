@@ -12,11 +12,11 @@ type PendingNotification struct {
 	WhyItFits  string
 }
 
-// NotificationRepository — репозиторий уведомлений (дедупликация, retry, rate limit).
+// NotificationRepository — репозиторий уведомлений (дедупликация, at-most-once delivery, rate limit).
 type NotificationRepository interface {
 	// EnsurePending вставляет запись со статусом 'pending', если её ещё нет.
-	// Если запись уже 'sent' — shouldSend=false (уже доставлено, пропустить).
-	// Если запись уже 'pending' — wasInserted=false, shouldSend=true (retry, rate limit не применяется).
+	// Если запись уже в terminal delivery state ('dispatched'/'sent') — shouldSend=false.
+	// Если запись уже 'pending' — wasInserted=false, shouldSend=true.
 	// Если записи не было — wasInserted=true, shouldSend=true (новое уведомление).
 	EnsurePending(
 		ctx context.Context,
@@ -28,8 +28,11 @@ type NotificationRepository interface {
 		whyItFits string,
 	) (wasInserted bool, shouldSend bool, err error)
 
-	// MarkSent переводит запись в статус 'sent' и фиксирует время доставки.
-	// Вызывается только после подтверждённой доставки в Telegram.
+	// MarkDispatched переводит запись в terminal pre-send state 'dispatched',
+	// чтобы suppress retry/dedup before external Telegram side effect.
+	MarkDispatched(ctx context.Context, userID, jobID int64) error
+
+	// MarkSent переводит запись из 'dispatched' в 'sent' и фиксирует время успешного ответа Telegram API.
 	MarkSent(ctx context.Context, userID, jobID int64) error
 
 	// MarkFailed переводит запись в статус 'failed' после перманентной ошибки доставки.
@@ -38,16 +41,27 @@ type NotificationRepository interface {
 	// Delete удаляет pending-запись (используется при отмене по rate limit / daily limit).
 	Delete(ctx context.Context, userID, jobID int64) error
 
-	// SentRecently возвращает true, если пользователю успешно (status='sent') отправляли
-	// уведомление в течение within.
+	// SentRecently возвращает true, если пользователю уже финализировали доставку
+	// (status='dispatched'/'sent') в течение within.
 	SentRecently(ctx context.Context, userID int64, within time.Duration) (bool, error)
 
-	// CountToday возвращает количество успешно (status='sent') отправленных уведомлений
-	// пользователю за текущие сутки (UTC).
+	// CountToday возвращает количество финализированных для доставки уведомлений
+	// (status='dispatched'/'sent') за текущие сутки (UTC).
 	CountToday(ctx context.Context, userID int64) (int, error)
 
 	// GetPendingForUser возвращает все pending-записи пользователя для дайджеста.
 	GetPendingForUser(ctx context.Context, userID int64) ([]PendingNotification, error)
+
+	// ClaimPendingDigestNotifications атомарно резервирует до limit pending-записей
+	// пользователя для отправки дайджеста, переводя их во внутреннее состояние "sending".
+	ClaimPendingDigestNotifications(ctx context.Context, userID int64, limit int) ([]PendingNotification, error)
+
+	// ReleasePendingDigestNotifications возвращает ранее зарезервированные digest-записи
+	// обратно в pending после неуспешной отправки batch.
+	ReleasePendingDigestNotifications(ctx context.Context, userID int64, jobIDs []int64) error
+
+	// ReclaimStaleDigestClaims возвращает зависшие digest-claims из sending обратно в pending.
+	ReclaimStaleDigestClaims(ctx context.Context, olderThan time.Duration) (int64, error)
 
 	// CancelPendingByJobIDs удаляет все pending-уведомления для указанных job_id.
 	// Вызывается при экспирации jobs, чтобы не отправлять уведомления о закрытых вакансиях.

@@ -42,6 +42,8 @@ const (
 	defaultBreakerOpenJitter       = 0.2
 	defaultQueueDepthSamplePeriod  = 60 * time.Second
 	localTelegramTokenEnv          = "LOCAL_TELEGRAM_BOT_TOKEN"
+	defaultDigestLockKey           = "notifier:daily-digest:leader"
+	defaultDigestLockTTL           = 15 * time.Minute
 )
 
 func resolveTelegramBotToken(isProd bool) (token string, source string) {
@@ -199,12 +201,35 @@ func main() {
 
 	dailyDigest := usecase.NewDailyDigest(userRepo, notifRepo, jobRepo, notifier, maxPerDay).
 		WithProductEventRepo(productEventRepo)
+	digestLock := redisadapter.NewRedisLock(rdb)
 	digestCronSpec := os.Getenv("DIGEST_CRON")
 	if digestCronSpec == "" {
 		digestCronSpec = "0 * * * *" // каждый час; notifyHour по МСК выбирает нужных пользователей
 	}
 	digestCron := cron.New()
 	if _, err := digestCron.AddFunc(digestCronSpec, func() {
+		lease, ok, err := digestLock.Acquire(context.Background(), defaultDigestLockKey, defaultDigestLockTTL)
+		if err != nil {
+			slog.Error("digest lock acquire failed", "key", defaultDigestLockKey, "err", err)
+			return
+		}
+		if !ok {
+			slog.Info("digest skipped; lock already held", "key", defaultDigestLockKey)
+			return
+		}
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer releaseCancel()
+		defer func() {
+			released, releaseErr := lease.Release(releaseCtx)
+			if releaseErr != nil {
+				slog.Error("digest lock release failed", "key", defaultDigestLockKey, "err", releaseErr)
+				return
+			}
+			if !released {
+				slog.Warn("digest lock release skipped; token no longer owned", "key", defaultDigestLockKey)
+			}
+		}()
+
 		digestCtx, digestCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer digestCancel()
 		dailyDigest.Execute(digestCtx)
@@ -456,7 +481,6 @@ func getNotifierMaxPerDay() int {
 	// Preferred key for notifier per-day cap; falls back to legacy key for compatibility.
 	return getPositiveIntEnvWithFallback("NOTIFY_PRO_MAX_PER_DAY", "NOTIFY_MAX_PER_DAY", 5)
 }
-
 
 func getPositiveIntEnvWithFallback(primaryKey, secondaryKey string, fallback int) int {
 	primaryRaw := os.Getenv(primaryKey)

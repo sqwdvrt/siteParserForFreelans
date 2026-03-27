@@ -52,15 +52,25 @@ type mockExpireNotifRepo struct {
 func (m *mockExpireNotifRepo) EnsurePending(_ context.Context, _, _ int64, _, _ float64, _ string, _ []string, _ string) (bool, bool, error) {
 	return false, false, nil
 }
-func (m *mockExpireNotifRepo) MarkSent(_ context.Context, _, _ int64) error { return nil }
-func (m *mockExpireNotifRepo) MarkFailed(_ context.Context, _, _ int64) error { return nil }
-func (m *mockExpireNotifRepo) Delete(_ context.Context, _, _ int64) error   { return nil }
+func (m *mockExpireNotifRepo) MarkDispatched(_ context.Context, _, _ int64) error { return nil }
+func (m *mockExpireNotifRepo) MarkSent(_ context.Context, _, _ int64) error       { return nil }
+func (m *mockExpireNotifRepo) MarkFailed(_ context.Context, _, _ int64) error     { return nil }
+func (m *mockExpireNotifRepo) Delete(_ context.Context, _, _ int64) error         { return nil }
 func (m *mockExpireNotifRepo) SentRecently(_ context.Context, _ int64, _ time.Duration) (bool, error) {
 	return false, nil
 }
 func (m *mockExpireNotifRepo) CountToday(_ context.Context, _ int64) (int, error) { return 0, nil }
 func (m *mockExpireNotifRepo) GetPendingForUser(_ context.Context, _ int64) ([]port.PendingNotification, error) {
 	return nil, nil
+}
+func (m *mockExpireNotifRepo) ClaimPendingDigestNotifications(_ context.Context, _ int64, _ int) ([]port.PendingNotification, error) {
+	return nil, nil
+}
+func (m *mockExpireNotifRepo) ReleasePendingDigestNotifications(_ context.Context, _ int64, _ []int64) error {
+	return nil
+}
+func (m *mockExpireNotifRepo) ReclaimStaleDigestClaims(_ context.Context, _ time.Duration) (int64, error) {
+	return 0, nil
 }
 func (m *mockExpireNotifRepo) CancelPendingByJobIDs(_ context.Context, jobIDs []int64) (int64, error) {
 	m.cancelledJobIDs = append(m.cancelledJobIDs, jobIDs...)

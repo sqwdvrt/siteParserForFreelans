@@ -146,6 +146,8 @@ func (m *mockCrawlNotifRepo) EnsurePending(context.Context, int64, int64, float6
 	return false, false, nil
 }
 
+func (m *mockCrawlNotifRepo) MarkDispatched(context.Context, int64, int64) error { return nil }
+
 func (m *mockCrawlNotifRepo) MarkSent(context.Context, int64, int64) error { return nil }
 
 func (m *mockCrawlNotifRepo) MarkFailed(context.Context, int64, int64) error { return nil }
@@ -160,6 +162,15 @@ func (m *mockCrawlNotifRepo) CountToday(context.Context, int64) (int, error) { r
 
 func (m *mockCrawlNotifRepo) GetPendingForUser(context.Context, int64) ([]port.PendingNotification, error) {
 	return nil, nil
+}
+func (m *mockCrawlNotifRepo) ClaimPendingDigestNotifications(context.Context, int64, int) ([]port.PendingNotification, error) {
+	return nil, nil
+}
+func (m *mockCrawlNotifRepo) ReleasePendingDigestNotifications(context.Context, int64, []int64) error {
+	return nil
+}
+func (m *mockCrawlNotifRepo) ReclaimStaleDigestClaims(context.Context, time.Duration) (int64, error) {
+	return 0, nil
 }
 
 func (m *mockCrawlNotifRepo) CancelPendingByJobIDs(_ context.Context, jobIDs []int64) (int64, error) {

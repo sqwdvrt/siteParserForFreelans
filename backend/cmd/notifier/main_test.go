@@ -290,8 +290,21 @@ func (s *stubNotifRepo) EnsurePending(ctx context.Context, userID, jobID int64, 
 	return true, true, nil
 }
 
+func (s *stubNotifRepo) MarkDispatched(ctx context.Context, userID, jobID int64) error {
+	return nil
+}
+
 func (s *stubNotifRepo) GetPendingForUser(ctx context.Context, userID int64) ([]port.PendingNotification, error) {
 	return nil, nil
+}
+func (s *stubNotifRepo) ClaimPendingDigestNotifications(ctx context.Context, userID int64, limit int) ([]port.PendingNotification, error) {
+	return nil, nil
+}
+func (s *stubNotifRepo) ReleasePendingDigestNotifications(ctx context.Context, userID int64, jobIDs []int64) error {
+	return nil
+}
+func (s *stubNotifRepo) ReclaimStaleDigestClaims(ctx context.Context, olderThan time.Duration) (int64, error) {
+	return 0, nil
 }
 
 func (s *stubNotifRepo) MarkSent(ctx context.Context, userID, jobID int64) error {

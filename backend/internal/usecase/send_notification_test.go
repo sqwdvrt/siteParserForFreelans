@@ -3,6 +3,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -12,12 +13,13 @@ import (
 )
 
 type mockNotifRepo struct {
-	ensurePendingFunc func(ctx context.Context, userID, jobID int64, score float64, finalScore float64, rankerVersion string, reasonCodes []string, whyItFits string) (bool, bool, error)
-	markSentFunc      func(ctx context.Context, userID, jobID int64) error
-	markFailedFunc    func(ctx context.Context, userID, jobID int64) error
-	deleteFunc        func(ctx context.Context, userID, jobID int64) error
-	sentRecentlyFunc  func(ctx context.Context, userID int64, within time.Duration) (bool, error)
-	countTodayFunc    func(ctx context.Context, userID int64) (int, error)
+	ensurePendingFunc  func(ctx context.Context, userID, jobID int64, score float64, finalScore float64, rankerVersion string, reasonCodes []string, whyItFits string) (bool, bool, error)
+	markDispatchedFunc func(ctx context.Context, userID, jobID int64) error
+	markSentFunc       func(ctx context.Context, userID, jobID int64) error
+	markFailedFunc     func(ctx context.Context, userID, jobID int64) error
+	deleteFunc         func(ctx context.Context, userID, jobID int64) error
+	sentRecentlyFunc   func(ctx context.Context, userID int64, within time.Duration) (bool, error)
+	countTodayFunc     func(ctx context.Context, userID int64) (int, error)
 }
 
 func (m *mockNotifRepo) EnsurePending(ctx context.Context, userID, jobID int64, score float64, finalScore float64, rankerVersion string, reasonCodes []string, whyItFits string) (bool, bool, error) {
@@ -27,8 +29,24 @@ func (m *mockNotifRepo) EnsurePending(ctx context.Context, userID, jobID int64, 
 	return true, true, nil // default: новое, нужно отправить
 }
 
+func (m *mockNotifRepo) MarkDispatched(ctx context.Context, userID, jobID int64) error {
+	if m.markDispatchedFunc != nil {
+		return m.markDispatchedFunc(ctx, userID, jobID)
+	}
+	return nil
+}
+
 func (m *mockNotifRepo) GetPendingForUser(ctx context.Context, userID int64) ([]port.PendingNotification, error) {
 	return nil, nil
+}
+func (m *mockNotifRepo) ClaimPendingDigestNotifications(ctx context.Context, userID int64, limit int) ([]port.PendingNotification, error) {
+	return nil, nil
+}
+func (m *mockNotifRepo) ReleasePendingDigestNotifications(ctx context.Context, userID int64, jobIDs []int64) error {
+	return nil
+}
+func (m *mockNotifRepo) ReclaimStaleDigestClaims(ctx context.Context, olderThan time.Duration) (int64, error) {
+	return 0, nil
 }
 
 func (m *mockNotifRepo) MarkSent(ctx context.Context, userID, jobID int64) error {
@@ -300,7 +318,7 @@ func TestSendNotification_Execute_RetrySkipsRateLimit(t *testing.T) {
 }
 
 func TestSendNotification_Execute_Success(t *testing.T) {
-	sent := false
+	order := make([]string, 0, 3)
 	markSentCalled := false
 	uc := NewSendNotification(
 		&mockNotifRepo{
@@ -309,7 +327,12 @@ func TestSendNotification_Execute_Success(t *testing.T) {
 			},
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
 			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
+			markDispatchedFunc: func(context.Context, int64, int64) error {
+				order = append(order, "dispatch")
+				return nil
+			},
 			markSentFunc: func(context.Context, int64, int64) error {
+				order = append(order, "marksent")
 				markSentCalled = true
 				return nil
 			},
@@ -321,13 +344,13 @@ func TestSendNotification_Execute_Success(t *testing.T) {
 			return &domain.Job{ID: 1, Title: "T", URL: "https://kwork.ru/p/1"}, nil
 		}},
 		&mockNotifier{sendFunc: func(ctx context.Context, telegramID int64, p port.NotifyPayload) error {
+			order = append(order, "send")
 			if telegramID != 888 {
 				t.Errorf("telegram_id want 888, got %d", telegramID)
 			}
 			if p.Job == nil || p.Job.Title != "T" {
 				t.Error("payload job missing or wrong")
 			}
-			sent = true
 			return nil
 		}},
 		5*time.Minute,
@@ -337,8 +360,8 @@ func TestSendNotification_Execute_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !sent {
-		t.Error("must send when all checks pass")
+	if len(order) != 3 || order[0] != "dispatch" || order[1] != "send" || order[2] != "marksent" {
+		t.Fatalf("unexpected call order: %v", order)
 	}
 	if !markSentCalled {
 		t.Error("must call MarkSent after successful send")
@@ -542,10 +565,10 @@ func TestSendNotification_Execute_JobLookupError(t *testing.T) {
 	}
 }
 
-// TestSendNotification_Execute_SendFailed_KeepsPending проверяет, что при ошибке Telegram
-// pending-запись НЕ удаляется (остаётся для retry через Redis Nack).
-func TestSendNotification_Execute_SendFailed_KeepsPending(t *testing.T) {
-	deleteCalled := false
+// TestSendNotification_Execute_SendFailed_LeavesDispatched проверяет, что при ошибке Telegram
+// запись уже terminally dispatched и не уходит в retry.
+func TestSendNotification_Execute_SendFailed_LeavesDispatched(t *testing.T) {
+	order := make([]string, 0, 2)
 	uc := NewSendNotification(
 		&mockNotifRepo{
 			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
@@ -553,8 +576,12 @@ func TestSendNotification_Execute_SendFailed_KeepsPending(t *testing.T) {
 			},
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
 			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
-			deleteFunc: func(context.Context, int64, int64) error {
-				deleteCalled = true
+			markDispatchedFunc: func(context.Context, int64, int64) error {
+				order = append(order, "dispatch")
+				return nil
+			},
+			markFailedFunc: func(context.Context, int64, int64) error {
+				t.Fatal("must not call MarkFailed on send failure")
 				return nil
 			},
 		},
@@ -565,6 +592,7 @@ func TestSendNotification_Execute_SendFailed_KeepsPending(t *testing.T) {
 			return &domain.Job{ID: 1, Title: "T", URL: "https://kwork.ru/p/1"}, nil
 		}},
 		&mockNotifier{sendFunc: func(context.Context, int64, port.NotifyPayload) error {
+			order = append(order, "send")
 			return errors.New("telegram down")
 		}},
 		5*time.Minute,
@@ -572,20 +600,16 @@ func TestSendNotification_Execute_SendFailed_KeepsPending(t *testing.T) {
 	)
 
 	err := uc.Execute(context.Background(), 1, 1, 0.85, 0.85, "v2", nil, "")
-	if err == nil {
-		t.Fatal("want error when notifier send fails")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
 	}
-	if !strings.Contains(err.Error(), "telegram down") {
-		t.Fatalf("error must contain send failure, got: %v", err)
-	}
-	if deleteCalled {
-		t.Fatal("must NOT delete pending record on send failure — retry via Redis Nack")
+	if len(order) != 2 || order[0] != "dispatch" || order[1] != "send" {
+		t.Fatalf("unexpected call order: %v", order)
 	}
 }
 
-func TestSendNotification_Execute_PermanentSendFailed_MarksFailed(t *testing.T) {
-	markFailedCalled := false
-	deleteCalled := false
+func TestSendNotification_Execute_PermanentSendFailed_LeavesDispatched(t *testing.T) {
+	order := make([]string, 0, 2)
 	uc := NewSendNotification(
 		&mockNotifRepo{
 			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
@@ -593,12 +617,12 @@ func TestSendNotification_Execute_PermanentSendFailed_MarksFailed(t *testing.T) 
 			},
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
 			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
-			markFailedFunc: func(context.Context, int64, int64) error {
-				markFailedCalled = true
+			markDispatchedFunc: func(context.Context, int64, int64) error {
+				order = append(order, "dispatch")
 				return nil
 			},
-			deleteFunc: func(context.Context, int64, int64) error {
-				deleteCalled = true
+			markFailedFunc: func(context.Context, int64, int64) error {
+				t.Fatal("must not call MarkFailed on permanent send failure")
 				return nil
 			},
 		},
@@ -609,6 +633,7 @@ func TestSendNotification_Execute_PermanentSendFailed_MarksFailed(t *testing.T) 
 			return &domain.Job{ID: 1, Title: "T", URL: "https://kwork.ru/p/1"}, nil
 		}},
 		&mockNotifier{sendFunc: func(context.Context, int64, port.NotifyPayload) error {
+			order = append(order, "send")
 			return permanentNotifyError{msg: "telegram api: http 400"}
 		}},
 		5*time.Minute,
@@ -618,11 +643,44 @@ func TestSendNotification_Execute_PermanentSendFailed_MarksFailed(t *testing.T) 
 	if err := uc.Execute(context.Background(), 1, 1, 0.85, 0.85, "v2", nil, ""); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !markFailedCalled {
-		t.Fatal("must mark notification failed on permanent telegram error")
+	if len(order) != 2 || order[0] != "dispatch" || order[1] != "send" {
+		t.Fatalf("unexpected call order: %v", order)
 	}
-	if deleteCalled {
-		t.Fatal("must not delete notification on permanent telegram error")
+}
+
+func TestSendNotification_Execute_MarkDispatchedFails_DoesNotSend(t *testing.T) {
+	sendCalled := false
+	uc := NewSendNotification(
+		&mockNotifRepo{
+			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
+				return true, true, nil
+			},
+			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
+			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
+			markDispatchedFunc: func(context.Context, int64, int64) error {
+				return errors.New("dispatch write failed")
+			},
+		},
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 888}, nil
+		}},
+		&mockJobRepo{getByIDFunc: func(context.Context, int64) (*domain.Job, error) {
+			return &domain.Job{ID: 1, Title: "T", URL: "https://kwork.ru/p/1"}, nil
+		}},
+		&mockNotifier{sendFunc: func(context.Context, int64, port.NotifyPayload) error {
+			sendCalled = true
+			return nil
+		}},
+		5*time.Minute,
+		5,
+	)
+
+	err := uc.Execute(context.Background(), 1, 1, 0.85, 0.85, "v2", nil, "")
+	if err == nil || !strings.Contains(err.Error(), "mark dispatched notification") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sendCalled {
+		t.Fatal("must not call Send when MarkDispatched fails")
 	}
 }
 
@@ -709,6 +767,7 @@ func TestSendNotification_ExecuteBatch_RetryBypassesRateLimit(t *testing.T) {
 	sent := false
 	sentRecentlyCalled := false
 	markSentCalls := 0
+	order := make([]string, 0, 3)
 	uc := NewSendNotification(
 		&mockNotifRepo{
 			ensurePendingFunc: func(_ context.Context, _ int64, _ int64, _ float64, _ float64, _ string, _ []string, _ string) (bool, bool, error) {
@@ -718,8 +777,13 @@ func TestSendNotification_ExecuteBatch_RetryBypassesRateLimit(t *testing.T) {
 				sentRecentlyCalled = true
 				return false, nil
 			},
+			markDispatchedFunc: func(_ context.Context, _ int64, jobID int64) error {
+				order = append(order, "dispatch:"+strconv.FormatInt(jobID, 10))
+				return nil
+			},
 			markSentFunc: func(context.Context, int64, int64) error {
 				markSentCalls++
+				order = append(order, "marksent")
 				return nil
 			},
 		},
@@ -729,6 +793,7 @@ func TestSendNotification_ExecuteBatch_RetryBypassesRateLimit(t *testing.T) {
 		&mockJobRepo{},
 		&mockNotifier{sendFunc: func(_ context.Context, _ int64, p port.NotifyPayload) error {
 			sent = true
+			order = append(order, "send")
 			if len(p.Batch) != 2 {
 				t.Fatalf("batch items=%d, want 2", len(p.Batch))
 			}
@@ -747,6 +812,9 @@ func TestSendNotification_ExecuteBatch_RetryBypassesRateLimit(t *testing.T) {
 	}
 	if !sent {
 		t.Fatal("must send retry batch")
+	}
+	if len(order) != 5 || order[0] != "dispatch:10" || order[1] != "dispatch:20" || order[2] != "send" || order[3] != "marksent" || order[4] != "marksent" {
+		t.Fatalf("unexpected order: %v", order)
 	}
 	if sentRecentlyCalled {
 		t.Fatal("must not check rate limit for retry-only batch")
@@ -953,8 +1021,8 @@ func TestSendNotification_ExecuteBatch_SortsByFinalScore(t *testing.T) {
 	}
 }
 
-func TestSendNotification_ExecuteBatch_PermanentSendFailed_MarksFailed(t *testing.T) {
-	markedFailed := make(map[int64]bool)
+func TestSendNotification_ExecuteBatch_PermanentSendFailed_LeavesDispatched(t *testing.T) {
+	order := make([]string, 0, 3)
 	uc := NewSendNotification(
 		&mockNotifRepo{
 			ensurePendingFunc: func(_ context.Context, _ int64, _ int64, _ float64, _ float64, _ string, _ []string, _ string) (bool, bool, error) {
@@ -962,8 +1030,12 @@ func TestSendNotification_ExecuteBatch_PermanentSendFailed_MarksFailed(t *testin
 			},
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
 			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
+			markDispatchedFunc: func(_ context.Context, _ int64, jobID int64) error {
+				order = append(order, "dispatch:"+strconv.FormatInt(jobID, 10))
+				return nil
+			},
 			markFailedFunc: func(_ context.Context, _ int64, jobID int64) error {
-				markedFailed[jobID] = true
+				t.Fatalf("must not call MarkFailed for job %d", jobID)
 				return nil
 			},
 		},
@@ -980,6 +1052,7 @@ func TestSendNotification_ExecuteBatch_PermanentSendFailed_MarksFailed(t *testin
 			},
 		},
 		&mockNotifier{sendFunc: func(context.Context, int64, port.NotifyPayload) error {
+			order = append(order, "send")
 			return permanentNotifyError{msg: "telegram api: http 403"}
 		}},
 		5*time.Minute,
@@ -993,7 +1066,105 @@ func TestSendNotification_ExecuteBatch_PermanentSendFailed_MarksFailed(t *testin
 	if err != nil {
 		t.Fatalf("ExecuteBatch: %v", err)
 	}
-	if !markedFailed[10] || !markedFailed[20] {
-		t.Fatalf("must mark all batch items failed, got %#v", markedFailed)
+	if len(order) != 3 || order[0] != "dispatch:10" || order[1] != "dispatch:20" || order[2] != "send" {
+		t.Fatalf("unexpected order: %v", order)
+	}
+}
+
+func TestSendNotification_ExecuteBatch_MarkDispatchedFails_DoesNotSend(t *testing.T) {
+	sendCalled := false
+	uc := NewSendNotification(
+		&mockNotifRepo{
+			ensurePendingFunc: func(_ context.Context, _ int64, _ int64, _ float64, _ float64, _ string, _ []string, _ string) (bool, bool, error) {
+				return true, true, nil
+			},
+			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
+			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
+			markDispatchedFunc: func(_ context.Context, _ int64, jobID int64) error {
+				if jobID == 10 {
+					return errors.New("dispatch write failed")
+				}
+				return nil
+			},
+		},
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 777}, nil
+		}},
+		&mockJobRepo{
+			getByIDsFunc: func(_ context.Context, ids []int64) (map[int64]*domain.Job, error) {
+				result := make(map[int64]*domain.Job, len(ids))
+				for _, id := range ids {
+					result[id] = &domain.Job{ID: id, Title: "Job", URL: "https://kwork.ru/p/1"}
+				}
+				return result, nil
+			},
+		},
+		&mockNotifier{sendFunc: func(context.Context, int64, port.NotifyPayload) error {
+			sendCalled = true
+			return nil
+		}},
+		5*time.Minute,
+		5,
+	)
+
+	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{
+		{JobID: 10, FinalScore: 0.9, Rank: 1},
+		{JobID: 20, FinalScore: 0.8, Rank: 2},
+	}, 0.9)
+	if err == nil || !strings.Contains(err.Error(), "mark dispatched notification") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if sendCalled {
+		t.Fatal("must not call Send when MarkDispatched fails")
+	}
+}
+
+func TestSendNotification_ExecuteBatch_SendFailed_LeavesDispatched(t *testing.T) {
+	order := make([]string, 0, 3)
+	uc := NewSendNotification(
+		&mockNotifRepo{
+			ensurePendingFunc: func(_ context.Context, _ int64, _ int64, _ float64, _ float64, _ string, _ []string, _ string) (bool, bool, error) {
+				return true, true, nil
+			},
+			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
+			countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
+			markDispatchedFunc: func(_ context.Context, _ int64, jobID int64) error {
+				order = append(order, "dispatch:"+strconv.FormatInt(jobID, 10))
+				return nil
+			},
+			markFailedFunc: func(_ context.Context, _ int64, jobID int64) error {
+				t.Fatalf("must not call MarkFailed for job %d", jobID)
+				return nil
+			},
+		},
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 777}, nil
+		}},
+		&mockJobRepo{
+			getByIDsFunc: func(_ context.Context, ids []int64) (map[int64]*domain.Job, error) {
+				result := make(map[int64]*domain.Job, len(ids))
+				for _, id := range ids {
+					result[id] = &domain.Job{ID: id, Title: "Job", URL: "https://kwork.ru/p/1"}
+				}
+				return result, nil
+			},
+		},
+		&mockNotifier{sendFunc: func(context.Context, int64, port.NotifyPayload) error {
+			order = append(order, "send")
+			return errors.New("telegram down")
+		}},
+		5*time.Minute,
+		5,
+	)
+
+	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{
+		{JobID: 10, FinalScore: 0.9, Rank: 1},
+		{JobID: 20, FinalScore: 0.8, Rank: 2},
+	}, 0.9)
+	if err != nil {
+		t.Fatalf("ExecuteBatch: %v", err)
+	}
+	if len(order) != 3 || order[0] != "dispatch:10" || order[1] != "dispatch:20" || order[2] != "send" {
+		t.Fatalf("unexpected order: %v", order)
 	}
 }

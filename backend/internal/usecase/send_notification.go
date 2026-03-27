@@ -2,7 +2,6 @@ package usecase
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -17,7 +16,7 @@ const (
 	defaultMaxPerDay = 5
 )
 
-// SendNotification проверяет rate limit, лимит в день и дедупликацию, записывает в notifications, отправляет.
+// SendNotification проверяет rate limit, лимит в день и дедупликацию, затем переводит запись в dispatched и отправляет.
 type SendNotification struct {
 	notifRepo        port.NotificationRepository
 	userRepo         port.UserRepository
@@ -32,10 +31,6 @@ type batchDeliveryItem struct {
 	jobID       int64
 	wasInserted bool
 	payload     port.BatchNotifyItem
-}
-
-type permanentNotifierError interface {
-	Permanent() bool
 }
 
 // NewSendNotification создаёт usecase.
@@ -68,7 +63,7 @@ func (u *SendNotification) WithProductEventRepo(repo port.ProductEventRepository
 	return u
 }
 
-// Execute обрабатывает кандидата: EnsurePending → rate limit (только для новых) → Send → MarkSent.
+// Execute обрабатывает кандидата: EnsurePending → rate limit (только для новых) → MarkDispatched → Send → MarkSent.
 // Пропускает при: уже доставлено, rate limit, daily limit, отсутствие user/job.
 func (u *SendNotification) Execute(
 	ctx context.Context,
@@ -152,6 +147,11 @@ func (u *SendNotification) Execute(
 		}
 	}
 
+	if err := u.notifRepo.MarkDispatched(ctx, userID, jobID); err != nil {
+		slog.Error("send notification: mark dispatched failed", "user_id", userID, "job_id", jobID, "err", err)
+		return fmt.Errorf("mark dispatched notification: %w", err)
+	}
+
 	payload := port.NotifyPayload{
 		Job:           job,
 		Score:         effectiveFinalScore,
@@ -161,18 +161,9 @@ func (u *SendNotification) Execute(
 		WhyItFits:     whyItFits,
 	}
 	if err := u.notifier.Send(ctx, user.TelegramID, payload); err != nil {
-		if isPermanentNotifierError(err) {
-			if markErr := u.notifRepo.MarkFailed(ctx, userID, jobID); markErr != nil {
-				return fmt.Errorf("mark failed notification: %w", markErr)
-			}
-			slog.Error("send notification: telegram failed permanently, notification marked failed",
-				"user_id", userID, "job_id", jobID, "err", err)
-			return nil
-		}
-		// Запись остаётся 'pending' — Redis-очередь повторит через Nack.
-		slog.Error("send notification: telegram failed, pending record kept for retry",
+		slog.Error("send notification: telegram failed, notification remains dispatched",
 			"user_id", userID, "job_id", jobID, "err", err)
-		return err
+		return nil
 	}
 
 	if err := u.notifRepo.MarkSent(ctx, userID, jobID); err != nil {
@@ -186,7 +177,7 @@ func (u *SendNotification) Execute(
 }
 
 // ExecuteBatch обрабатывает batch кандидатов:
-// EnsurePending для каждого job → rate/daily limit для новых → Send batch → MarkSent по отправленным job.
+// EnsurePending для каждого job → rate/daily limit для новых → MarkDispatched по отправляемым job → Send batch → MarkSent.
 // Retry (wasInserted=false) сохраняет семантику single-path: не подпадает под rate/daily limit.
 func (u *SendNotification) ExecuteBatch(
 	ctx context.Context,
@@ -304,6 +295,14 @@ func (u *SendNotification) ExecuteBatch(
 	for idx := range deliverable {
 		deliverable[idx].payload.Rank = idx + 1
 	}
+
+	for _, item := range deliverable {
+		if err := u.notifRepo.MarkDispatched(ctx, userID, item.jobID); err != nil {
+			slog.Error("send batch notification: mark dispatched failed", "user_id", userID, "job_id", item.jobID, "err", err)
+			return fmt.Errorf("mark dispatched notification: %w", err)
+		}
+	}
+
 	slog.Info(
 		"send batch notification: ranked batch",
 		"user_id", userID,
@@ -320,20 +319,9 @@ func (u *SendNotification) ExecuteBatch(
 	}
 
 	if err := u.notifier.Send(ctx, user.TelegramID, payload); err != nil {
-		if isPermanentNotifierError(err) {
-			for _, item := range deliverable {
-				if markErr := u.notifRepo.MarkFailed(ctx, userID, item.jobID); markErr != nil {
-					return fmt.Errorf("mark failed notification: %w", markErr)
-				}
-			}
-			slog.Error("send batch notification: telegram failed permanently, notifications marked failed",
-				"user_id", userID, "jobs", len(deliverable), "err", err)
-			return nil
-		}
-		// Pending-записи остаются для retry через Redis Nack.
-		slog.Error("send batch notification: telegram failed, pending records kept for retry",
+		slog.Error("send batch notification: telegram failed, notifications remain dispatched",
 			"user_id", userID, "jobs", len(deliverable), "err", err)
-		return err
+		return nil
 	}
 
 	for _, item := range deliverable {
@@ -377,14 +365,6 @@ func sortBatchDeliveryItems(items []batchDeliveryItem) {
 		}
 		return left > right
 	})
-}
-
-func isPermanentNotifierError(err error) bool {
-	if err == nil {
-		return false
-	}
-	var permanent permanentNotifierError
-	return errors.As(err, &permanent) && permanent.Permanent()
 }
 
 func topReasonCodes(items []batchDeliveryItem, limit int) []string {

@@ -58,14 +58,28 @@ func (m *digestUserRepo) GetProUsersWithNotifyHour(ctx context.Context, hour int
 }
 
 type digestNotifRepo struct {
-	countTodayFunc func(ctx context.Context, userID int64) (int, error)
-	getPendingFunc func(ctx context.Context, userID int64) ([]port.PendingNotification, error)
-	markSentFunc   func(ctx context.Context, userID, jobID int64) error
-	markSentCalls  []int64
+	countTodayFunc      func(ctx context.Context, userID int64) (int, error)
+	claimPendingFunc    func(ctx context.Context, userID int64, limit int) ([]port.PendingNotification, error)
+	releaseClaimsFunc   func(ctx context.Context, userID int64, jobIDs []int64) error
+	reclaimClaimsFunc   func(ctx context.Context, olderThan time.Duration) (int64, error)
+	markDispatchedFunc  func(ctx context.Context, userID, jobID int64) error
+	markSentFunc        func(ctx context.Context, userID, jobID int64) error
+	markDispatchedCalls []int64
+	markSentCalls       []int64
+	releasedJobIDs      []int64
+	reclaimCalled       bool
 }
 
 func (m *digestNotifRepo) EnsurePending(ctx context.Context, userID, jobID int64, matchScore float64, finalScore float64, rankerVersion string, reasonCodes []string, whyItFits string) (bool, bool, error) {
 	return false, false, nil
+}
+
+func (m *digestNotifRepo) MarkDispatched(ctx context.Context, userID, jobID int64) error {
+	m.markDispatchedCalls = append(m.markDispatchedCalls, jobID)
+	if m.markDispatchedFunc != nil {
+		return m.markDispatchedFunc(ctx, userID, jobID)
+	}
+	return nil
 }
 
 func (m *digestNotifRepo) MarkSent(ctx context.Context, userID, jobID int64) error {
@@ -95,11 +109,35 @@ func (m *digestNotifRepo) CountToday(ctx context.Context, userID int64) (int, er
 	return 0, nil
 }
 
-func (m *digestNotifRepo) GetPendingForUser(ctx context.Context, userID int64) ([]port.PendingNotification, error) {
-	if m.getPendingFunc != nil {
-		return m.getPendingFunc(ctx, userID)
+func (m *digestNotifRepo) ClaimPendingDigestNotifications(
+	ctx context.Context,
+	userID int64,
+	limit int,
+) ([]port.PendingNotification, error) {
+	if m.claimPendingFunc != nil {
+		return m.claimPendingFunc(ctx, userID, limit)
 	}
 	return nil, nil
+}
+
+func (m *digestNotifRepo) ReleasePendingDigestNotifications(ctx context.Context, userID int64, jobIDs []int64) error {
+	m.releasedJobIDs = append([]int64(nil), jobIDs...)
+	if m.releaseClaimsFunc != nil {
+		return m.releaseClaimsFunc(ctx, userID, jobIDs)
+	}
+	return nil
+}
+
+func (m *digestNotifRepo) ReclaimStaleDigestClaims(ctx context.Context, olderThan time.Duration) (int64, error) {
+	m.reclaimCalled = true
+	if m.reclaimClaimsFunc != nil {
+		return m.reclaimClaimsFunc(ctx, olderThan)
+	}
+	return 0, nil
+}
+
+func (m *digestNotifRepo) GetPendingForUser(ctx context.Context, userID int64) ([]port.PendingNotification, error) {
+	return m.ClaimPendingDigestNotifications(ctx, userID, 0)
 }
 
 func (m *digestNotifRepo) CancelPendingByJobIDs(ctx context.Context, jobIDs []int64) (int64, error) {
@@ -166,7 +204,7 @@ func TestNewDailyDigestUsesDefaultMaxPerDay(t *testing.T) {
 func TestDailyDigestSendDigestForUserSuccess(t *testing.T) {
 	notifRepo := &digestNotifRepo{
 		countTodayFunc: func(context.Context, int64) (int, error) { return 1, nil },
-		getPendingFunc: func(context.Context, int64) ([]port.PendingNotification, error) {
+		claimPendingFunc: func(context.Context, int64, int) ([]port.PendingNotification, error) {
 			return []port.PendingNotification{
 				{JobID: 1, MatchScore: 8.1, WhyItFits: "Go"},
 				{JobID: 2, MatchScore: 7.5, WhyItFits: "PostgreSQL"},
@@ -194,6 +232,9 @@ func TestDailyDigestSendDigestForUserSuccess(t *testing.T) {
 	if len(notifier.payload.Batch) != 2 {
 		t.Fatalf("batch len=%d", len(notifier.payload.Batch))
 	}
+	if len(notifRepo.markDispatchedCalls) != 2 || notifRepo.markDispatchedCalls[0] != 1 || notifRepo.markDispatchedCalls[1] != 2 {
+		t.Fatalf("markDispatchedCalls=%v", notifRepo.markDispatchedCalls)
+	}
 	if len(notifRepo.markSentCalls) != 2 || notifRepo.markSentCalls[0] != 1 || notifRepo.markSentCalls[1] != 2 {
 		t.Fatalf("markSentCalls=%v", notifRepo.markSentCalls)
 	}
@@ -202,7 +243,7 @@ func TestDailyDigestSendDigestForUserSuccess(t *testing.T) {
 func TestDailyDigestSendDigestForUser_SkipsExpiredJobs(t *testing.T) {
 	notifRepo := &digestNotifRepo{
 		countTodayFunc: func(context.Context, int64) (int, error) { return 0, nil },
-		getPendingFunc: func(context.Context, int64) ([]port.PendingNotification, error) {
+		claimPendingFunc: func(context.Context, int64, int) ([]port.PendingNotification, error) {
 			return []port.PendingNotification{
 				{JobID: 1, MatchScore: 8.1, WhyItFits: "Go"},
 				{JobID: 2, MatchScore: 7.5, WhyItFits: "Expired"},
@@ -229,6 +270,9 @@ func TestDailyDigestSendDigestForUser_SkipsExpiredJobs(t *testing.T) {
 	if notifier.payload.Batch[0].Job == nil || notifier.payload.Batch[0].Job.ID != 1 {
 		t.Fatalf("sent wrong digest payload: %+v", notifier.payload.Batch)
 	}
+	if len(notifRepo.markDispatchedCalls) != 1 || notifRepo.markDispatchedCalls[0] != 1 {
+		t.Fatalf("markDispatchedCalls=%v, want [1]", notifRepo.markDispatchedCalls)
+	}
 	if len(notifRepo.markSentCalls) != 1 || notifRepo.markSentCalls[0] != 1 {
 		t.Fatalf("markSentCalls=%v, want [1]", notifRepo.markSentCalls)
 	}
@@ -250,8 +294,8 @@ func TestDailyDigestSendDigestForUserSkipsOnLimitsAndEmptyData(t *testing.T) {
 		&digestUserRepo{},
 		&digestNotifRepo{
 			countTodayFunc: func(context.Context, int64) (int, error) { return 5, nil },
-			getPendingFunc: func(context.Context, int64) ([]port.PendingNotification, error) {
-				t.Fatal("GetPendingForUser should not be called when limit is reached")
+			claimPendingFunc: func(context.Context, int64, int) ([]port.PendingNotification, error) {
+				t.Fatal("ClaimPendingDigestNotifications should not be called when limit is reached")
 				return nil, nil
 			},
 		},
@@ -266,7 +310,7 @@ func TestDailyDigestSendDigestForUserSkipsOnLimitsAndEmptyData(t *testing.T) {
 	uc = NewDailyDigest(
 		&digestUserRepo{},
 		&digestNotifRepo{
-			getPendingFunc: func(context.Context, int64) ([]port.PendingNotification, error) { return nil, nil },
+			claimPendingFunc: func(context.Context, int64, int) ([]port.PendingNotification, error) { return nil, nil },
 		},
 		&digestJobRepo{},
 		&digestNotifier{},
@@ -303,7 +347,7 @@ func TestDailyDigestSendDigestForUserPropagatesErrors(t *testing.T) {
 	uc = NewDailyDigest(
 		&digestUserRepo{},
 		&digestNotifRepo{
-			getPendingFunc: func(context.Context, int64) ([]port.PendingNotification, error) {
+			claimPendingFunc: func(context.Context, int64, int) ([]port.PendingNotification, error) {
 				return []port.PendingNotification{{JobID: 1}}, nil
 			},
 		},
@@ -315,19 +359,26 @@ func TestDailyDigestSendDigestForUserPropagatesErrors(t *testing.T) {
 		t.Fatalf("jobs err=%v", err)
 	}
 
+	notifRepo := &digestNotifRepo{
+		claimPendingFunc: func(context.Context, int64, int) ([]port.PendingNotification, error) {
+			return []port.PendingNotification{{JobID: 1}}, nil
+		},
+	}
 	uc = NewDailyDigest(
 		&digestUserRepo{},
-		&digestNotifRepo{
-			getPendingFunc: func(context.Context, int64) ([]port.PendingNotification, error) {
-				return []port.PendingNotification{{JobID: 1}}, nil
-			},
-		},
+		notifRepo,
 		&digestJobRepo{},
 		&digestNotifier{sendFunc: func(context.Context, int64, port.NotifyPayload) error { return errors.New("telegram failed") }},
 		5,
 	)
 	if err := uc.sendDigestForUser(context.Background(), 1); err == nil || err.Error() != "telegram failed" {
 		t.Fatalf("send err=%v", err)
+	}
+	if len(notifRepo.markDispatchedCalls) != 1 || notifRepo.markDispatchedCalls[0] != 1 {
+		t.Fatalf("markDispatchedCalls=%v, want [1]", notifRepo.markDispatchedCalls)
+	}
+	if len(notifRepo.releasedJobIDs) != 0 {
+		t.Fatalf("releasedJobIDs=%v, want none for at-most-once", notifRepo.releasedJobIDs)
 	}
 }
 
@@ -345,7 +396,7 @@ func TestDailyDigestExecuteContinuesAfterUserError(t *testing.T) {
 			},
 		},
 		&digestNotifRepo{
-			getPendingFunc: func(context.Context, int64) ([]port.PendingNotification, error) {
+			claimPendingFunc: func(context.Context, int64, int) ([]port.PendingNotification, error) {
 				return []port.PendingNotification{{JobID: 10}}, nil
 			},
 		},
@@ -358,5 +409,69 @@ func TestDailyDigestExecuteContinuesAfterUserError(t *testing.T) {
 
 	if len(processed) != 2 || processed[0] != 1 || processed[1] != 2 {
 		t.Fatalf("processed=%v", processed)
+	}
+}
+
+func TestDailyDigestExecute_ReclaimsStaleClaimsBeforeProcessingUsers(t *testing.T) {
+	notifRepo := &digestNotifRepo{
+		reclaimClaimsFunc: func(context.Context, time.Duration) (int64, error) { return 1, nil },
+		claimPendingFunc: func(context.Context, int64, int) ([]port.PendingNotification, error) {
+			return []port.PendingNotification{{JobID: 10}}, nil
+		},
+	}
+	var processed []int64
+	uc := NewDailyDigest(
+		&digestUserRepo{
+			getProUsersWithNotifyHourFn: func(context.Context, int) ([]int64, error) { return []int64{2}, nil },
+			getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+				processed = append(processed, userID)
+				return &domain.User{ID: userID, TelegramID: 2000 + userID}, nil
+			},
+		},
+		notifRepo,
+		&digestJobRepo{},
+		&digestNotifier{},
+		5,
+	)
+
+	uc.Execute(context.Background())
+
+	if notifRepo.reclaimCalled != true {
+		t.Fatal("want stale digest claims reclaimed before processing users")
+	}
+	if len(processed) != 1 || processed[0] != 2 {
+		t.Fatalf("processed=%v, want [2]", processed)
+	}
+}
+
+func TestDailyDigestExecute_StopsWhenReclaimFails(t *testing.T) {
+	notifRepo := &digestNotifRepo{
+		reclaimClaimsFunc: func(context.Context, time.Duration) (int64, error) { return 0, errors.New("reclaim failed") },
+		claimPendingFunc: func(context.Context, int64, int) ([]port.PendingNotification, error) {
+			t.Fatal("ClaimPendingDigestNotifications must not run when reclaim fails")
+			return nil, nil
+		},
+	}
+	var processed []int64
+	uc := NewDailyDigest(
+		&digestUserRepo{
+			getProUsersWithNotifyHourFn: func(context.Context, int) ([]int64, error) {
+				processed = append(processed, 99)
+				return []int64{1}, nil
+			},
+		},
+		notifRepo,
+		&digestJobRepo{},
+		&digestNotifier{},
+		5,
+	)
+
+	uc.Execute(context.Background())
+
+	if notifRepo.reclaimCalled != true {
+		t.Fatal("want reclaim attempted")
+	}
+	if len(processed) != 0 {
+		t.Fatalf("processed=%v, want no users processed when reclaim fails", processed)
 	}
 }

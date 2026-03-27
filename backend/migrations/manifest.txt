@@ -24,3 +24,4 @@
 023_notifications_drop_legacy_sent_index.sql
 024_jobs_freshness.sql
 025_rerank_score.sql
+026_notifications_claimed_at.sql

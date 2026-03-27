@@ -54,8 +54,8 @@ func (r *AdminRepository) GetStats(ctx context.Context) (*port.AdminStats, error
 
 	row = r.pool.QueryRow(ctx, `
 		SELECT
-			COUNT(*) FILTER (WHERE status = 'sent')    AS total_sent,
-			COUNT(*) FILTER (WHERE status = 'sent'
+			COUNT(*) FILTER (WHERE status IN ('dispatched', 'sent'))    AS total_sent,
+			COUNT(*) FILTER (WHERE status IN ('dispatched', 'sent')
 			                   AND sent_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC')) AS today,
 			COUNT(*) FILTER (WHERE status = 'pending') AS pending
 		FROM notifications
@@ -86,14 +86,14 @@ func (r *AdminRepository) GetStats(ctx context.Context) (*port.AdminStats, error
 	if err := r.pool.QueryRow(ctx, `
 		SELECT COALESCE(
 			COUNT(*) FILTER (
-				WHERE status = 'sent'
+				WHERE status IN ('dispatched', 'sent')
 				  AND EXISTS (
 					  SELECT 1
 					  FROM user_feedback uf
 					  WHERE uf.user_id = n.user_id
 					    AND uf.job_id = n.job_id
 				  )
-			)::float / NULLIF(COUNT(*) FILTER (WHERE status = 'sent'), 0)::float,
+			)::float / NULLIF(COUNT(*) FILTER (WHERE status IN ('dispatched', 'sent')), 0)::float,
 			0
 		)
 		FROM notifications n
@@ -149,7 +149,7 @@ func (r *AdminRepository) ListUsers(ctx context.Context, limit, offset int) ([]p
 			u.profile_text,
 			COALESCE(
 				(SELECT COUNT(*) FROM notifications n
-				 WHERE n.user_id = u.id AND n.status = 'sent'), 0
+				 WHERE n.user_id = u.id AND n.status IN ('dispatched', 'sent')), 0
 			) AS notifications_sent
 		FROM users u
 		ORDER BY u.id DESC
@@ -197,7 +197,7 @@ func (r *AdminRepository) GetUser(ctx context.Context, userID int64) (*port.Admi
 			u.profile_text,
 			COALESCE(
 				(SELECT COUNT(*) FROM notifications n
-				 WHERE n.user_id = u.id AND n.status = 'sent'), 0
+				 WHERE n.user_id = u.id AND n.status IN ('dispatched', 'sent')), 0
 			) AS notifications_sent
 		FROM users u
 		WHERE u.id = $1

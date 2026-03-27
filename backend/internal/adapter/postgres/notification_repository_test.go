@@ -328,3 +328,109 @@ func TestNotificationRepository_CountToday(t *testing.T) {
 		t.Errorf("want 0 for other user, got %d", nOther)
 	}
 }
+
+func TestNotificationRepository_ClaimPendingDigestNotifications(t *testing.T) {
+	pool := setupTestDBForNotification(t)
+	repo := NewNotificationRepository(pool)
+	ctx := context.Background()
+	userID, jobID1 := createTestUserAndJob(t, pool, "ClaimPendingDigest_1")
+	_, jobID2 := createTestUserAndJob(t, pool, "ClaimPendingDigest_2")
+
+	if _, _, err := repo.EnsurePending(ctx, userID, jobID1, 0.8, 0.8, "v2", []string{"reason-1"}, "first"); err != nil {
+		t.Fatalf("EnsurePending 1: %v", err)
+	}
+	if _, _, err := repo.EnsurePending(ctx, userID, jobID2, 0.9, 0.9, "v2", []string{"reason-2"}, "second"); err != nil {
+		t.Fatalf("EnsurePending 2: %v", err)
+	}
+
+	claimed, err := repo.ClaimPendingDigestNotifications(ctx, userID, 1)
+	if err != nil {
+		t.Fatalf("ClaimPendingDigestNotifications: %v", err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("claimed len = %d, want 1", len(claimed))
+	}
+	if claimed[0].JobID != jobID2 {
+		t.Fatalf("claimed job_id = %d, want %d", claimed[0].JobID, jobID2)
+	}
+
+	claimedAgain, err := repo.ClaimPendingDigestNotifications(ctx, userID, 5)
+	if err != nil {
+		t.Fatalf("ClaimPendingDigestNotifications again: %v", err)
+	}
+	if len(claimedAgain) != 1 || claimedAgain[0].JobID != jobID1 {
+		t.Fatalf("claimedAgain = %+v, want remaining job_id %d", claimedAgain, jobID1)
+	}
+}
+
+func TestNotificationRepository_ReleasePendingDigestNotifications(t *testing.T) {
+	pool := setupTestDBForNotification(t)
+	repo := NewNotificationRepository(pool)
+	ctx := context.Background()
+	userID, jobID := createTestUserAndJob(t, pool, "ReleasePendingDigest")
+
+	if _, _, err := repo.EnsurePending(ctx, userID, jobID, 0.8, 0.8, "v2", []string{"reason"}, "why"); err != nil {
+		t.Fatalf("EnsurePending: %v", err)
+	}
+	claimed, err := repo.ClaimPendingDigestNotifications(ctx, userID, 1)
+	if err != nil {
+		t.Fatalf("ClaimPendingDigestNotifications: %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].JobID != jobID {
+		t.Fatalf("claimed = %+v, want job_id %d", claimed, jobID)
+	}
+
+	if err := repo.ReleasePendingDigestNotifications(ctx, userID, []int64{jobID}); err != nil {
+		t.Fatalf("ReleasePendingDigestNotifications: %v", err)
+	}
+
+	claimedAgain, err := repo.ClaimPendingDigestNotifications(ctx, userID, 1)
+	if err != nil {
+		t.Fatalf("ClaimPendingDigestNotifications after release: %v", err)
+	}
+	if len(claimedAgain) != 1 || claimedAgain[0].JobID != jobID {
+		t.Fatalf("claimedAgain = %+v, want job_id %d", claimedAgain, jobID)
+	}
+}
+
+func TestNotificationRepository_ReclaimStaleDigestClaims(t *testing.T) {
+	pool := setupTestDBForNotification(t)
+	repo := NewNotificationRepository(pool)
+	ctx := context.Background()
+	userID, jobID := createTestUserAndJob(t, pool, "ReclaimStaleDigest")
+
+	if _, _, err := repo.EnsurePending(ctx, userID, jobID, 0.8, 0.8, "v2", []string{"reason"}, "why"); err != nil {
+		t.Fatalf("EnsurePending: %v", err)
+	}
+	claimed, err := repo.ClaimPendingDigestNotifications(ctx, userID, 1)
+	if err != nil {
+		t.Fatalf("ClaimPendingDigestNotifications: %v", err)
+	}
+	if len(claimed) != 1 || claimed[0].JobID != jobID {
+		t.Fatalf("claimed = %+v, want job_id %d", claimed, jobID)
+	}
+
+	if _, err := pool.Exec(ctx, `
+		UPDATE notifications
+		SET claimed_at = NOW() - INTERVAL '20 minutes'
+		WHERE user_id = $1 AND job_id = $2
+	`, userID, jobID); err != nil {
+		t.Fatalf("age claim: %v", err)
+	}
+
+	reclaimed, err := repo.ReclaimStaleDigestClaims(ctx, 15*time.Minute)
+	if err != nil {
+		t.Fatalf("ReclaimStaleDigestClaims: %v", err)
+	}
+	if reclaimed != 1 {
+		t.Fatalf("reclaimed = %d, want 1", reclaimed)
+	}
+
+	claimedAgain, err := repo.ClaimPendingDigestNotifications(ctx, userID, 1)
+	if err != nil {
+		t.Fatalf("ClaimPendingDigestNotifications after reclaim: %v", err)
+	}
+	if len(claimedAgain) != 1 || claimedAgain[0].JobID != jobID {
+		t.Fatalf("claimedAgain = %+v, want job_id %d", claimedAgain, jobID)
+	}
+}

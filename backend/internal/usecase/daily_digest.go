@@ -10,6 +10,7 @@ import (
 )
 
 const moscowLocation = "Europe/Moscow"
+const defaultDigestClaimTTL = 15 * time.Minute
 
 // DailyDigest отправляет pro-пользователям накопленные pending-уведомления в заданный час.
 type DailyDigest struct {
@@ -48,6 +49,15 @@ func (d *DailyDigest) WithProductEventRepo(repo port.ProductEventRepository) *Da
 
 // Execute запускает дайджест для pro-пользователей с notify_hour = текущий московский час.
 func (d *DailyDigest) Execute(ctx context.Context) {
+	reclaimed, err := d.notifRepo.ReclaimStaleDigestClaims(ctx, defaultDigestClaimTTL)
+	if err != nil {
+		slog.Error("daily digest: reclaim stale claims failed", "err", err)
+		return
+	}
+	if reclaimed > 0 {
+		slog.Warn("daily digest: reclaimed stale claims", "count", reclaimed)
+	}
+
 	loc, err := time.LoadLocation(moscowLocation)
 	if err != nil {
 		slog.Error("daily digest: load moscow location", "err", err)
@@ -92,18 +102,13 @@ func (d *DailyDigest) sendDigestForUser(ctx context.Context, userID int64) error
 		return nil
 	}
 
-	pending, err := d.notifRepo.GetPendingForUser(ctx, userID)
+	pending, err := d.notifRepo.ClaimPendingDigestNotifications(ctx, userID, remaining)
 	if err != nil {
 		return err
 	}
 	if len(pending) == 0 {
 		slog.Debug("daily digest: no pending notifications", "user_id", userID)
 		return nil
-	}
-
-	// Ограничиваем по remaining.
-	if len(pending) > remaining {
-		pending = pending[:remaining]
 	}
 
 	// Загружаем jobs одним запросом.
@@ -122,6 +127,9 @@ func (d *DailyDigest) sendDigestForUser(ctx context.Context, userID int64) error
 	for i, p := range pending {
 		job, ok := jobsMap[p.JobID]
 		if !ok {
+			if err := d.notifRepo.Delete(ctx, userID, p.JobID); err != nil {
+				slog.Warn("daily digest: delete missing job notification failed", "user_id", userID, "job_id", p.JobID, "err", err)
+			}
 			continue
 		}
 		items = append(items, port.BatchNotifyItem{
@@ -137,8 +145,14 @@ func (d *DailyDigest) sendDigestForUser(ctx context.Context, userID int64) error
 	}
 
 	payload := port.NotifyPayload{Batch: items}
+	for _, jobID := range delivered {
+		if err := d.notifRepo.MarkDispatched(ctx, userID, jobID); err != nil {
+			slog.Error("daily digest: mark dispatched failed", "user_id", userID, "job_id", jobID, "err", err)
+			return err
+		}
+	}
 	if err := d.notifier.Send(ctx, user.TelegramID, payload); err != nil {
-		slog.Error("daily digest: telegram send failed", "user_id", userID, "jobs", len(items), "err", err)
+		slog.Error("daily digest: telegram send failed after dispatch finalization", "user_id", userID, "jobs", len(items), "err", err)
 		return err
 	}
 

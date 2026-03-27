@@ -57,7 +57,7 @@ func (r *UserStatsRepository) GetUserStats(
 		SELECT COUNT(DISTINCT job_id)
 		FROM notifications
 		WHERE user_id = $1
-		  AND status = 'sent'
+		  AND status IN ('dispatched', 'sent')
 		  AND sent_at IS NOT NULL
 		  AND sent_at >= $2
 	`, userID, since).Scan(&stats.ProjectsShown); err != nil {

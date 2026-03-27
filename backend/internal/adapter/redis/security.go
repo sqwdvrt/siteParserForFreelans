@@ -2,6 +2,8 @@ package redis
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -9,6 +11,7 @@ import (
 
 const defaultNoncePrefix = "api:nonce"
 const defaultRateLimitPrefix = "api:ratelimit"
+const defaultLockTTL = 10 * time.Minute
 
 var rateLimitScript = goredis.NewScript(`
 local key = KEYS[1]
@@ -22,6 +25,15 @@ if current > limit then
   return 0
 end
 return 1
+`)
+
+var lockReleaseScript = goredis.NewScript(`
+local key = KEYS[1]
+local token = ARGV[1]
+if redis.call("GET", key) == token then
+  return redis.call("DEL", key)
+end
+return 0
 `)
 
 // NonceStore хранит одноразовые nonce в Redis (SET NX + TTL).
@@ -82,4 +94,60 @@ func (r *RateLimiter) Allow(ctx context.Context, key string, limit int, window t
 		return false, err
 	}
 	return res == 1, nil
+}
+
+// RedisLock implements a small Redis-backed lease for leader election.
+type RedisLock struct {
+	client *goredis.Client
+}
+
+// RedisLease represents an acquired lock token.
+type RedisLease struct {
+	client *goredis.Client
+	key    string
+	token  string
+}
+
+// NewRedisLock creates a Redis-backed lock helper.
+func NewRedisLock(client *goredis.Client) *RedisLock {
+	return &RedisLock{client: client}
+}
+
+// Acquire tries to claim a lock key with a unique token and TTL.
+func (l *RedisLock) Acquire(ctx context.Context, key string, ttl time.Duration) (*RedisLease, bool, error) {
+	if ttl <= 0 {
+		ttl = defaultLockTTL
+	}
+	token, err := newLockToken()
+	if err != nil {
+		return nil, false, err
+	}
+	ok, err := l.client.SetNX(ctx, key, token, ttl).Result()
+	if err != nil {
+		return nil, false, err
+	}
+	if !ok {
+		return nil, false, nil
+	}
+	return &RedisLease{client: l.client, key: key, token: token}, true, nil
+}
+
+// Release deletes the lock only if the stored token still matches the lease.
+func (l *RedisLease) Release(ctx context.Context) (bool, error) {
+	if l == nil || l.client == nil || l.key == "" || l.token == "" {
+		return false, nil
+	}
+	res, err := lockReleaseScript.Run(ctx, l.client, []string{l.key}, l.token).Int()
+	if err != nil {
+		return false, err
+	}
+	return res == 1, nil
+}
+
+func newLockToken() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b[:]), nil
 }
