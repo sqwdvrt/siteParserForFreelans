@@ -14,6 +14,15 @@ from ai_service.adapter.postgres import PostgresMatchRepository
 def test_postgres_repository_modules_import_without_sentence_transformers(
     monkeypatch,
 ) -> None:
+    # Restore the `postgres` attribute on the parent package at teardown.
+    # When sys.modules["ai_service.adapter.postgres"] is evicted and the package
+    # is re-imported, Python sets a NEW module object as the `postgres` attribute
+    # on `ai_service.adapter`.  monkeypatch only restores sys.modules, so without
+    # this line subsequent tests that walk the attribute chain get the stale NEW
+    # module which is missing dynamically-imported submodule attrs.
+    import ai_service.adapter as _adapter_pkg
+    monkeypatch.setattr(_adapter_pkg, "postgres", _adapter_pkg.postgres)
+
     for module_name in [
         "ai_service.adapter.postgres",
         "ai_service.adapter.postgres.repository",
