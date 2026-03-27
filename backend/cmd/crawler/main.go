@@ -358,6 +358,7 @@ func main() {
 		defer cancelCrawl()
 
 		totalSaved := 0
+		hadFailures := false
 		for _, src := range sources {
 			if crawlCtx.Err() != nil {
 				break
@@ -366,23 +367,32 @@ func main() {
 			saved, crawlErr := src.crawl.Execute(crawlCtx, src.listURL)
 			if crawlErr != nil {
 				if errors.Is(crawlCtx.Err(), context.Canceled) {
-					crawlerMetrics.ObserveRunInterrupted(time.Since(startedAt))
+					observeCrawlerRunOutcome(crawlerMetrics, crawlRunSummary{
+						totalSaved:     totalSaved,
+						wasInterrupted: true,
+					}, time.Since(startedAt))
 					slog.Info("crawl interrupted by shutdown", "source", src.name)
 					return
 				}
 				if errors.Is(crawlCtx.Err(), context.DeadlineExceeded) {
-					crawlerMetrics.ObserveRunFailure(time.Since(startedAt))
+					observeCrawlerRunOutcome(crawlerMetrics, crawlRunSummary{
+						totalSaved:  totalSaved,
+						hadFailures: true,
+					}, time.Since(startedAt))
 					slog.Error("crawl timed out", "source", src.name, "timeout", crawlRunTimeout, "trace_id", traceID)
 					return
 				}
-				crawlerMetrics.ObserveRunFailure(time.Since(startedAt))
+				hadFailures = true
 				slog.Error("crawl failed", "source", src.name, "err", crawlErr, "trace_id", traceID)
 				continue
 			}
 			slog.Info("crawl source done", "source", src.name, "saved", saved, "trace_id", traceID)
 			totalSaved += saved
 		}
-		crawlerMetrics.ObserveRunSuccess(totalSaved, time.Since(startedAt))
+		observeCrawlerRunOutcome(crawlerMetrics, crawlRunSummary{
+			totalSaved:  totalSaved,
+			hadFailures: hadFailures,
+		}, time.Since(startedAt))
 		slog.Info("CrawlOnce done", "total_saved", totalSaved, "sources", len(sources), "trace_id", traceID)
 
 		// Re-enqueue any jobs that were saved but never reached the ai-process queue
@@ -486,7 +496,6 @@ func crawlerReadyz(db crawlerDBPinger, redis crawlerRedisPinger, browser crawler
 		_, _ = w.Write([]byte("ok"))
 	}
 }
-
 
 func observeCrawlerQueueDepth(client *redisclient.Client, metrics *telemetry.CrawlerMetrics, queueName string) {
 	if client == nil || metrics == nil || queueName == "" {

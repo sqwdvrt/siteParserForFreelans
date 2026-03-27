@@ -88,6 +88,10 @@ func NewCrawlerMetrics(reg prometheus.Registerer, queueName string) *CrawlerMetr
 func (m *CrawlerMetrics) ObserveRunSuccess(saved int, elapsed time.Duration) {
 	m.runsTotal.WithLabelValues(crawlerRunStatusSuccess).Inc()
 	m.runDuration.WithLabelValues(crawlerRunStatusSuccess).Observe(elapsed.Seconds())
+	m.ObserveSavedJobs(saved)
+}
+
+func (m *CrawlerMetrics) ObserveSavedJobs(saved int) {
 	if saved > 0 {
 		m.savedJobs.Add(float64(saved))
 		m.scrapedJobs.Add(float64(saved))
