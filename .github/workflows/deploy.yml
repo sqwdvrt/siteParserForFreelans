@@ -238,7 +238,7 @@ jobs:
             cd "${{ secrets.STAGING_DEPLOY_PATH }}"
             git fetch --all --prune
             git checkout --detach "${{ needs.resolve-target.outputs.deploy_sha }}"
-            git clean -ffdx -e .env.production -e backups/
+            git clean -ffdx -e .env.production -e backups/ -e backend/.gomodcache
             bash ./scripts/validate-env-production.sh .env.production
             docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml up -d --build
             docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml ps
@@ -337,7 +337,7 @@ jobs:
             cd "${{ secrets.PROD_DEPLOY_PATH }}"
             git fetch --all --prune
             git checkout --detach "${{ needs.resolve-target.outputs.deploy_sha }}"
-            git clean -ffdx -e .env.production -e backups/
+            git clean -ffdx -e .env.production -e backups/ -e backend/.gomodcache
             bash ./scripts/validate-env-production.sh .env.production
             docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml up -d --build
             docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml ps
