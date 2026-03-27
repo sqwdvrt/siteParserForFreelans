@@ -208,12 +208,8 @@ def test_render_returns_400_when_request_time_dns_resolution_fails(
 
     assert response.status_code == 400
     assert "invalid target host" in response.json()["detail"]
-    assert browser.new_context_calls != []
-    assert "ignore_https_errors" not in browser.new_context_calls[0]
-    assert context.route_calls == [{"url": "**/*"}]
-    assert page.goto_calls == [{"url": "https://example.com/page", "wait_until": "domcontentloaded", "timeout": main._TIMEOUT_MS}]
-    assert page.closed is True
-    assert context.closed is True
+    assert browser.new_context_calls == []
+    assert page.goto_calls == []
 
 
 def test_render_enforces_host_policy_during_intercepted_request(
@@ -236,9 +232,9 @@ def test_render_enforces_host_policy_during_intercepted_request(
 
     assert response.status_code == 400
     assert response.json()["detail"] == "target host is not allowed"
-    assert events == ["goto", "resolve"]
-    assert context.route_calls == [{"url": "**/*"}]
-    assert page.intercepted_routes[0].aborted is True
+    assert events == ["resolve"]
+    assert browser.new_context_calls == []
+    assert page.goto_calls == []
 
 
 def test_render_keeps_hostname_requests_on_the_original_url(
@@ -262,7 +258,10 @@ def test_render_keeps_hostname_requests_on_the_original_url(
 
     assert response.status_code == 200
     assert to_thread_calls == [(main._resolve_host_ips, ("example.com",))]
-    assert page.intercepted_routes[0].continue_kwargs == {}
+    assert browser.new_context_calls[0]["proxy"] == main._build_pinned_proxy_config(
+        origin_host="example.com",
+        resolved_ips=["93.184.216.34"],
+    )
 
 
 def test_render_keeps_subresource_hostnames_without_rewriting_to_ip(
@@ -281,7 +280,10 @@ def test_render_keeps_subresource_hostnames_without_rewriting_to_ip(
     response = client.get("/render", params={"url": "https://example.com/page"})
 
     assert response.status_code == 200
-    assert page.intercepted_routes[0].continue_kwargs == {}
+    assert browser.new_context_calls[0]["proxy"] == main._build_pinned_proxy_config(
+        origin_host="example.com",
+        resolved_ips=["93.184.216.34"],
+    )
 
 
 @pytest.mark.parametrize(
