@@ -121,7 +121,7 @@ func (r *NotificationRepository) MarkDispatched(ctx context.Context, userID, job
 func (r *NotificationRepository) MarkSent(ctx context.Context, userID, jobID int64) error {
 	_, err := r.pool.Exec(ctx, `
 		UPDATE notifications SET status = 'sent', claimed_at = NULL, sent_at = COALESCE(sent_at, NOW())
-		WHERE user_id = $1 AND job_id = $2 AND status IN ('dispatched', 'sent')
+		WHERE user_id = $1 AND job_id = $2 AND status IN ('pending', 'sending', 'dispatched', 'sent')
 	`, userID, jobID)
 	return err
 }

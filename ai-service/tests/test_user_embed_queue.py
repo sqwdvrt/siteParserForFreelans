@@ -15,7 +15,11 @@ def _stamped(base: dict) -> str:
 
 
 def _nacked(base: dict, retries: int = 1) -> str:
-    return json.dumps({**base, "_claimed_at": FIXED_TIME, "_retry_count": retries}, separators=(",", ":"), ensure_ascii=False)
+    return json.dumps(
+        {**base, "_claimed_at": FIXED_TIME, "_retry_count": retries},
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
 
 
 def _make_pipe_side_effect(mock_client: MagicMock, count: int) -> list[MagicMock]:

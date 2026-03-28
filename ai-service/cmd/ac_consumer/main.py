@@ -211,7 +211,7 @@ def main() -> None:
     try:
         db_url = require_env("DATABASE_URL", os.getenv("DATABASE_URL"))
         redis_url = resolve_redis_url(app_env, os.getenv("REDIS_URL"))
-        llm_provider = resolve_llm_provider(os.getenv("LLM_PROVIDER"))
+        _llm_provider = resolve_llm_provider(os.getenv("LLM_PROVIDER"))
     except ValueError as exc:
         logger.error("%s", exc)
         sys.exit(1)

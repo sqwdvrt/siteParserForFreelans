@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
+from ai_service.adapter.redis.user_rematch_queue import RedisUserRematchQueue, RedisUserRematchQueueConsumer
+
 FIXED_TIME = 1000.0
 
 
@@ -13,9 +15,11 @@ def _stamped(base: dict) -> str:
 
 
 def _nacked(base: dict, retries: int = 1) -> str:
-    return json.dumps({**base, "_claimed_at": FIXED_TIME, "_retry_count": retries}, separators=(",", ":"), ensure_ascii=False)
-
-from ai_service.adapter.redis.user_rematch_queue import RedisUserRematchQueue, RedisUserRematchQueueConsumer
+    return json.dumps(
+        {**base, "_claimed_at": FIXED_TIME, "_retry_count": retries},
+        separators=(",", ":"),
+        ensure_ascii=False,
+    )
 
 
 @patch("ai_service.adapter.redis.user_rematch_queue.redis.from_url")
