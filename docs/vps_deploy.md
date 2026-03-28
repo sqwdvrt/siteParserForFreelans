@@ -11,6 +11,33 @@
 
 ---
 
+## 0. Swap (обязательно для 2 GB VPS)
+
+AI-сервисы загружают embedding-модели (~500 MB каждый). Без swap OOM killer завершит
+процессы при пиковой нагрузке. Настрой swap **до** запуска контейнеров.
+
+```bash
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+
+# Сделать постоянным после перезагрузки
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+
+# Уменьшить aggressiveness свопирования (10 = swap только при острой нехватке RAM)
+echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf
+sudo sysctl -p
+```
+
+Проверка:
+```bash
+free -h   # должен появиться Swap: 2.0G
+swapon --show
+```
+
+---
+
 ## 1. Nginx + TLS (Let's Encrypt)
 
 ```bash

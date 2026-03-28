@@ -11,4 +11,6 @@ umask 077
 exec /bin/prometheus \
   --config.file="$CONFIG_PATH" \
   --storage.tsdb.path=/prometheus \
+  --storage.tsdb.retention.time=30d \
+  --storage.tsdb.retention.size=4GB \
   --web.enable-lifecycle
