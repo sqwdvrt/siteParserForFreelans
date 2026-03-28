@@ -1,4 +1,4 @@
-"""FallbackClassifier: primary (Ollama) → fallback (RuleBased) при пустом результате."""
+"""FallbackClassifier: primary → fallback (RuleBased) при пустом результате."""
 
 from __future__ import annotations
 

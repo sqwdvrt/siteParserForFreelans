@@ -31,4 +31,3 @@ select = ["E", "F", "I"]
 
 [tool.ruff.lint.per-file-ignores]
 "cmd/*/main.py" = ["E402"]
-"src/ai_service/adapter/ollama/classifier.py" = ["E501"]
