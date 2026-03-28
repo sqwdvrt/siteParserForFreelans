@@ -58,7 +58,7 @@
 └─────────────┘  └─────┬───────┘                          │
                         │                                  │
                  ┌──────▼──────┐                          │
-                 │   Ollama    │  LLM (llama3.2:3b)       │
+                 │   Gemini    │  LLM (gemini-2.0-flash)  │
                  │  (LLM API)  │                          │
                  └─────────────┘                          │
                                                           │
@@ -626,14 +626,10 @@ signature = HMAC-SHA256(
 
 | Переменная | Default | Описание |
 |-----------|---------|---------|
-| `LLM_PROVIDER` | — | Провайдер actor для `ai-ac-consumer`: `gemini` или `ollama` |
+| `LLM_PROVIDER` | — | Провайдер actor для `ai-ac-consumer`: только `gemini` |
 | `GEMINI_API_KEY` | — | Обязателен при `LLM_PROVIDER=gemini` |
 | `GEMINI_MODEL` / `GEMINI_ACTOR_MODEL` | `gemini-2.0-flash` | Базовая и role-specific Gemini модель actor |
 | `ACTOR_GEMINI_TIMEOUT_SEC` | `30` | Таймаут actor-запроса к Gemini |
-| `OLLAMA_URL` | `http://ollama:11434` | Ollama endpoint для actor при `LLM_PROVIDER=ollama` |
-| `ACTOR_OLLAMA_MODEL` | `llama3.2:3b-instruct-q4_K_M` | Модель Ollama для actor |
-| `ACTOR_OLLAMA_TIMEOUT_SEC` | `45` | Таймаут actor-запроса к Ollama |
-| `OLLAMA_REQUIRED` | dev `0`, prod `1` | Fail-closed проверка доступности Ollama |
 | `EMBEDDING_MODEL` | `all-MiniLM-L6-v2` | Модель эмбеддингов |
 | `RERANK_MODEL` | `BAAI/bge-reranker-base` | Cross-encoder модель rerank-стадии |
 | `AI_WARMUP_ENABLED` | `0` в текущем `.env` | Warmup embedding-модели на старте `ai-service` и `ai-user-embed` |

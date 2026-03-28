@@ -12,7 +12,7 @@
 ```bash
 docker compose --profile workers --profile bot up -d
 ```
-Запускает core-сервисы + `workers`/`bot` профили (включая `browser-service`, `backend-crawler`, `backend-notifier`, `ai-service`, `ai-ac-consumer`, `ollama`, `telegram-bot`).
+Запускает core-сервисы + `workers`/`bot` профили (включая `browser-service`, `backend-crawler`, `backend-notifier`, `ai-service`, `ai-ac-consumer`, `telegram-bot`).
 `ai-user-embed` запускается отдельно через profile `ai-user-embed` при необходимости.
 `ai-user-rematch` в `docker-compose.yml` без profile и стартует по умолчанию.
 

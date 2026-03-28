@@ -63,7 +63,7 @@ def test_render_prometheus_text_contains_custom_metrics() -> None:
 def test_classifier_primary_error_records_fallback_metric() -> None:
     fallback_metrics.reset_counters_for_tests()
     primary = MagicMock()
-    primary.classify.side_effect = RuntimeError("ollama down")
+    primary.classify.side_effect = RuntimeError("primary down")
     fallback = MagicMock()
     fallback.classify.return_value = {"project_type": "web"}
     classifier = FallbackClassifier(primary=primary, fallback=fallback)
@@ -95,7 +95,7 @@ def test_actor_primary_empty_records_fallback_metric() -> None:
 def test_critic_primary_error_records_fallback_metric() -> None:
     fallback_metrics.reset_counters_for_tests()
     primary = MagicMock()
-    primary.evaluate.side_effect = RuntimeError("ollama critic unavailable")
+    primary.evaluate.side_effect = RuntimeError("primary critic unavailable")
     fallback = MagicMock()
     fallback.evaluate.return_value = CriticResult(score=5.0, critique="fallback")
     agent = FallbackCriticAgent(primary=primary, fallback=fallback)

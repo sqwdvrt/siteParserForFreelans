@@ -54,7 +54,7 @@ docker compose up -d
 docker compose --profile bot up -d telegram-bot
 
 # (опционально) включить вторичные воркеры:
-# backend-crawler, backend-notifier, ai-service, ai-ac-consumer, ollama
+# backend-crawler, backend-notifier, ai-service, ai-ac-consumer
 docker compose --profile workers up -d
 
 # (опционально) точечно включить только user-embed consumer
@@ -323,7 +323,7 @@ cd backend && go run ./cmd/crawler
 | `DATABASE_MIGRATE_URL` | Отдельный DSN для миграций; в текущем проектном `.env` совпадает с `DATABASE_URL` |
 | `PG_POOL_MAX_CONNS`/`PG_POOL_MIN_CONNS`/`PG_POOL_ACQUIRE_TIMEOUT` | Тюнинг postgres pool для backend и `ai-service` |
 | `BROWSER_SERVICE_URL` | URL browser render service для crawler; в текущем `.env` используется `http://browser-service:8090`. Сервис пропускает только `http/https` и блокирует localhost/private/link-local targets на request-time |
-| `LLM_PROVIDER` | Провайдер actor в `ai-ac-consumer`: только `ollama` или `gemini`; без него процесс завершится с ошибкой |
+| `LLM_PROVIDER` | Провайдер actor в `ai-ac-consumer`: только `gemini`; без него процесс завершится с ошибкой |
 | `GEMINI_API_KEY` | Обязателен при `LLM_PROVIDER=gemini` |
 | `ENABLE_GEMINI_CLASSIFIER` | Явный opt-in для Gemini classifier в обычном `ai-service` consumer. По умолчанию `0`: одного наличия `GEMINI_API_KEY` недостаточно |
 | `GEMINI_MODEL`/`GEMINI_ACTOR_MODEL` | Базовая и role-specific Gemini модель actor (`GEMINI_ACTOR_MODEL` имеет приоритет; по умолчанию `gemini-2.0-flash`) |
@@ -334,10 +334,6 @@ cd backend && go run ./cmd/crawler
 | `RERANK_MODEL` | Cross-encoder модель rerank стадии (по умолчанию `BAAI/bge-reranker-base`) |
 | `RERANK_REQUIRE_LOCAL` | Принудительно использовать только локальную/bundled rerank модель; если не задан, наследует `EMBEDDING_REQUIRE_LOCAL` |
 | `AI_WARMUP_ENABLED` | В текущем проектном `.env` стоит `0`, чтобы снизить peak RAM на старте embedding consumers |
-| `OLLAMA_URL` | URL Ollama для actor при `LLM_PROVIDER=ollama` (локально по умолчанию `http://ollama:11434`) |
-| `ACTOR_OLLAMA_MODEL` | Модель Ollama для batch explanation generation (по умолчанию `llama3.2:3b-instruct-q4_K_M`) |
-| `ACTOR_OLLAMA_TIMEOUT_SEC` | Таймаут запросов Actor к Ollama (по умолчанию `45`) |
-| `OLLAMA_REQUIRED` | Если `1`, `ai-ac-consumer` завершится при недоступном Ollama; по умолчанию `0` в dev и `1` в production |
 | `AI_METRICS_BIND` | Bind-address для `/metrics` endpoint AI-consumer процессов (по умолчанию `0.0.0.0`) |
 | `AI_CONSUMER_METRICS_PORT` | Порт `/metrics` для `ai-service` consumer (по умолчанию `9108`, `0` = выключить exporter) |
 | `AI_AC_CONSUMER_METRICS_PORT` | Порт `/metrics` для `ai-ac-consumer` (по умолчанию `9109`, `0` = выключить exporter) |

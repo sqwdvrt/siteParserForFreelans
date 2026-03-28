@@ -22,7 +22,7 @@
   "panels": [
     {
       "id": 1,
-      "title": "Classifier — Ollama success rate",
+      "title": "Classifier — LLM success rate",
       "type": "stat",
       "gridPos": { "h": 4, "w": 8, "x": 0, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
@@ -56,7 +56,7 @@
     },
     {
       "id": 2,
-      "title": "Actor — Ollama success rate",
+      "title": "Actor — LLM success rate",
       "type": "stat",
       "gridPos": { "h": 4, "w": 8, "x": 8, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },
@@ -90,7 +90,7 @@
     },
     {
       "id": 3,
-      "title": "Critic — Ollama success rate",
+      "title": "Critic — LLM success rate",
       "type": "stat",
       "gridPos": { "h": 4, "w": 8, "x": 16, "y": 0 },
       "datasource": { "type": "prometheus", "uid": "${datasource}" },

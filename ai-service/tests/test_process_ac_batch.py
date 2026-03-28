@@ -156,11 +156,11 @@ def test_execute_propagates_actor_timeout_and_keeps_batch_unprocessed() -> None:
     job_repo.get_with_scores.return_value = _jobs_with_scores()
     pending_repo = MagicMock()
     actor = MagicMock()
-    actor.explain_batch.side_effect = TimeoutError("ollama timeout")
+    actor.explain_batch.side_effect = TimeoutError("actor timeout")
     notify_queue = MagicMock()
     uc = ProcessACBatchUseCase(user_repo, job_repo, pending_repo, actor, notify_queue)
 
-    with pytest.raises(TimeoutError, match="ollama timeout"):
+    with pytest.raises(TimeoutError, match="actor timeout"):
         uc.execute(ACBatch(user_id=1, job_ids=[1, 2]))
 
     notify_queue.enqueue_batch.assert_not_called()
