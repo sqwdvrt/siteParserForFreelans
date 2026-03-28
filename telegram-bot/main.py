@@ -1655,7 +1655,7 @@ def _build_main_reply_keyboard() -> dict:
         "keyboard": [
             [{"text": "👤 Мой профиль"}, {"text": "📊 Статистика"}],
             [{"text": "✏️ Обновить профиль"}, {"text": "⚙️ Настройки"}],
-            [{"text": "❓ Помощь"}],
+            [{"text": "❓ Помощь"}, {"text": "🔼 Скрыть меню"}],
         ],
         "resize_keyboard": True,
         "persistent": True,
@@ -1681,6 +1681,19 @@ def send_with_reply_keyboard(token: str, chat_id: int, text: str, *, parse_html:
             if isinstance(description, str) and description.strip():
                 detail = f" detail={_compact_log_text(description)}"
         logger.warning("send_with_reply_keyboard failed: status=%s%s", status, detail)
+
+
+def send_remove_keyboard(token: str, chat_id: int) -> None:
+    """Send ReplyKeyboardRemove to hide the persistent keyboard."""
+    url = f"{TELEGRAM_BASE}{token}/sendMessage"
+    payload = {
+        "chat_id": chat_id,
+        "text": "Меню скрыто. Чтобы вернуть — отправьте /start.",
+        "reply_markup": {"remove_keyboard": True},
+    }
+    status, _ = _http_post(url, payload)
+    if status != 200:
+        logger.warning("send_remove_keyboard failed: status=%s", status)
 
 
 def _maybe_send_profile_quality_hint(token: str, chat_id: int, profile_text: str) -> None:
@@ -2332,6 +2345,11 @@ def _handle_update(
             "⚙️ Настройки",
             [[{"text": "🕐 Час уведомлений", "callback_data": "menu:notify_hour"}]],
         )
+        return True
+
+    if text == "🔼 Скрыть меню":
+        _clear_conversation_state(telegram_id)
+        send_remove_keyboard(token, chat_id)
         return True
 
     pending_state = _get_conversation_state(telegram_id)
