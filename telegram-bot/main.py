@@ -1079,6 +1079,25 @@ def get_user_is_pro(
     return bool(prefs.get("is_pro"))
 
 
+def get_user_profile_text(
+    api_url: str,
+    user_id: int,
+    telegram_id: int,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> str | None:
+    """GET /users/:id — returns profile_text string or None on error."""
+    url = f"{api_url.rstrip('/')}/users/{user_id}"
+    data = _http_get(
+        url,
+        {},
+        headers=_signed_user_headers(api_auth_token, api_user_hmac_secret, "GET", url, telegram_id, b""),
+    )
+    if not isinstance(data, dict):
+        return None
+    return data.get("profile_text") or ""
+
+
 def get_user_stats(
     api_url: str,
     user_id: int,
@@ -1630,6 +1649,40 @@ def _build_returning_user_keyboard() -> list[list[dict]]:
     ]
 
 
+def _build_main_reply_keyboard() -> dict:
+    """Persistent Reply Keyboard shown to registered users."""
+    return {
+        "keyboard": [
+            [{"text": "👤 Мой профиль"}, {"text": "📊 Статистика"}],
+            [{"text": "✏️ Обновить профиль"}, {"text": "⚙️ Настройки"}],
+            [{"text": "❓ Помощь"}],
+        ],
+        "resize_keyboard": True,
+        "persistent": True,
+        "is_persistent": True,
+    }
+
+
+def send_with_reply_keyboard(token: str, chat_id: int, text: str, *, parse_html: bool = False) -> None:
+    """sendMessage with the main Reply Keyboard attached."""
+    url = f"{TELEGRAM_BASE}{token}/sendMessage"
+    payload: dict = {
+        "chat_id": chat_id,
+        "text": text,
+        "reply_markup": _build_main_reply_keyboard(),
+    }
+    if parse_html:
+        payload["parse_mode"] = "HTML"
+    status, data = _http_post(url, payload)
+    if status != 200:
+        detail = ""
+        if isinstance(data, dict):
+            description = data.get("description") or ""
+            if isinstance(description, str) and description.strip():
+                detail = f" detail={_compact_log_text(description)}"
+        logger.warning("send_with_reply_keyboard failed: status=%s%s", status, detail)
+
+
 def _maybe_send_profile_quality_hint(token: str, chat_id: int, profile_text: str) -> None:
     if len(profile_text) < _ONBOARDING_MIN_PROFILE_LEN:
         send_keyboard(
@@ -1753,7 +1806,7 @@ def _onboarding_handle_callback(
             _clear_conversation_state(telegram_id)
             _record_command("onboarding", "ok")
             edit_message_text(token, chat_id, message_id, f"✅ Профиль сохранён:\n\n<i>{html.escape(profile_text)}</i>")
-            send_message(
+            send_with_reply_keyboard(
                 token,
                 chat_id,
                 "Как только появятся подходящие заказы — уведомлю вас.\n"
@@ -1865,6 +1918,30 @@ class _WebhookHandler(BaseHTTPRequestHandler):
         _ = args
 
 
+def _menu_handle_callback(
+    data: str,
+    token: str,
+    chat_id: int,
+    telegram_id: int,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> None:
+    """Handle menu: callback_data from Settings submenu."""
+    if data == "menu:notify_hour":
+        user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+        if user_id is None:
+            send_message(token, chat_id, "Сначала отправьте /start")
+            return
+        is_pro = get_user_is_pro(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
+        if is_pro is False:
+            send_message(token, chat_id, "⛔ Выбор часа доступен только Pro-пользователям.")
+            return
+        _set_conversation_state(telegram_id, "await_notify_hour")
+        _record_command("notify_hour", "prompt")
+        send_message(token, chat_id, "Отправьте следующим сообщением час от 0 до 23 (по МСК).")
+
+
 def handle_callback(
     callback: dict,
     token: str,
@@ -1885,6 +1962,14 @@ def handle_callback(
             if cb_chat_id and message_id:
                 _onboarding_handle_callback(
                     data, token, cb_chat_id, message_id, telegram_id,
+                    api_url, api_auth_token, api_user_hmac_secret,
+                )
+        elif data.startswith("menu:") and telegram_id is not None:
+            msg = callback.get("message") or {}
+            cb_chat_id = msg.get("chat", {}).get("id") or from_user.get("id")
+            if cb_chat_id:
+                _menu_handle_callback(
+                    data, token, cb_chat_id, telegram_id,
                     api_url, api_auth_token, api_user_hmac_secret,
                 )
         elif data.startswith("fb:") and telegram_id is not None:
@@ -2061,6 +2146,10 @@ def _handle_update(
     text = (msg.get("text") or "").strip()
     from_user = msg.get("from", {})
     telegram_id = from_user.get("id")
+    # Translate Reply Keyboard button labels to equivalent commands
+    _MENU_CMD_MAP = {"📊 Статистика": "/stats", "❓ Помощь": "/help"}
+    if text in _MENU_CMD_MAP:
+        text = _MENU_CMD_MAP[text]
     if chat_id is None or telegram_id is None:
         return False
 
@@ -2086,6 +2175,7 @@ def _handle_update(
                             [{"text": "Оставить текущий профиль", "callback_data": "ob:keep"}],
                         ],
                     )
+                    send_with_reply_keyboard(token, chat_id, "Меню доступно в любой момент 👇")
                 else:
                     send_keyboard(
                         token,
@@ -2095,6 +2185,7 @@ def _handle_update(
                         "или оставить текущий профиль без изменений.",
                         _build_returning_user_keyboard(),
                     )
+                    send_with_reply_keyboard(token, chat_id, "Меню доступно в любой момент 👇")
         else:
             _record_command("start", "error")
             send_message(token, chat_id, "Ошибка регистрации. Попробуйте позже.")
@@ -2124,7 +2215,7 @@ def _handle_update(
     if text == "/help" or text.startswith("/help@"):
         _clear_conversation_state(telegram_id)
         _record_command("help", "ok")
-        send_message(
+        send_with_reply_keyboard(
             token,
             chat_id,
             (
@@ -2167,7 +2258,7 @@ def _handle_update(
             else "• Бюджетный фильтр: не задан"
         )
 
-        send_message(
+        send_with_reply_keyboard(
             token,
             chat_id,
             (
@@ -2212,6 +2303,36 @@ def _handle_update(
             api_auth_token,
             api_user_hmac_secret,
         )
+
+    if text == "👤 Мой профиль":
+        _clear_conversation_state(telegram_id)
+        user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+        if user_id is None:
+            send_message(token, chat_id, "Сначала отправьте /start")
+            return True
+        profile_text = get_user_profile_text(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
+        if profile_text is None:
+            send_message(token, chat_id, "Не удалось загрузить профиль. Попробуйте позже.")
+        elif profile_text == "":
+            send_message(token, chat_id, "Профиль не заполнен. Нажмите ✏️ Обновить профиль.")
+        else:
+            send_message(token, chat_id, f"👤 Ваш профиль:\n\n{profile_text}")
+        return True
+
+    if text == "✏️ Обновить профиль":
+        _set_conversation_state(telegram_id, "await_profile")
+        _record_command("profile", "prompt")
+        send_message(token, chat_id, "Отправьте следующим сообщением текст профиля.")
+        return True
+
+    if text == "⚙️ Настройки":
+        send_keyboard(
+            token,
+            chat_id,
+            "⚙️ Настройки",
+            [[{"text": "🕐 Час уведомлений", "callback_data": "menu:notify_hour"}]],
+        )
+        return True
 
     pending_state = _get_conversation_state(telegram_id)
     ob_state = _parse_onboarding_state(pending_state)

@@ -504,13 +504,15 @@ def test_run_polling_handles_stats_command(bot, monkeypatch):
             },
         ),
     )
+    send_with_reply_keyboard = MagicMock(return_value=None)
     monkeypatch.setattr(bot, "send_message", send_message)
+    monkeypatch.setattr(bot, "send_with_reply_keyboard", send_with_reply_keyboard)
 
     with pytest.raises(KeyboardInterrupt):
         bot.run_polling("token", "https://api.example.com", "tok", "hmac")
 
-    assert send_message.call_count == 1
-    text = send_message.call_args.args[2]
+    assert send_with_reply_keyboard.call_count == 1
+    text = send_with_reply_keyboard.call_args.args[2]
     assert "Статистика за последние 7 дней" in text
     assert "Найдено подходящих проектов: 42" in text
     assert "Показано вам: 12" in text
