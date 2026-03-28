@@ -315,6 +315,38 @@ func TestCrawlProjects_Execute_ExistingJob_ExpiresWhenDetailFetchGone(t *testing
 	}
 }
 
+func TestCrawlProjects_Execute_ExistingJob_ExpiresWhenDetailFetch410(t *testing.T) {
+	url := "https://kwork.ru/projects/410-existing/view"
+	ext := &mockExtractor{
+		listURLs: []string{url},
+	}
+	fetcher := &mockFetcher{
+		listHTML: []byte("<html>list</html>"),
+		failURLs: map[string]error{
+			url: &domain.HttpStatusError{StatusCode: 410, URL: url},
+		},
+	}
+	repo := &mockRepo{
+		exists:          map[string]bool{url: true},
+		expiredIDsByURL: map[string][]int64{url: {410}},
+	}
+
+	uc := NewCrawlProjects(fetcher, ext, repo, nil)
+	saved, err := uc.Execute(context.Background(), "https://kwork.ru/projects")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if saved != 0 {
+		t.Fatalf("want saved=0, got %d", saved)
+	}
+	if len(repo.expiredURLs) != 1 || repo.expiredURLs[0] != url {
+		t.Fatalf("want ExpireByURL called for %q, got %v", url, repo.expiredURLs)
+	}
+	if len(repo.touchedURLs) != 0 {
+		t.Fatalf("want TouchSeenAt NOT called, got %v", repo.touchedURLs)
+	}
+}
+
 func TestCrawlProjects_Execute_ExistingJob_TouchSeenAtWhenFetchOK(t *testing.T) {
 	url := "https://kwork.ru/projects/existing-ok/view"
 	ext := &mockExtractor{

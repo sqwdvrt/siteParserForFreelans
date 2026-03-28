@@ -197,6 +197,8 @@ class _ConversationStateCache(OrderedDict[int, tuple[str, float]]):
 _UPDATE_CLAIMED = "claimed"
 _UPDATE_INFLIGHT = "inflight"
 _UPDATE_DONE = "done"
+_UPDATE_QUEUED = "queued"
+_UPDATE_PROCESSING = "processing"
 
 
 class _ProcessedUpdateCache(OrderedDict[int, tuple[str, float]]):
@@ -496,6 +498,88 @@ class _RedisStateStore:
     def forget_update_id(self, update_id: int) -> None:
         self._client.delete(self._key("processed-update", update_id))
         _METRICS.inc("telegram_bot_state_store_operations_total", operation="forget_update_id", result="ok")
+
+    def enqueue_webhook_update(self, update_id: int, payload: str) -> str:
+        state_key = self._key("processed-update", update_id)
+        payload_key = self._key("webhook-payload", update_id)
+        queue_key = self._key("webhook-inbox", 0)
+        existing = str(self._client.get(state_key) or "").strip().lower()
+        if existing in {_UPDATE_DONE, _UPDATE_QUEUED, _UPDATE_PROCESSING, _UPDATE_INFLIGHT}:
+            _METRICS.inc(
+                "telegram_bot_state_store_operations_total",
+                operation="enqueue_webhook_update",
+                result="duplicate",
+            )
+            return "duplicate"
+        self._client.set(payload_key, payload, ex=self._processed_update_ttl_sec)
+        self._client.rpush(queue_key, str(update_id))
+        self._client.set(state_key, _UPDATE_QUEUED, ex=self._processed_update_ttl_sec)
+        _METRICS.inc("telegram_bot_state_store_operations_total", operation="enqueue_webhook_update", result="enqueued")
+        return "enqueued"
+
+    def claim_next_webhook_update(self, timeout_sec: int) -> tuple[int, str] | None:
+        queue_key = self._key("webhook-inbox", 0)
+        processing_key = self._key("webhook-processing", 0)
+        raw_update_id = self._client.brpoplpush(queue_key, processing_key, timeout=max(0, int(timeout_sec)))
+        if raw_update_id is None:
+            _METRICS.inc(
+                "telegram_bot_state_store_operations_total",
+                operation="claim_next_webhook_update",
+                result="empty",
+            )
+            return None
+        update_id = int(raw_update_id)
+        payload = self._client.get(self._key("webhook-payload", update_id))
+        if payload is None:
+            self._client.lrem(processing_key, 0, str(update_id))
+            self._client.delete(self._key("processed-update", update_id))
+            _METRICS.inc(
+                "telegram_bot_state_store_operations_total",
+                operation="claim_next_webhook_update",
+                result="missing_payload",
+            )
+            return None
+        self._client.set(self._key("processed-update", update_id), _UPDATE_PROCESSING, ex=self._processed_update_ttl_sec)
+        _METRICS.inc("telegram_bot_state_store_operations_total", operation="claim_next_webhook_update", result="claimed")
+        return update_id, str(payload)
+
+    def ack_webhook_update(self, update_id: int) -> None:
+        self._client.lrem(self._key("webhook-processing", 0), 0, str(update_id))
+        self._client.delete(self._key("webhook-payload", update_id))
+        self._client.set(self._key("processed-update", update_id), _UPDATE_DONE, ex=self._processed_update_ttl_sec)
+        _METRICS.inc("telegram_bot_state_store_operations_total", operation="ack_webhook_update", result="ok")
+
+    def requeue_webhook_update(self, update_id: int) -> None:
+        self._client.lrem(self._key("webhook-processing", 0), 0, str(update_id))
+        self._client.lpush(self._key("webhook-inbox", 0), str(update_id))
+        self._client.set(self._key("processed-update", update_id), _UPDATE_QUEUED, ex=self._processed_update_ttl_sec)
+        _METRICS.inc("telegram_bot_state_store_operations_total", operation="requeue_webhook_update", result="ok")
+
+    def recover_webhook_processing(self) -> int:
+        processing_key = self._key("webhook-processing", 0)
+        pending_key = self._key("webhook-inbox", 0)
+        update_ids = [str(raw) for raw in self._client.lrange(processing_key, 0, -1)]
+        recovered = 0
+        for raw_update_id in update_ids:
+            try:
+                update_id = int(raw_update_id)
+            except (TypeError, ValueError):
+                self._client.lrem(processing_key, 0, raw_update_id)
+                continue
+            if self._client.get(self._key("webhook-payload", update_id)) is None:
+                self._client.lrem(processing_key, 0, raw_update_id)
+                self._client.delete(self._key("processed-update", update_id))
+                continue
+            self._client.lrem(processing_key, 0, raw_update_id)
+            self._client.lpush(pending_key, raw_update_id)
+            self._client.set(self._key("processed-update", update_id), _UPDATE_QUEUED, ex=self._processed_update_ttl_sec)
+            recovered += 1
+        _METRICS.inc(
+            "telegram_bot_state_store_operations_total",
+            operation="recover_webhook_processing",
+            result="ok" if recovered else "noop",
+        )
+        return recovered
 
     def set_first_seen_if_absent(self, telegram_id: int) -> bool:
         """SET NX first-seen timestamp. Returns True if this is the first call (new user)."""
@@ -1742,23 +1826,23 @@ class _WebhookHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
 
-        processed_ok = self._process_update(update)
+        try:
+            processed_ok = _enqueue_webhook_update(
+                update,
+                self.bot_token,
+                self.api_url,
+                self.api_auth_token,
+                self.api_user_hmac_secret,
+            )
+        except Exception as e:
+            logger.error("webhook enqueue failed: err=%s", _exception_name(e), exc_info=True)
+            processed_ok = False
         self.send_response(200 if processed_ok else 500)
         self.end_headers()
         try:
             self.wfile.flush()
         except Exception:
             pass
-
-    def _process_update(self, update: dict) -> bool:
-        return _process_update(
-            update,
-            "webhook",
-            self.bot_token,
-            self.api_url,
-            self.api_auth_token,
-            self.api_user_hmac_secret,
-        )
 
     def log_message(self, fmt: str, *args) -> None:
         _ = fmt
@@ -2164,9 +2248,11 @@ def _process_update(
     api_url: str,
     api_auth_token: str,
     api_user_hmac_secret: str,
+    *,
+    claim_update_id: bool = True,
 ) -> bool:
     update_id = _extract_update_id(update)
-    if update_id is not None:
+    if claim_update_id and update_id is not None:
         claim_result = _claim_update_id(update_id)
         if claim_result == _UPDATE_DONE:
             logger.info("%s update skipped as duplicate: update_id=%s", transport, update_id)
@@ -2179,19 +2265,123 @@ def _process_update(
     try:
         handled = _handle_update(update, token, api_url, api_auth_token, api_user_hmac_secret)
     except KeyboardInterrupt:
-        if update_id is not None:
+        if claim_update_id and update_id is not None:
             _forget_update_id(update_id)
         raise
     except Exception as e:
-        if update_id is not None:
+        if claim_update_id and update_id is not None:
             _forget_update_id(update_id)
         logger.error("%s update failed: update_id=%s err=%s", transport, update_id, _exception_name(e), exc_info=True)
         _METRICS.inc("telegram_bot_updates_total", transport=transport, result="failed")
         return False
-    if update_id is not None:
+    if claim_update_id and update_id is not None:
         _complete_update_id(update_id)
     _METRICS.inc("telegram_bot_updates_total", transport=transport, result="handled" if handled else "ignored")
     return True
+
+
+def _enqueue_webhook_update(
+    update: dict,
+    token: str,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> bool:
+    _ = token
+    _ = api_url
+    _ = api_auth_token
+    _ = api_user_hmac_secret
+    if _STATE_STORE is None:
+        logger.error("webhook durable inbox unavailable: Redis state store is not configured")
+        return False
+    update_id = _extract_update_id(update)
+    if update_id is None:
+        logger.error("webhook durable inbox rejected update without update_id")
+        return False
+    try:
+        payload = json.dumps(update, ensure_ascii=False, separators=(",", ":"))
+        result = _STATE_STORE.enqueue_webhook_update(update_id, payload)
+    except Exception as e:
+        logger.error("webhook enqueue failed: update_id=%s err=%s", update_id, _exception_name(e), exc_info=True)
+        return False
+    _set_processed_update_state(
+        update_id,
+        _UPDATE_INFLIGHT if result == "enqueued" else _UPDATE_DONE,
+    )
+    _METRICS.inc("telegram_bot_updates_total", transport="webhook", result=result)
+    return result in {"enqueued", "duplicate"}
+
+
+def _process_one_webhook_inbox_update(
+    token: str,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+    *,
+    timeout_sec: int = 1,
+) -> bool:
+    if _STATE_STORE is None:
+        return False
+    claimed = _STATE_STORE.claim_next_webhook_update(timeout_sec)
+    if claimed is None:
+        return False
+    update_id, raw_payload = claimed
+    try:
+        update = json.loads(raw_payload)
+    except json.JSONDecodeError:
+        logger.error("webhook inbox payload invalid json: update_id=%s", update_id)
+        _STATE_STORE.ack_webhook_update(update_id)
+        _forget_update_id(update_id)
+        return True
+
+    processed_ok = _process_update(
+        update,
+        "webhook",
+        token,
+        api_url,
+        api_auth_token,
+        api_user_hmac_secret,
+        claim_update_id=False,
+    )
+    if processed_ok:
+        _complete_update_id(update_id)
+        _STATE_STORE.ack_webhook_update(update_id)
+    else:
+        _STATE_STORE.requeue_webhook_update(update_id)
+        _set_processed_update_state(update_id, _UPDATE_INFLIGHT)
+    return True
+
+
+def _run_webhook_inbox_worker(
+    stop_event: threading.Event,
+    token: str,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+    *,
+    timeout_sec: int = 1,
+) -> None:
+    if _STATE_STORE is None:
+        logger.error("webhook inbox worker unavailable: Redis state store is not configured")
+        return
+    recovered = _STATE_STORE.recover_webhook_processing()
+    if recovered > 0:
+        logger.warning("webhook inbox recovered stuck updates: count=%d", recovered)
+    while not stop_event.is_set():
+        try:
+            handled = _process_one_webhook_inbox_update(
+                token,
+                api_url,
+                api_auth_token,
+                api_user_hmac_secret,
+                timeout_sec=timeout_sec,
+            )
+        except Exception as e:
+            logger.error("webhook inbox worker iteration failed: err=%s", _exception_name(e), exc_info=True)
+            time.sleep(0.5)
+            continue
+        if not handled:
+            stop_event.wait(timeout=max(0.1, float(timeout_sec)))
 
 
 def run_polling(token: str, api_url: str, api_auth_token: str, api_user_hmac_secret: str) -> None:
@@ -2278,6 +2468,13 @@ def run_webhook(
 
     heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True, name="telegram-webhook-heartbeat")
     heartbeat_thread.start()
+    worker_thread = threading.Thread(
+        target=_run_webhook_inbox_worker,
+        args=(stop_event, token, api_url, api_auth_token, api_user_hmac_secret),
+        daemon=True,
+        name="telegram-webhook-inbox-worker",
+    )
+    worker_thread.start()
     server_thread = threading.Thread(target=server.serve_forever, daemon=True, name="telegram-webhook-server")
     server_thread.start()
 
@@ -2289,6 +2486,7 @@ def run_webhook(
         except Exception:
             pass
         server_thread.join(timeout=5)
+        worker_thread.join(timeout=5)
         heartbeat_thread.join(timeout=5)
         try:
             server.server_close()
@@ -2301,6 +2499,7 @@ def run_webhook(
     finally:
         stop_event.set()
         heartbeat_thread.join(timeout=5)
+        worker_thread.join(timeout=5)
         try:
             server.server_close()
         except Exception:

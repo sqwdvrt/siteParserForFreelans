@@ -203,7 +203,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.25.8"
+          go-version: "1.25.x"
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -227,21 +227,40 @@ jobs:
     steps:
       - name: Deploy to staging host
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          DEPLOY_SHA: ${{ needs.resolve-target.outputs.deploy_sha }}
+          ORIGIN_URL: ${{ github.server_url }}/${{ github.repository }}.git
         with:
           host: ${{ secrets.STAGING_SSH_HOST }}
           username: ${{ secrets.STAGING_SSH_USER }}
           key: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
           script_stop: true
           command_timeout: 30m
+          envs: DEPLOY_SHA,ORIGIN_URL
           script: |
             set -euo pipefail
-            cd "${{ secrets.STAGING_DEPLOY_PATH }}"
-            git fetch --all --prune
-            git checkout --detach "${{ needs.resolve-target.outputs.deploy_sha }}"
-            git clean -ffdx -e .env.production -e backups/ -e backend/.gomodcache
-            bash ./scripts/validate-env-production.sh .env.production
-            docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml up -d --build
-            docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml ps
+            BASE_PATH="${{ secrets.STAGING_DEPLOY_PATH }}"
+            STATE_DIR="$(dirname "${BASE_PATH}")/.$(basename "${BASE_PATH}")-deploy"
+            REPO_DIR="${STATE_DIR}/repo"
+            RUN_ROOT=""
+
+            if [ -d "${REPO_DIR}/.git" ]; then
+              git -C "${REPO_DIR}" fetch --all --prune --tags
+              git -C "${REPO_DIR}" checkout --detach "${DEPLOY_SHA}"
+              RUN_ROOT="${REPO_DIR}"
+            elif [ -d "${BASE_PATH}/.git" ]; then
+              git -C "${BASE_PATH}" fetch --all --prune --tags
+              git -C "${BASE_PATH}" checkout --detach "${DEPLOY_SHA}"
+              RUN_ROOT="${BASE_PATH}"
+            else
+              echo "ERROR: no repo cache or legacy checkout found for ${BASE_PATH}" >&2
+              exit 1
+            fi
+
+            bash "${RUN_ROOT}/scripts/deploy_release.sh" \
+              --base-path "${BASE_PATH}" \
+              --sha "${DEPLOY_SHA}" \
+              --origin-url "${ORIGIN_URL}"
 
       - name: Staging health check
         env:
@@ -285,9 +304,6 @@ jobs:
           script: |
             set -euo pipefail
             cd "${{ secrets.STAGING_DEPLOY_PATH }}"
-            git fetch --all --prune
-            git checkout --detach "${DEPLOY_SHA}"
-            git clean -ffdx -e .env.production -e backups/
             set -a
             . ./.env.production
             set +a
@@ -326,25 +342,41 @@ jobs:
     steps:
       - name: Deploy to production host
         uses: appleboy/ssh-action@v1.2.0
+        env:
+          DEPLOY_SHA: ${{ needs.resolve-target.outputs.deploy_sha }}
+          ORIGIN_URL: ${{ github.server_url }}/${{ github.repository }}.git
         with:
           host: ${{ secrets.PROD_SSH_HOST }}
           username: ${{ secrets.PROD_SSH_USER }}
           key: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
           script_stop: true
           command_timeout: 30m
+          envs: DEPLOY_SHA,ORIGIN_URL
           script: |
             set -euo pipefail
-            cd "${{ secrets.PROD_DEPLOY_PATH }}"
-            git fetch --all --prune
-            git checkout --detach "${{ needs.resolve-target.outputs.deploy_sha }}"
-            git clean -ffdx -e .env.production -e backups/ -e backend/.gomodcache
-            bash ./scripts/validate-env-production.sh .env.production
-            docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml up -d --build
-            docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml ps
-            set -a
-            . ./.env.production
-            set +a
-            bash ./scripts/post_deploy_production_gate.sh
+            BASE_PATH="${{ secrets.PROD_DEPLOY_PATH }}"
+            STATE_DIR="$(dirname "${BASE_PATH}")/.$(basename "${BASE_PATH}")-deploy"
+            REPO_DIR="${STATE_DIR}/repo"
+            RUN_ROOT=""
+
+            if [ -d "${REPO_DIR}/.git" ]; then
+              git -C "${REPO_DIR}" fetch --all --prune --tags
+              git -C "${REPO_DIR}" checkout --detach "${DEPLOY_SHA}"
+              RUN_ROOT="${REPO_DIR}"
+            elif [ -d "${BASE_PATH}/.git" ]; then
+              git -C "${BASE_PATH}" fetch --all --prune --tags
+              git -C "${BASE_PATH}" checkout --detach "${DEPLOY_SHA}"
+              RUN_ROOT="${BASE_PATH}"
+            else
+              echo "ERROR: no repo cache or legacy checkout found for ${BASE_PATH}" >&2
+              exit 1
+            fi
+
+            bash "${RUN_ROOT}/scripts/deploy_release.sh" \
+              --base-path "${BASE_PATH}" \
+              --sha "${DEPLOY_SHA}" \
+              --origin-url "${ORIGIN_URL}" \
+              --post-deploy-gate scripts/post_deploy_production_gate.sh
 
       - name: Production health check
         env:

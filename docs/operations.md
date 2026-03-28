@@ -15,6 +15,8 @@
 export PROD_COMPOSE="docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml"
 ```
 
+`$PROD_DEPLOY_PATH` и `$STAGING_DEPLOY_PATH` по-прежнему остаются операторскими точками входа: теперь это live symlink на `current`, а `current` уже указывает на активный release. Mutable state лежит в скрытой sibling-директории deploy state с `repo/`, `releases/`, `current`, `shared/.env.production` и `shared/backups/`.
+
 > `docker-compose.ssl.yml` — VPS-overlay: подключает внешнюю сеть `infra_default` и пробрасывает CA-сертификат во все контейнеры. Требует запущенного `/home/deploy/infra`. Подробнее: `docs/vps_deploy.md`.
 
 ### 0.1 Preflight before deploy

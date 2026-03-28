@@ -60,12 +60,12 @@ def test_webhook_rejects_bad_secret(bot):
     assert statuses == [403]
 
 
-def test_webhook_handles_message_update(bot, monkeypatch):
-    processed = threading.Event()
-    handled: list[dict] = []
+def test_webhook_returns_200_after_durable_enqueue_without_inline_processing(bot, monkeypatch):
+    enqueue_calls: list[dict] = []
+    inline_handled = threading.Event()
 
-    def _handle_update(update, token, api_url, api_auth_token, api_user_hmac_secret):
-        handled.append(
+    def _enqueue_webhook_update(update, token, api_url, api_auth_token, api_user_hmac_secret):
+        enqueue_calls.append(
             {
                 "update": update,
                 "token": token,
@@ -74,8 +74,18 @@ def test_webhook_handles_message_update(bot, monkeypatch):
                 "api_user_hmac_secret": api_user_hmac_secret,
             }
         )
-        processed.set()
+        return True
 
+    def _handle_update(update, token, api_url, api_auth_token, api_user_hmac_secret):
+        _ = update
+        _ = token
+        _ = api_url
+        _ = api_auth_token
+        _ = api_user_hmac_secret
+        inline_handled.set()
+        return True
+
+    monkeypatch.setattr(bot, "_enqueue_webhook_update", _enqueue_webhook_update, raising=False)
     monkeypatch.setattr(bot, "_handle_update", _handle_update)
     handler, statuses = _make_handler(
         bot,
@@ -87,17 +97,49 @@ def test_webhook_handles_message_update(bot, monkeypatch):
     handler.do_POST()
 
     assert statuses == [200]
-    assert processed.wait(timeout=1)
-    assert handled[0]["update"]["update_id"] == 1
-    assert handled[0]["token"] == "bot-token"
+    assert inline_handled.is_set() is False
+    assert enqueue_calls == [
+        {
+            "update": {"update_id": 1, "message": {"chat": {"id": 1}, "from": {"id": 2}, "text": "/start"}},
+            "token": "bot-token",
+            "api_url": "https://api.example.com",
+            "api_auth_token": "api-token",
+            "api_user_hmac_secret": "h" * 32,
+        }
+    ]
 
 
-def test_webhook_waits_for_processing_before_sending_200(bot, monkeypatch):
+def test_webhook_handles_message_update(bot, monkeypatch):
+    enqueued: list[dict] = []
+
+    def _enqueue(update, token, api_url, api_auth_token, api_user_hmac_secret):
+        _ = token
+        _ = api_url
+        _ = api_auth_token
+        _ = api_user_hmac_secret
+        enqueued.append(update)
+        return True
+
+    monkeypatch.setattr(bot, "_enqueue_webhook_update", _enqueue)
+    handler, statuses = _make_handler(
+        bot,
+        path="/webhook",
+        payload={"update_id": 1, "message": {"chat": {"id": 1}, "from": {"id": 2}, "text": "/start"}},
+        secret="a" * 32,
+    )
+
+    handler.do_POST()
+
+    assert statuses == [200]
+    assert enqueued[0]["update_id"] == 1
+
+
+def test_webhook_waits_for_durable_enqueue_before_sending_200(bot, monkeypatch):
     started = threading.Event()
     release = threading.Event()
     finished = threading.Event()
 
-    def _handle_update(update, token, api_url, api_auth_token, api_user_hmac_secret):
+    def _enqueue(update, token, api_url, api_auth_token, api_user_hmac_secret):
         _ = update
         _ = token
         _ = api_url
@@ -106,8 +148,9 @@ def test_webhook_waits_for_processing_before_sending_200(bot, monkeypatch):
         started.set()
         assert release.wait(timeout=1)
         finished.set()
+        return True
 
-    monkeypatch.setattr(bot, "_handle_update", _handle_update)
+    monkeypatch.setattr(bot, "_enqueue_webhook_update", _enqueue)
     handler, statuses = _make_handler(
         bot,
         path="/webhook",
@@ -129,7 +172,7 @@ def test_webhook_waits_for_processing_before_sending_200(bot, monkeypatch):
 
 
 def test_webhook_returns_500_when_processing_fails(bot, monkeypatch):
-    def _handle_update(update, token, api_url, api_auth_token, api_user_hmac_secret):
+    def _enqueue(update, token, api_url, api_auth_token, api_user_hmac_secret):
         _ = update
         _ = token
         _ = api_url
@@ -137,7 +180,7 @@ def test_webhook_returns_500_when_processing_fails(bot, monkeypatch):
         _ = api_user_hmac_secret
         raise RuntimeError("boom")
 
-    monkeypatch.setattr(bot, "_handle_update", _handle_update)
+    monkeypatch.setattr(bot, "_enqueue_webhook_update", _enqueue)
     handler, statuses = _make_handler(
         bot,
         path="/webhook",
@@ -150,24 +193,19 @@ def test_webhook_returns_500_when_processing_fails(bot, monkeypatch):
     assert statuses == [500]
 
 
-def test_webhook_returns_500_for_duplicate_retry_while_first_request_is_inflight(bot, monkeypatch):
-    started = threading.Event()
-    release = threading.Event()
-    call_count = 0
+def test_webhook_returns_200_for_duplicate_retry_after_durable_enqueue(bot, monkeypatch):
+    enqueue_results = iter([True, True])
+    enqueued: list[int] = []
 
-    def _handle_update(update, token, api_url, api_auth_token, api_user_hmac_secret):
-        nonlocal call_count
-        _ = update
+    def _enqueue(update, token, api_url, api_auth_token, api_user_hmac_secret):
         _ = token
         _ = api_url
         _ = api_auth_token
         _ = api_user_hmac_secret
-        call_count += 1
-        started.set()
-        assert release.wait(timeout=1)
-        return True
+        enqueued.append(update["update_id"])
+        return next(enqueue_results)
 
-    monkeypatch.setattr(bot, "_handle_update", _handle_update)
+    monkeypatch.setattr(bot, "_enqueue_webhook_update", _enqueue)
     payload = {"update_id": 1, "message": {"chat": {"id": 1}, "from": {"id": 2}, "text": "/start"}}
     first_handler, first_statuses = _make_handler(
         bot,
@@ -181,20 +219,11 @@ def test_webhook_returns_500_for_duplicate_retry_while_first_request_is_inflight
         payload=payload,
         secret="a" * 32,
     )
-
-    first_request_thread = threading.Thread(target=first_handler.do_POST)
-    first_request_thread.start()
-
-    assert started.wait(timeout=1)
+    first_handler.do_POST()
     second_handler.do_POST()
-
-    assert second_statuses == [500]
-    assert call_count == 1
-
-    release.set()
-    first_request_thread.join(timeout=1)
-    assert first_request_thread.is_alive() is False
     assert first_statuses == [200]
+    assert second_statuses == [200]
+    assert enqueued == [1, 1]
 
 
 def test_handle_update_routes_callback_query(bot, monkeypatch):

@@ -232,14 +232,28 @@ docker exec infra-postgres-1 psql -U site_parser -d site_parser -c "
 
 ## 4. Приложение
 
-```bash
-cd /home/deploy/app
-git clone <repo-url> siteParserForFreelans
-cd siteParserForFreelans
-git checkout develop
+В новой схеме mutable deploy state вынесен в скрытую sibling-директорию рядом с live path:
+
+```text
+<live deploy path> -> <hidden deploy state dir>/current
+<hidden deploy state dir>/
+├── repo/
+├── releases/
+├── current -> releases/<current release>
+└── shared/
+    ├── .env.production
+    └── backups/
 ```
 
-Создать `.env.production` (заполнить по образцу `.env.production.example`):
+Операторские команды по-прежнему выполняются через `cd "$PROD_DEPLOY_PATH"` / `cd "$STAGING_DEPLOY_PATH"`; эти пути теперь указывают на live symlink `current`, который ведёт в активный release.
+
+```bash
+cd /home/deploy/<hidden-deploy-state-dir>
+git clone <repo-url> repo
+mkdir -p releases shared/backups
+```
+
+`shared/.env.production` хранит mutable production env (заполнить по образцу `.env.production.example`):
 
 ```bash
 # Ключевые значения для VPS:
@@ -274,7 +288,7 @@ PGADMIN_PASSWORD=<output of: openssl rand -hex 16>
 Запуск:
 
 ```bash
-cd /home/deploy/app/siteParserForFreelans
+cd "$PROD_DEPLOY_PATH"
 docker compose -f docker-compose.prod.yml -f docker-compose.ssl.yml --env-file .env.production --profile admin up -d pgadmin
 ```
 
@@ -301,7 +315,7 @@ ssh -L 5050:localhost:5050 deploy@185.154.193.193
 Это сохраняет общую `infra_default` сеть для доступа к self-hosted Redis/Postgres и даёт monitoring-контейнерам тот же CA.
 
 ```bash
-cd /home/deploy/app/siteParserForFreelans
+cd "$PROD_DEPLOY_PATH"
 docker compose --env-file .env.production \
   -f docker-compose.prod.yml \
   -f docker-compose.ssl.yml \
@@ -359,10 +373,13 @@ VPS (185.154.193.193)
 │   ├── .env
 │   └── certs/server.crt|key    ← самоподписанный CA (CN=internal, SAN: postgres, redis)
 │
-└── /home/deploy/app/siteParserForFreelans/
-    ├── docker-compose.prod.yml
-    ├── docker-compose.ssl.yml   ← overlay: infra_default network + SSL_CERT_FILE
-    └── .env.production
+└── <hidden deploy state dir>/
+    ├── repo/
+    ├── releases/
+    ├── current -> releases/<current release>
+    ├── shared/
+    │   ├── .env.production
+    │   └── backups/
 ```
 
-Все app-контейнеры подключены к сети `infra_default` и обращаются к `postgres:5432` / `redis:6379` по имени сервиса.
+Все app-контейнеры подключены к сети `infra_default` и обращаются к `postgres:5432` / `redis:6379` по имени сервиса. Операторский `cd "$PROD_DEPLOY_PATH"` / `cd "$STAGING_DEPLOY_PATH"` остаётся прежним, но теперь попадает в live symlink на текущий release.

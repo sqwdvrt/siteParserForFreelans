@@ -1,8 +1,6 @@
 services:
   backend-migrate:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: ${BACKEND_IMAGE:?set_BACKEND_IMAGE_in_.env.production}
     command: ["true"]
     env_file:
       - .env.production
@@ -30,9 +28,7 @@ services:
     restart: "no"
 
   backend-api:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: ${BACKEND_IMAGE:?set_BACKEND_IMAGE_in_.env.production}
     command: ["./api"]
     env_file:
       - .env.production
@@ -76,9 +72,7 @@ services:
     restart: unless-stopped
 
   browser-service:
-    build:
-      context: ./browser-service
-      dockerfile: Dockerfile
+    image: ${BROWSER_SERVICE_IMAGE:?set_BROWSER_SERVICE_IMAGE_in_.env.production}
     environment:
       BROWSER_TIMEOUT_MS: ${BROWSER_TIMEOUT_MS:-60000}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
@@ -102,9 +96,7 @@ services:
     restart: unless-stopped
 
   backend-crawler:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: ${BACKEND_IMAGE:?set_BACKEND_IMAGE_in_.env.production}
     command: ["./crawler"]
     env_file:
       - .env.production
@@ -144,9 +136,7 @@ services:
     restart: unless-stopped
 
   backend-notifier:
-    build:
-      context: ./backend
-      dockerfile: Dockerfile
+    image: ${BACKEND_IMAGE:?set_BACKEND_IMAGE_in_.env.production}
     command: ["./notifier"]
     env_file:
       - .env.production
@@ -184,11 +174,6 @@ services:
 
   ai-service:
     image: ${AI_IMAGE:-siteparserforfreelans-ai-runtime:prod}
-    build:
-      context: ./ai-service
-      dockerfile: Dockerfile
-      args:
-        EMBEDDING_MODEL: ${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
     command: ["python", "cmd/consumer/main.py"]
     env_file:
       - .env.production
@@ -325,9 +310,7 @@ services:
     restart: unless-stopped
 
   telegram-bot:
-    build:
-      context: ./telegram-bot
-      dockerfile: Dockerfile
+    image: ${TELEGRAM_BOT_IMAGE:?set_TELEGRAM_BOT_IMAGE_in_.env.production}
     env_file:
       - .env.production
     environment:
