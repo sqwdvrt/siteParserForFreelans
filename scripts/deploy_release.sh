@@ -65,7 +65,7 @@ require_command() {
 }
 
 sanitize_project_name() {
-  printf '%s' "$1" | tr -c '[:alnum:]_.-' '-'
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]_.-' '-'
 }
 
 parse_args() {

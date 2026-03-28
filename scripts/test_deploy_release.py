@@ -17,6 +17,11 @@ class DeployReleaseScriptTest(unittest.TestCase):
             script_text,
         )
 
+    def test_project_name_is_normalized_to_lowercase(self) -> None:
+        script_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("tr '[:upper:]' '[:lower:]'", script_text)
+
 
 if __name__ == "__main__":
     unittest.main()
