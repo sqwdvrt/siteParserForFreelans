@@ -630,6 +630,10 @@ func (h *Handlers) PostUserFeedback(w http.ResponseWriter, r *http.Request) {
 	}
 	if h.FeedbackRepo != nil {
 		if err := h.FeedbackRepo.Upsert(r.Context(), userID, req.JobID, fb); err != nil {
+			if errors.Is(err, port.ErrFeedbackNotAllowed) {
+				http.Error(w, "forbidden", http.StatusForbidden)
+				return
+			}
 			h.logger().Error("post user feedback upsert failed", "user_id", userID, "job_id", req.JobID, "err", err)
 			http.Error(w, internalErrorMessage, http.StatusInternalServerError)
 			return

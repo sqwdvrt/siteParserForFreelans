@@ -85,6 +85,33 @@ func (m *mockProductEventRepo) Record(ctx context.Context, event port.ProductEve
 	return nil
 }
 
+type mockFeedbackRepo struct {
+	upsertFunc            func(ctx context.Context, userID, jobID int64, fb domain.FeedbackType) error
+	statsRecentFunc       func(ctx context.Context, userID int64, within time.Duration) (port.FeedbackStats, error)
+	globalStatsRecentFunc func(ctx context.Context, within time.Duration) (port.FeedbackStats, error)
+}
+
+func (m *mockFeedbackRepo) Upsert(ctx context.Context, userID, jobID int64, fb domain.FeedbackType) error {
+	if m.upsertFunc != nil {
+		return m.upsertFunc(ctx, userID, jobID, fb)
+	}
+	return nil
+}
+
+func (m *mockFeedbackRepo) StatsRecent(ctx context.Context, userID int64, within time.Duration) (port.FeedbackStats, error) {
+	if m.statsRecentFunc != nil {
+		return m.statsRecentFunc(ctx, userID, within)
+	}
+	return port.FeedbackStats{}, nil
+}
+
+func (m *mockFeedbackRepo) GlobalStatsRecent(ctx context.Context, within time.Duration) (port.FeedbackStats, error) {
+	if m.globalStatsRecentFunc != nil {
+		return m.globalStatsRecentFunc(ctx, within)
+	}
+	return port.FeedbackStats{}, nil
+}
+
 type mockUserRepo struct {
 	saveFunc              func(ctx context.Context, telegramID int64) (int64, bool, error)
 	getByIDFunc           func(ctx context.Context, userID int64) (*domain.User, error)
@@ -1149,6 +1176,80 @@ func TestHandlers_PutUserProfile_ExpiredTimestamp(t *testing.T) {
 
 	if rr.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", rr.Code)
+	}
+}
+
+func TestHandlers_PostUserFeedback_RejectsJobWithoutDeliveredNotification(t *testing.T) {
+	repo := &mockUserRepo{
+		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+			return &domain.User{ID: userID, TelegramID: 123456789}, nil
+		},
+	}
+	feedbackRepo := &mockFeedbackRepo{
+		upsertFunc: func(ctx context.Context, userID, jobID int64, fb domain.FeedbackType) error {
+			return port.ErrFeedbackNotAllowed
+		},
+	}
+	h := &Handlers{
+		UserRepo:       repo,
+		FeedbackRepo:   feedbackRepo,
+		AuthToken:      testAuthToken,
+		UserHMACSecret: testUserHMACSecret,
+	}
+
+	body := []byte(`{"job_id":321,"feedback":"bad"}`)
+	req := newJSONRequest(
+		http.MethodPost,
+		"/users/1/feedback",
+		body,
+		newAuthHeadersWithUserSign(http.MethodPost, "/users/1/feedback", 123456789, body),
+	)
+	req = attachRouteUserID(req, "1")
+	rr := httptest.NewRecorder()
+
+	h.PostUserFeedback(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+}
+
+func TestHandlers_PostUserFeedback_Success(t *testing.T) {
+	repo := &mockUserRepo{
+		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+			return &domain.User{ID: userID, TelegramID: 123456789}, nil
+		},
+	}
+	feedbackRepo := &mockFeedbackRepo{}
+	eventRepo := &mockProductEventRepo{}
+	h := &Handlers{
+		UserRepo:         repo,
+		FeedbackRepo:     feedbackRepo,
+		ProductEventRepo: eventRepo,
+		AuthToken:        testAuthToken,
+		UserHMACSecret:   testUserHMACSecret,
+	}
+
+	body := []byte(`{"job_id":321,"feedback":"good"}`)
+	req := newJSONRequest(
+		http.MethodPost,
+		"/users/1/feedback",
+		body,
+		newAuthHeadersWithUserSign(http.MethodPost, "/users/1/feedback", 123456789, body),
+	)
+	req = attachRouteUserID(req, "1")
+	rr := httptest.NewRecorder()
+
+	h.PostUserFeedback(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+	if len(eventRepo.events) != 1 {
+		t.Fatalf("events len = %d, want 1", len(eventRepo.events))
+	}
+	if eventRepo.events[0].Type != port.ProductEventFeedbackSubmitted {
+		t.Fatalf("event type = %q, want %q", eventRepo.events[0].Type, port.ProductEventFeedbackSubmitted)
 	}
 }
 

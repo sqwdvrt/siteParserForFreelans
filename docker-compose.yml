@@ -1,6 +1,24 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - effective_cache_size=256MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - max_connections=20
+      - -c
+      - wal_buffers=8MB
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - random_page_cost=1.1
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-site_parser}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}
@@ -17,10 +35,10 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${POSTGRES_MEM_LIMIT:-1g}
-          cpus: '2.0'
+          memory: ${POSTGRES_MEM_LIMIT:-512m}
+          cpus: '1.0'
         reservations:
-          memory: 256m
+          memory: 128m
 
   redis:
     image: redis:7-alpine

@@ -31,10 +31,21 @@ func (r *FeedbackRepository) Upsert(ctx context.Context, userID, jobID int64, fb
 
 	const q = `
 		INSERT INTO user_feedback (user_id, job_id, feedback)
-		VALUES ($1, $2, $3)
+		SELECT $1, $2, $3
+		WHERE EXISTS (
+			SELECT 1
+			FROM notifications
+			WHERE user_id = $1
+			  AND job_id = $2
+			  AND status IN ('dispatched', 'sent')
+		)
 		ON CONFLICT (user_id, job_id) DO UPDATE SET feedback = EXCLUDED.feedback, created_at = NOW()`
-	if _, err := tx.Exec(ctx, q, userID, jobID, string(fb)); err != nil {
+	tag, err := tx.Exec(ctx, q, userID, jobID, string(fb))
+	if err != nil {
 		return fmt.Errorf("upsert feedback: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return port.ErrFeedbackNotAllowed
 	}
 	if err := r.rebuildTagAffinity(ctx, tx, userID); err != nil {
 		return err
