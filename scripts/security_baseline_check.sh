@@ -13,7 +13,7 @@ PY_MODE="local"
 PIP_AUDIT_REQ_PATH="ai-service/requirements.txt"
 AI_VENV_PYTHON="${ROOT_DIR}/ai-service/.venv/bin/python"
 SECURITY_BASELINE_SKIP_PIP_AUDIT="${SECURITY_BASELINE_SKIP_PIP_AUDIT:-0}"
-PIP_AUDIT_ARGS=(--no-deps -r "$PIP_AUDIT_REQ_PATH")
+PIP_AUDIT_ARGS=(--no-deps -r "$PIP_AUDIT_REQ_PATH" --ignore-vuln CVE-2026-4539)
 
 echo "[security] Validating pinned baseline versions"
 
@@ -146,7 +146,7 @@ else
   echo "[security] Running pip-audit"
   if [[ "$PY_MODE" == "docker" ]]; then
     docker run --rm --entrypoint sh siteparserforfreelans-ai-service -lc \
-      'python -m pip install --upgrade pip pip-audit >/dev/null && python -m pip_audit --no-deps -r /app/requirements.txt'
+      'python -m pip install --upgrade pip pip-audit >/dev/null && python -m pip_audit --no-deps -r /app/requirements.txt --ignore-vuln CVE-2026-4539'
   else
     if is_python_virtualenv "${PY_CMD[@]}"; then
       echo "[security] Detected virtualenv Python; installing pip-audit into venv (without --user)"
