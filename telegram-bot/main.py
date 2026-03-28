@@ -2323,6 +2323,7 @@ def _enqueue_webhook_update(
     _set_processed_update_state(
         update_id,
         _UPDATE_INFLIGHT if result == "enqueued" else _UPDATE_DONE,
+        now_monotonic=time.monotonic(),
     )
     _METRICS.inc("telegram_bot_updates_total", transport="webhook", result=result)
     return result in {"enqueued", "duplicate"}
@@ -2364,7 +2365,7 @@ def _process_one_webhook_inbox_update(
         _STATE_STORE.ack_webhook_update(update_id)
     else:
         _STATE_STORE.requeue_webhook_update(update_id)
-        _set_processed_update_state(update_id, _UPDATE_INFLIGHT)
+        _set_processed_update_state(update_id, _UPDATE_INFLIGHT, now_monotonic=time.monotonic())
     return True
 
 
