@@ -253,9 +253,9 @@ compose_release() {
   (
     cd "$RELEASE_DIR"
     bash ./scripts/validate-env-production.sh "$ENV_FILE"
-    docker compose --env-file "$ENV_FILE" "${compose_args[@]}" pull
-    docker compose --env-file "$ENV_FILE" "${compose_args[@]}" up -d --no-build
-    docker compose --env-file "$ENV_FILE" "${compose_args[@]}" ps
+    docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" pull
+    docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" up -d --no-build
+    docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" ps
   )
 }
 
