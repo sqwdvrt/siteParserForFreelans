@@ -219,7 +219,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - resolve-target
-    if: ${{ needs.resolve-target.outputs.run_staging == 'true' }}
+    if: ${{ needs.resolve-target.outputs.run_staging == 'true' || needs.resolve-target.outputs.run_production == 'true' }}
     steps:
       - name: Checkout target SHA
         uses: actions/checkout@v4
@@ -246,7 +246,7 @@ jobs:
       - resolve-target
       - verify-gates
       - release-preflight-gate
-    if: ${{ needs.resolve-target.outputs.run_staging == 'true' }}
+    if: ${{ needs.resolve-target.outputs.run_staging == 'true' || needs.resolve-target.outputs.run_production == 'true' }}
     permissions:
       contents: read
       packages: write
