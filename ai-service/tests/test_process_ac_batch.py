@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import math
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
@@ -128,6 +129,43 @@ def test_execute_filters_out_jobs_below_rerank_threshold() -> None:
     notify_queue.enqueue_batch.assert_called_once()
     kwargs = notify_queue.enqueue_batch.call_args.kwargs
     assert [item.job_id for item in kwargs["ranked_jobs"]] == [1]
+    pending_repo.mark_processed.assert_called_once_with(1, [1, 2])
+
+
+def test_execute_all_filtered_rerank_falls_back_to_best_job_and_logs_policy_summary(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    user_repo = MagicMock()
+    user_repo.get_by_id.return_value = _user_with_profile()
+    job_repo = MagicMock()
+    job_repo.get_with_scores.return_value = [
+        (Job(id=1, title="A", description="Desc A", raw_html="<p>a</p>", rerank_score=0.54), 0.9),
+        (Job(id=2, title="B", description="Desc B", raw_html="<p>b</p>", rerank_score=0.40), 0.8),
+    ]
+    pending_repo = MagicMock()
+    actor = MagicMock()
+    actor.explain_batch.return_value = ["Fallback top match."]
+    notify_queue = MagicMock()
+    uc = ProcessACBatchUseCase(
+        user_repo,
+        job_repo,
+        pending_repo,
+        actor,
+        notify_queue,
+        rerank_threshold=0.55,
+    )
+
+    with caplog.at_level(logging.INFO):
+        uc.execute(ACBatch(user_id=1, job_ids=[1, 2]))
+
+    notify_queue.enqueue_batch.assert_called_once()
+    kwargs = notify_queue.enqueue_batch.call_args.kwargs
+    assert [item.job_id for item in kwargs["ranked_jobs"]] == [1]
+    assert kwargs["ranked_jobs"][0].final_score == pytest.approx(0.54)
+    assert kwargs["ranked_jobs"][0].reason_codes == ("rerank_all_filtered_fallback",)
+    assert "fallback=all_filtered" in caplog.text
+    assert "filtered=2" in caplog.text
+    assert "selected=1" in caplog.text
     pending_repo.mark_processed.assert_called_once_with(1, [1, 2])
 
 

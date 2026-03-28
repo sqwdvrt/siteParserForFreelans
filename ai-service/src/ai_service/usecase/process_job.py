@@ -14,6 +14,7 @@ from ai_service.util.preference_filter import (
     PREFERENCE_FILTER_REASON_BUDGET,
     evaluate_preference_filter,
 )
+from ai_service.usecase.rerank_policy import apply_rerank_policy
 from ai_service.util.profile_structurer import build_structured_profile_text
 from ai_service.util.text_cleaner import clean_text
 from ai_service.util.trace_context import get_trace_id
@@ -105,6 +106,7 @@ class ProcessJobUseCase:
         match_max_age_days: int | None = None,
         rerank_threshold: float = 0.55,
         rerank_top_k: int = 10,
+        rerank_fallback_enabled: bool = True,
         feedback_repo=None,
         user_repo: UserRepository | None = None,
         filter_event_repo: FilterEventRepository | None = None,
@@ -120,6 +122,7 @@ class ProcessJobUseCase:
         self._match_max_age_days = match_max_age_days
         self._rerank_threshold = rerank_threshold
         self._rerank_top_k = rerank_top_k
+        self._rerank_fallback_enabled = rerank_fallback_enabled
         self._feedback_repo = feedback_repo
         self._user_repo = user_repo
         self._filter_event_repo = filter_event_repo
@@ -312,17 +315,27 @@ class ProcessJobUseCase:
             key=lambda candidate: (candidate.rerank_score, candidate.raw_similarity, candidate.user_id),
             reverse=True,
         )
-        filtered = [
-            candidate
-            for candidate in ranked
-            if candidate.rerank_score >= self._rerank_threshold
-        ][: self._rerank_top_k]
+        decision = apply_rerank_policy(
+            ranked,
+            score_getter=lambda candidate: candidate.rerank_score,
+            threshold=self._rerank_threshold,
+            top_k=self._rerank_top_k,
+            fallback_enabled=self._rerank_fallback_enabled,
+            pipeline="job",
+            entity_name="job",
+            entity_id=getattr(job, "id", 0),
+        )
+        filtered = decision.selected
+        if decision.used_fallback:
+            for candidate in filtered:
+                if "rerank_all_filtered_fallback" not in candidate.reason_codes:
+                    candidate.reason_codes = tuple(candidate.reason_codes) + ("rerank_all_filtered_fallback",)
 
         trace_id = get_trace_id()
-        best_score = filtered[0].rerank_score if filtered else 0.0
+        best_score = decision.best_score_before_filter
         if trace_id:
             logger.info(
-                "job_id=%s trace_id=%s: reranked %d/%d candidates model=%s threshold=%.2f top_k=%d best=%.3f",
+                "job_id=%s trace_id=%s: reranked %d/%d candidates model=%s threshold=%.2f top_k=%d best_before_filter=%.3f fallback=%s",
                 getattr(job, "id", 0),
                 trace_id,
                 len(filtered),
@@ -331,10 +344,11 @@ class ProcessJobUseCase:
                 self._rerank_threshold,
                 self._rerank_top_k,
                 best_score,
+                decision.used_fallback,
             )
         else:
             logger.info(
-                "job_id=%s: reranked %d/%d candidates model=%s threshold=%.2f top_k=%d best=%.3f",
+                "job_id=%s: reranked %d/%d candidates model=%s threshold=%.2f top_k=%d best_before_filter=%.3f fallback=%s",
                 getattr(job, "id", 0),
                 len(filtered),
                 len(candidates),
@@ -342,5 +356,6 @@ class ProcessJobUseCase:
                 self._rerank_threshold,
                 self._rerank_top_k,
                 best_score,
+                decision.used_fallback,
             )
         return filtered

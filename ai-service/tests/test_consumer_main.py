@@ -253,3 +253,54 @@ def test_main_passes_postgres_pool_settings_to_repositories(monkeypatch, tmp_pat
         ("feedback", {"minconn": 0, "maxconn": 1, "statement_timeout_ms": 2500}),
         ("filter_events", {"minconn": 0, "maxconn": 1, "statement_timeout_ms": 2500}),
     ]
+
+
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [
+        (None, True),
+        ("0", False),
+    ],
+)
+def test_main_passes_rerank_fallback_flag_into_process_job_use_case(
+    monkeypatch,
+    tmp_path: Path,
+    env_value: str | None,
+    expected: bool,
+) -> None:
+    module = _load_consumer_main_module()
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
+    if env_value is None:
+        monkeypatch.delenv("RERANK_FALLBACK_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("RERANK_FALLBACK_ENABLED", env_value)
+
+    monkeypatch.setattr(module, "PostgresJobRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresUserRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresMatchRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresPendingJobsRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresFeedbackRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresFilterEventRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "AccumulateMatchesUseCase", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "SentenceTransformerEmbedding", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "CrossEncoderReranker", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "_warmup_embedding", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "RedisQueueConsumer", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module.signal, "signal", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "run_consumer", lambda *_args, **_kwargs: None)
+
+    process_job_kwargs: list[dict] = []
+
+    def fake_process_job_use_case(*_args, **kwargs):
+        process_job_kwargs.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(module, "ProcessJobUseCase", fake_process_job_use_case)
+
+    module.main()
+
+    assert len(process_job_kwargs) == 1
+    assert process_job_kwargs[0]["rerank_fallback_enabled"] is expected

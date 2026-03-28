@@ -2,6 +2,7 @@
 """AI Service consumer: BRPOP → ProcessJob. Точка входа."""
 
 import atexit
+import inspect
 import logging
 import os
 import signal
@@ -59,6 +60,8 @@ SHUTDOWN_GRACE_SEC_ENV = "AI_SHUTDOWN_GRACE_SEC"
 DEFAULT_SHUTDOWN_GRACE_SEC = 20.0
 POP_TIMEOUT_SEC_ENV = "AI_PROCESS_POP_TIMEOUT_SEC"
 DEFAULT_POP_TIMEOUT_SEC = 60
+RERANK_FALLBACK_ENABLED_ENV = "RERANK_FALLBACK_ENABLED"
+DEFAULT_RERANK_FALLBACK_ENABLED = True
 
 
 def _cleanup_ready_file(ready_file: str) -> None:
@@ -93,6 +96,28 @@ def _warmup_enabled() -> bool:
 def _classifier_enabled() -> bool:
     raw = os.getenv(CLASSIFIER_ENABLED_ENV, "0").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _rerank_fallback_enabled() -> bool:
+    raw = os.getenv(
+        RERANK_FALLBACK_ENABLED_ENV,
+        "1" if DEFAULT_RERANK_FALLBACK_ENABLED else "0",
+    ).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _supports_constructor_kwarg(factory: object, name: str) -> bool:
+    try:
+        signature = inspect.signature(factory)
+    except (TypeError, ValueError):
+        return True
+
+    if name in signature.parameters:
+        return True
+    return any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
 
 
 def _shutdown_grace_sec() -> float:
@@ -191,6 +216,7 @@ def main() -> None:
     rerank_model = os.getenv("RERANK_MODEL", "BAAI/bge-reranker-base")
     rerank_threshold = float(os.getenv("RERANK_THRESHOLD", "0.55"))
     rerank_top_k = int(os.getenv("RERANK_TOP_K", "10"))
+    rerank_fallback_enabled = _rerank_fallback_enabled()
     threshold = float(os.getenv("SIMILARITY_THRESHOLD", "0.7"))
     max_matches = int(os.getenv("MAX_MATCHES_PER_JOB", "50"))
     grace_sec = _shutdown_grace_sec()
@@ -220,20 +246,25 @@ def main() -> None:
         _warmup_embedding(embedding)
     else:
         logger.info("embedding warmup disabled by %s", WARMUP_ENABLED_ENV)
+    process_job_kwargs = {
+        "classifier": classifier,
+        "match_repo": match_repo,
+        "accumulate_matches": accumulate_matches,
+        "reranker": reranker,
+        "similarity_threshold": threshold,
+        "max_matches_per_job": max_matches,
+        "rerank_threshold": rerank_threshold,
+        "rerank_top_k": rerank_top_k,
+        "feedback_repo": feedback_repo,
+        "user_repo": user_repo,
+        "filter_event_repo": filter_event_repo,
+    }
+    if _supports_constructor_kwarg(ProcessJobUseCase, "rerank_fallback_enabled"):
+        process_job_kwargs["rerank_fallback_enabled"] = rerank_fallback_enabled
     process_job = ProcessJobUseCase(
         repo,
         embedding,
-        classifier=classifier,
-        match_repo=match_repo,
-        accumulate_matches=accumulate_matches,
-        reranker=reranker,
-        similarity_threshold=threshold,
-        max_matches_per_job=max_matches,
-        rerank_threshold=rerank_threshold,
-        rerank_top_k=rerank_top_k,
-        feedback_repo=feedback_repo,
-        user_repo=user_repo,
-        filter_event_repo=filter_event_repo,
+        **process_job_kwargs,
     )
     init_tracer("site-parser-ai")
     queue = RedisQueueConsumer(redis_url, queue_name)

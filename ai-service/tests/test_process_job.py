@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -224,6 +225,50 @@ def test_execute_applies_rerank_threshold_and_top_k() -> None:
     assert sent[0].rerank_score == pytest.approx(0.91)
     assert sent[0].final_score == pytest.approx(0.91)
     assert sent[1].rerank_score == pytest.approx(0.78)
+
+
+def test_execute_all_filtered_rerank_falls_back_to_best_candidate_and_logs_policy_summary(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    job = Job(id=1, title="Python API", description="FastAPI backend", raw_html="<p>H</p>")
+    repo = MagicMock()
+    repo.get.return_value = job
+    repo.get_embedding.return_value = None
+    emb = MagicMock()
+    emb.encode.return_value = [0.1] * 384
+    emb.model_name = "test"
+    match_repo = MagicMock()
+    candidates = [
+        MatchCandidate(user_id=10, job_id=1, match_score=0.91, raw_similarity=0.91, profile_text="python fastapi"),
+        MatchCandidate(user_id=20, job_id=1, match_score=0.88, raw_similarity=0.88, profile_text="golang"),
+        MatchCandidate(user_id=30, job_id=1, match_score=0.82, raw_similarity=0.82, profile_text="backend python"),
+    ]
+    match_repo.find_users_for_job.return_value = candidates
+    reranker = MagicMock()
+    reranker.model_name = "BAAI/bge-reranker-base"
+    reranker.score_pairs.return_value = [0.54, 0.42, 0.51]
+    accumulate_matches = MagicMock()
+    uc = ProcessJobUseCase(
+        repo,
+        emb,
+        match_repo=match_repo,
+        accumulate_matches=accumulate_matches,
+        reranker=reranker,
+        rerank_threshold=0.55,
+        rerank_top_k=2,
+    )
+
+    with caplog.at_level(logging.INFO):
+        assert uc.execute(1) is True
+
+    accumulate_matches.execute.assert_called_once()
+    sent = accumulate_matches.execute.call_args[0][0]
+    assert [item.user_id for item in sent] == [10]
+    assert sent[0].rerank_score == pytest.approx(0.54)
+    assert sent[0].reason_codes == ("rerank_all_filtered_fallback",)
+    assert "fallback=all_filtered" in caplog.text
+    assert "filtered=3" in caplog.text
+    assert "selected=1" in caplog.text
 
 
 def test_execute_applies_preference_filter_before_ann() -> None:

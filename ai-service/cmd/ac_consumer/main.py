@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import atexit
+import inspect
 import logging
 import os
 import signal
@@ -72,6 +73,8 @@ PENDING_METRICS_REFRESH_SEC_ENV = "AC_PENDING_METRICS_REFRESH_SEC"
 DEFAULT_PENDING_METRICS_REFRESH_SEC = 30
 POP_TIMEOUT_SEC_ENV = "AI_AC_BATCH_POP_TIMEOUT_SEC"
 DEFAULT_POP_TIMEOUT_SEC = 30
+RERANK_FALLBACK_ENABLED_ENV = "RERANK_FALLBACK_ENABLED"
+DEFAULT_RERANK_FALLBACK_ENABLED = True
 
 
 def _cleanup_ready_file(ready_file: str) -> None:
@@ -165,6 +168,25 @@ def _read_positive_int_env(name: str, default: int) -> int:
     return value
 
 
+def _read_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name, "1" if default else "0").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _supports_constructor_kwarg(factory: object, name: str) -> bool:
+    try:
+        signature = inspect.signature(factory)
+    except (TypeError, ValueError):
+        return True
+
+    if name in signature.parameters:
+        return True
+    return any(
+        parameter.kind == inspect.Parameter.VAR_KEYWORD
+        for parameter in signature.parameters.values()
+    )
+
+
 def _observe_pending_job_table_metrics(pending_repo: PostgresPendingJobsRepository) -> None:
     total_rows = int(pending_repo.count_rows())
     unprocessed_rows = int(pending_repo.count_unprocessed_rows())
@@ -256,6 +278,10 @@ def main() -> None:
     )
 
     rerank_threshold = float(os.getenv("RERANK_THRESHOLD", "0.55"))
+    rerank_fallback_enabled = _read_bool_env(
+        RERANK_FALLBACK_ENABLED_ENV,
+        DEFAULT_RERANK_FALLBACK_ENABLED,
+    )
     max_jobs_to_send = 5
 
     gemini_api_key = os.getenv("GEMINI_API_KEY", "")
@@ -289,16 +315,19 @@ def main() -> None:
         primary=actor_primary,
         fallback=RuleBasedActorAgent(),
     )
-    process_batch = ProcessACBatchUseCase(
-        user_repo=user_repo,
-        job_repo=job_repo,
-        pending_repo=pending_repo,
-        actor=actor,
-        notify_queue=notify_queue,
-        feedback_repo=feedback_repo,
-        rerank_threshold=rerank_threshold,
-        max_jobs_to_send=max_jobs_to_send,
-    )
+    process_batch_kwargs = {
+        "user_repo": user_repo,
+        "job_repo": job_repo,
+        "pending_repo": pending_repo,
+        "actor": actor,
+        "notify_queue": notify_queue,
+        "feedback_repo": feedback_repo,
+        "rerank_threshold": rerank_threshold,
+        "max_jobs_to_send": max_jobs_to_send,
+    }
+    if _supports_constructor_kwarg(ProcessACBatchUseCase, "rerank_fallback_enabled"):
+        process_batch_kwargs["rerank_fallback_enabled"] = rerank_fallback_enabled
+    process_batch = ProcessACBatchUseCase(**process_batch_kwargs)
     _mark_ready(ready_file)
 
     consumer_stopped = threading.Event()

@@ -450,3 +450,69 @@ def test_main_retries_reclaim_error(monkeypatch, tmp_path: Path) -> None:
     module.main()
 
     assert queue_obj.reclaim_calls == 2
+
+
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [
+        (None, True),
+        ("0", False),
+    ],
+)
+def test_main_passes_rerank_fallback_flag_into_process_ac_batch_use_case(
+    monkeypatch,
+    tmp_path: Path,
+    env_value: str | None,
+    expected: bool,
+) -> None:
+    module = _load_ac_consumer_main_module()
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv("LLM_PROVIDER", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-gemini-key")
+    monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
+    monkeypatch.setenv("AC_BATCH_INTERVAL_SEC", "3600")
+    if env_value is None:
+        monkeypatch.delenv("RERANK_FALLBACK_ENABLED", raising=False)
+    else:
+        monkeypatch.setenv("RERANK_FALLBACK_ENABLED", env_value)
+
+    monkeypatch.setattr(module, "start_metrics_server_from_env", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(module, "PostgresUserRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresJobRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresPendingJobsRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "PostgresFeedbackRepository", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RedisMatchNotifyQueue", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "GeminiActorAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "RuleBasedActorAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "FallbackActorAgent", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "_schedule_pending_batches", lambda **_kwargs: 0)
+    monkeypatch.setattr(module.signal, "signal", lambda *_args, **_kwargs: None)
+
+    class StopAfterOnePopQueue:
+        def reclaim_stuck(self) -> None:
+            return None
+
+        def pop_blocking(self, timeout_sec: int = 1):
+            _ = timeout_sec
+            raise SystemExit
+
+        def nack_all_inflight(self) -> int:
+            return 0
+
+    monkeypatch.setattr(module, "RedisACBatchQueueConsumer", lambda *_args, **_kwargs: StopAfterOnePopQueue())
+
+    process_batch_kwargs: list[dict] = []
+
+    def fake_process_batch_use_case(*_args, **kwargs):
+        process_batch_kwargs.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(module, "ProcessACBatchUseCase", fake_process_batch_use_case)
+
+    with pytest.raises(SystemExit):
+        module.main()
+
+    assert len(process_batch_kwargs) == 1
+    assert process_batch_kwargs[0]["rerank_fallback_enabled"] is expected

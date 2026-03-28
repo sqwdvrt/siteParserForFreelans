@@ -13,6 +13,7 @@ from ai_service.domain.job import Job
 from ai_service.domain.ranked_job import RankedJob
 from ai_service.domain.user import User
 from ai_service.port.pending_jobs_repository import PendingJobsRepository
+from ai_service.usecase.rerank_policy import apply_rerank_policy
 from ai_service.util.trace_context import get_trace_id
 
 logger = logging.getLogger(__name__)
@@ -60,6 +61,7 @@ class ProcessACBatchUseCase:
         *,
         feedback_repo: object | None = None,
         rerank_threshold: float = 0.55,
+        rerank_fallback_enabled: bool = True,
         max_jobs_to_send: int = 5,
     ) -> None:
         self._user_repo = user_repo
@@ -69,6 +71,7 @@ class ProcessACBatchUseCase:
         self._notify_queue = notify_queue
         self._feedback_repo = feedback_repo
         self._rerank_threshold = rerank_threshold
+        self._rerank_fallback_enabled = rerank_fallback_enabled
         self._max_jobs_to_send = max_jobs_to_send
 
     def execute(self, batch: ACBatch) -> None:
@@ -112,10 +115,21 @@ class ProcessACBatchUseCase:
     ) -> list[RankedJob]:
         feedback_cache: dict[tuple[str, ...], float] = {}
         eligible: list[Job] = []
+        decision = apply_rerank_policy(
+            [job for job, _ in jobs_with_scores],
+            score_getter=lambda job: float(job.rerank_score or 0.0),
+            threshold=self._rerank_threshold,
+            top_k=len(jobs_with_scores),
+            fallback_enabled=self._rerank_fallback_enabled,
+            pipeline="ac_batch",
+            entity_name="user",
+            entity_id=user.id,
+        )
+        allowed_job_ids = {job.id for job in decision.selected}
 
         for job, _embedding_similarity in jobs_with_scores:
             rerank_score = float(job.rerank_score or 0.0)
-            if rerank_score < self._rerank_threshold:
+            if job.id not in allowed_job_ids:
                 logger.info(
                     "drop job_id=%d user_id=%d rerank_score=%.3f below threshold=%.2f",
                     job.id,
@@ -124,6 +138,8 @@ class ProcessACBatchUseCase:
                     self._rerank_threshold,
                 )
                 continue
+            if decision.used_fallback and "rerank_all_filtered_fallback" not in (job.reason_codes or []):
+                job.reason_codes = list(job.reason_codes or []) + ["rerank_all_filtered_fallback"]
             feedback_signal = self._feedback_signal(user.id, job, feedback_cache)
             feedback_bonus = self._feedback_bonus(feedback_signal)
             preference_multiplier = self._preference_multiplier(user, job.source)
