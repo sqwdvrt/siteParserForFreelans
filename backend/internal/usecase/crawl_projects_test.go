@@ -390,7 +390,7 @@ func TestCrawlProjects_Execute_NewJob_ExpiresWhenDetailFetchGone(t *testing.T) {
 	}
 	repo := &mockRepo{
 		expiredIDsByURL: map[string][]int64{
-			url: []int64{410},
+			url: {410},
 		},
 	}
 	notifRepo := &mockCrawlNotifRepo{}
