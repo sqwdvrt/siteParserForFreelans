@@ -30,6 +30,7 @@ jobs:
       deploy_sha: ${{ steps.meta.outputs.deploy_sha }}
       deploy_ref: ${{ steps.meta.outputs.deploy_ref }}
       target_environment: ${{ steps.meta.outputs.target_environment }}
+      staging_configured: ${{ steps.meta.outputs.staging_configured }}
       run_staging: ${{ steps.meta.outputs.run_staging }}
       run_production: ${{ steps.meta.outputs.run_production }}
     steps:
@@ -46,6 +47,11 @@ jobs:
           INPUT_TARGET: ${{ github.event.inputs.target_environment }}
           INPUT_REF: ${{ github.event.inputs.ref }}
           PUSH_REF_NAME: ${{ github.ref_name }}
+          STAGING_SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+          STAGING_SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          STAGING_SSH_PRIVATE_KEY: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
+          STAGING_DEPLOY_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
+          STAGING_HEALTHCHECK_URL: ${{ secrets.STAGING_HEALTHCHECK_URL }}
         run: |
           set -euo pipefail
 
@@ -58,16 +64,37 @@ jobs:
             deploy_ref="${PUSH_REF_NAME}"
           fi
 
+          staging_configured="true"
+          for staging_var in \
+            STAGING_SSH_HOST \
+            STAGING_SSH_USER \
+            STAGING_SSH_PRIVATE_KEY \
+            STAGING_DEPLOY_PATH \
+            STAGING_HEALTHCHECK_URL
+          do
+            if [ -z "${!staging_var}" ]; then
+              staging_configured="false"
+              break
+            fi
+          done
+
           run_staging="true"
           run_production="false"
           if [ "${target_environment}" = "production" ]; then
+            run_staging="false"
             run_production="true"
+          fi
+
+          if [ "${run_staging}" = "true" ] && [ "${staging_configured}" != "true" ]; then
+            echo "::warning::Skipping staging deployment because required staging secrets are missing"
+            run_staging="false"
           fi
 
           {
             echo "deploy_sha=${deploy_sha}"
             echo "deploy_ref=${deploy_ref}"
             echo "target_environment=${target_environment}"
+            echo "staging_configured=${staging_configured}"
             echo "run_staging=${run_staging}"
             echo "run_production=${run_production}"
           } >> "${GITHUB_OUTPUT}"
@@ -433,7 +460,18 @@ jobs:
       - resolve-target
       - deploy-staging
       - staging-smoke-e2e-gate
-    if: ${{ needs.resolve-target.outputs.run_production == 'true' }}
+    if: >-
+      ${{
+        always() &&
+        needs.resolve-target.outputs.run_production == 'true' &&
+        (
+          needs.resolve-target.outputs.run_staging != 'true' ||
+          (
+            needs.deploy-staging.result == 'success' &&
+            needs.staging-smoke-e2e-gate.result == 'success'
+          )
+        )
+      }}
     environment: production
     steps:
       - name: Await production approval
@@ -447,7 +485,20 @@ jobs:
       - staging-smoke-e2e-gate
       - production-approval
       - publish-runtime-images
-    if: ${{ needs.resolve-target.outputs.run_production == 'true' }}
+    if: >-
+      ${{
+        always() &&
+        needs.resolve-target.outputs.run_production == 'true' &&
+        needs.publish-runtime-images.result == 'success' &&
+        needs.production-approval.result == 'success' &&
+        (
+          needs.resolve-target.outputs.run_staging != 'true' ||
+          (
+            needs.deploy-staging.result == 'success' &&
+            needs.staging-smoke-e2e-gate.result == 'success'
+          )
+        )
+      }}
     environment: production
     concurrency:
       group: deploy-production
