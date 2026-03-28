@@ -9,12 +9,12 @@ from ai_service.port.classifier import ClassificationResult
 from ai_service.port.embedding import EmbeddingService
 from ai_service.port.match_repository import MatchRepository
 from ai_service.port.repository import JobRepository
+from ai_service.usecase.rerank_policy import apply_rerank_policy
 from ai_service.util.feedback_adjuster import adjust_candidates
 from ai_service.util.preference_filter import (
     PREFERENCE_FILTER_REASON_BUDGET,
     evaluate_preference_filter,
 )
-from ai_service.usecase.rerank_policy import apply_rerank_policy
 from ai_service.util.profile_structurer import build_structured_profile_text
 from ai_service.util.text_cleaner import clean_text
 from ai_service.util.trace_context import get_trace_id
@@ -335,7 +335,9 @@ class ProcessJobUseCase:
         best_score = decision.best_score_before_filter
         if trace_id:
             logger.info(
-                "job_id=%s trace_id=%s: reranked %d/%d candidates model=%s threshold=%.2f top_k=%d best_before_filter=%.3f fallback=%s",
+                "job_id=%s trace_id=%s: reranked %d/%d candidates "
+                "model=%s threshold=%.2f top_k=%d best_before_filter=%.3f "
+                "fallback=%s",
                 getattr(job, "id", 0),
                 trace_id,
                 len(filtered),
@@ -348,7 +350,8 @@ class ProcessJobUseCase:
             )
         else:
             logger.info(
-                "job_id=%s: reranked %d/%d candidates model=%s threshold=%.2f top_k=%d best_before_filter=%.3f fallback=%s",
+                "job_id=%s: reranked %d/%d candidates model=%s "
+                "threshold=%.2f top_k=%d best_before_filter=%.3f fallback=%s",
                 getattr(job, "id", 0),
                 len(filtered),
                 len(candidates),
