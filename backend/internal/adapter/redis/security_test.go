@@ -121,8 +121,8 @@ func TestRedisLock_ReleaseRejectsMismatchedToken(t *testing.T) {
 		t.Fatal("acquire must succeed")
 	}
 
-	if err := client.Set(ctx, "test:lock:token", "other-token", 0).Err(); err != nil {
-		t.Fatalf("overwrite lock token: %v", err)
+	if setErr := client.Set(ctx, "test:lock:token", "other-token", 0).Err(); setErr != nil {
+		t.Fatalf("overwrite lock token: %v", setErr)
 	}
 
 	released, err := lease.Release(ctx)

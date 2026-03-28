@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import threading
 
 
 class FakeRedis:
@@ -124,5 +123,14 @@ def test_process_one_webhook_inbox_update_marks_done(bot, monkeypatch):
 
     monkeypatch.setattr(bot, "_handle_update", _handle)
 
-    assert bot._process_one_webhook_inbox_update("bot-token", "https://api.example.com", "tok", "h" * 32, timeout_sec=0) is True
+    assert (
+        bot._process_one_webhook_inbox_update(
+            "bot-token",
+            "https://api.example.com",
+            "tok",
+            "h" * 32,
+            timeout_sec=0,
+        )
+        is True
+    )
     assert processed[0]["update_id"] == 101

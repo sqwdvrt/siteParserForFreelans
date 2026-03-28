@@ -141,7 +141,7 @@ func ValidateRedisTLSForProduction(urlName, rawURL string, passwordMinLen int) e
 	if host == "" {
 		return fmt.Errorf("%s must include host in production", urlName)
 	}
-	if scheme != "rediss" && !(scheme == "redis" && isInternalRedisHost(host)) {
+	if !(scheme == "rediss" || (scheme == "redis" && isInternalRedisHost(host))) {
 		return fmt.Errorf("%s must use rediss:// in production", urlName)
 	}
 	if u.User == nil {

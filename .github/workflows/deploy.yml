@@ -247,15 +247,15 @@ jobs:
 
       - name: Resolve image repositories
         id: image-repos
-        env:
-          OWNER: ${{ github.repository_owner }}
         run: |
           set -euo pipefail
-          owner="$(printf '%s' "${OWNER}" | tr '[:upper:]' '[:lower:]')"
-          echo "backend_repo=ghcr.io/${owner}/siteparserforfreelans-backend" >> "${GITHUB_OUTPUT}"
-          echo "browser_service_repo=ghcr.io/${owner}/siteparserforfreelans-browser-service" >> "${GITHUB_OUTPUT}"
-          echo "telegram_bot_repo=ghcr.io/${owner}/siteparserforfreelans-telegram-bot" >> "${GITHUB_OUTPUT}"
-          echo "ai_repo=ghcr.io/${owner}/siteparserforfreelans-ai-runtime" >> "${GITHUB_OUTPUT}"
+          owner="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          {
+            echo "backend_repo=ghcr.io/${owner}/siteparserforfreelans-backend"
+            echo "browser_service_repo=ghcr.io/${owner}/siteparserforfreelans-browser-service"
+            echo "telegram_bot_repo=ghcr.io/${owner}/siteparserforfreelans-telegram-bot"
+            echo "ai_repo=ghcr.io/${owner}/siteparserforfreelans-ai-runtime"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Build and push backend image
         id: build-backend
@@ -303,10 +303,12 @@ jobs:
         id: image-refs
         run: |
           set -euo pipefail
-          echo "backend_image=${{ steps.image-repos.outputs.backend_repo }}@${{ steps.build-backend.outputs.digest }}" >> "${GITHUB_OUTPUT}"
-          echo "browser_service_image=${{ steps.image-repos.outputs.browser_service_repo }}@${{ steps.build-browser-service.outputs.digest }}" >> "${GITHUB_OUTPUT}"
-          echo "telegram_bot_image=${{ steps.image-repos.outputs.telegram_bot_repo }}@${{ steps.build-telegram-bot.outputs.digest }}" >> "${GITHUB_OUTPUT}"
-          echo "ai_image=${{ steps.image-repos.outputs.ai_repo }}@${{ steps.build-ai.outputs.digest }}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "backend_image=${{ steps.image-repos.outputs.backend_repo }}@${{ steps.build-backend.outputs.digest }}"
+            echo "browser_service_image=${{ steps.image-repos.outputs.browser_service_repo }}@${{ steps.build-browser-service.outputs.digest }}"
+            echo "telegram_bot_image=${{ steps.image-repos.outputs.telegram_bot_repo }}@${{ steps.build-telegram-bot.outputs.digest }}"
+            echo "ai_image=${{ steps.image-repos.outputs.ai_repo }}@${{ steps.build-ai.outputs.digest }}"
+          } >> "${GITHUB_OUTPUT}"
 
   deploy-staging:
     runs-on: ubuntu-latest

@@ -74,7 +74,10 @@ def test_redis_queue_nack_moves_to_dlq(redis_url: str, redis_client: redis.Redis
 
     dlq_raw = redis_client.lpop(f"{queue_name}:dlq")
     assert dlq_raw is not None
-    assert json.loads(dlq_raw) == {"job_id": 42, "_retry_count": 6}
+    dlq_payload = json.loads(dlq_raw)
+    assert dlq_payload["job_id"] == 42
+    assert dlq_payload["_retry_count"] == 6
+    assert isinstance(dlq_payload["_claimed_at"], (int, float))
     assert redis_client.llen(f"{queue_name}:processing") == 0
 
 

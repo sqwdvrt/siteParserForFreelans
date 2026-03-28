@@ -4,8 +4,8 @@
 from __future__ import annotations
 
 import hashlib
-import html
 import hmac
+import html
 import json
 import logging
 import math
@@ -539,8 +539,16 @@ class _RedisStateStore:
                 result="missing_payload",
             )
             return None
-        self._client.set(self._key("processed-update", update_id), _UPDATE_PROCESSING, ex=self._processed_update_ttl_sec)
-        _METRICS.inc("telegram_bot_state_store_operations_total", operation="claim_next_webhook_update", result="claimed")
+        self._client.set(
+            self._key("processed-update", update_id),
+            _UPDATE_PROCESSING,
+            ex=self._processed_update_ttl_sec,
+        )
+        _METRICS.inc(
+            "telegram_bot_state_store_operations_total",
+            operation="claim_next_webhook_update",
+            result="claimed",
+        )
         return update_id, str(payload)
 
     def ack_webhook_update(self, update_id: int) -> None:
@@ -572,7 +580,11 @@ class _RedisStateStore:
                 continue
             self._client.lrem(processing_key, 0, raw_update_id)
             self._client.lpush(pending_key, raw_update_id)
-            self._client.set(self._key("processed-update", update_id), _UPDATE_QUEUED, ex=self._processed_update_ttl_sec)
+            self._client.set(
+                self._key("processed-update", update_id),
+                _UPDATE_QUEUED,
+                ex=self._processed_update_ttl_sec,
+            )
             recovered += 1
         _METRICS.inc(
             "telegram_bot_state_store_operations_total",
@@ -1275,7 +1287,11 @@ def _claim_update_id(update_id: int, *, now_monotonic: float | None = None) -> s
         if cached is not None:
             state, expires_at = cached
             if now < expires_at:
-                _METRICS.inc("telegram_bot_cache_operations_total", cache="processed_update", result=f"duplicate_{state}")
+                _METRICS.inc(
+                    "telegram_bot_cache_operations_total",
+                    cache="processed_update",
+                    result=f"duplicate_{state}",
+                )
                 return state
     _set_processed_update_state(update_id, _UPDATE_INFLIGHT, now_monotonic=now)
     _METRICS.inc("telegram_bot_cache_operations_total", cache="processed_update", result="claim")
