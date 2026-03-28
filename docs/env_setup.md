@@ -59,8 +59,11 @@
 cp .env.production.example .env.production
 # заполнить secure значения в .env.production
 
-docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+docker compose --env-file .env.production -f docker-compose.prod.yml pull
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d --no-build
 ```
+
+Production `.env.production` должен содержать digest-pinned `BACKEND_IMAGE`, `BROWSER_SERVICE_IMAGE`, `TELEGRAM_BOT_IMAGE` и `AI_IMAGE`.
 
 Production compose не поднимает локальные PostgreSQL/Redis контейнеры — используй внешние TLS endpoints.
 

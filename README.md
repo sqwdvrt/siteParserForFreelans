@@ -214,13 +214,19 @@ cp .env.production.example .env.production
 docker compose --env-file .env.production \
   -f docker-compose.prod.yml \
   -f docker-compose.ssl.yml \
-  up -d --build
+  pull
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml \
+  -f docker-compose.ssl.yml \
+  up -d --no-build
 
 # 2b. Альтернатива без overlay: managed Postgres/Redis доступны напрямую по TLS
-docker compose --env-file .env.production -f docker-compose.prod.yml up -d --build
+docker compose --env-file .env.production -f docker-compose.prod.yml pull
+docker compose --env-file .env.production -f docker-compose.prod.yml up -d --no-build
 ```
 
 Для VPS-схемы из `docs/vps_deploy.md` используйте вариант `2a` с `docker-compose.ssl.yml`.
+Production `.env.production` должен содержать digest-pinned `BACKEND_IMAGE`, `BROWSER_SERVICE_IMAGE`, `TELEGRAM_BOT_IMAGE` и `AI_IMAGE`.
 
 `ai-user-embed`, `ai-user-rematch` и `ai-ac-consumer` входят в production compose по умолчанию (без отдельного profile).
 

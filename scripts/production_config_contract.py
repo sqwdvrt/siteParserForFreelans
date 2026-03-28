@@ -122,6 +122,13 @@ def validate_value(name: str, value: str, spec: dict, errors: list[str]) -> None
         allowed = tuple(spec["allowed"])
         if value not in allowed:
             errors.append(f"{name}: must be one of {', '.join(repr(v) for v in allowed)} (got: {value})")
+    elif kind == "oci_image_digest":
+        if "@sha256:" not in value:
+            errors.append(f"{name}: must be a digest-pinned OCI image ref (expected ...@sha256:<64 hex>)")
+            return
+        image_name, digest = value.rsplit("@sha256:", 1)
+        if not image_name or len(digest) != 64 or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            errors.append(f"{name}: must be a digest-pinned OCI image ref (expected ...@sha256:<64 hex>)")
     elif kind == "nonempty":
         return
     else:

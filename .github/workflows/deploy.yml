@@ -213,12 +213,108 @@ jobs:
       - name: Run release preflight contract/smoke checks
         run: ./scripts/release_preflight_gate.sh
 
+  publish-runtime-images:
+    runs-on: ubuntu-latest
+    needs:
+      - resolve-target
+      - verify-gates
+      - release-preflight-gate
+    if: ${{ needs.resolve-target.outputs.run_staging == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      backend_image: ${{ steps.image-refs.outputs.backend_image }}
+      browser_service_image: ${{ steps.image-refs.outputs.browser_service_image }}
+      telegram_bot_image: ${{ steps.image-refs.outputs.telegram_bot_image }}
+      ai_image: ${{ steps.image-refs.outputs.ai_image }}
+    steps:
+      - name: Checkout target SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-target.outputs.deploy_sha }}
+          fetch-depth: 1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve image repositories
+        id: image-repos
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          owner="$(printf '%s' "${OWNER}" | tr '[:upper:]' '[:lower:]')"
+          echo "backend_repo=ghcr.io/${owner}/siteparserforfreelans-backend" >> "${GITHUB_OUTPUT}"
+          echo "browser_service_repo=ghcr.io/${owner}/siteparserforfreelans-browser-service" >> "${GITHUB_OUTPUT}"
+          echo "telegram_bot_repo=ghcr.io/${owner}/siteparserforfreelans-telegram-bot" >> "${GITHUB_OUTPUT}"
+          echo "ai_repo=ghcr.io/${owner}/siteparserforfreelans-ai-runtime" >> "${GITHUB_OUTPUT}"
+
+      - name: Build and push backend image
+        id: build-backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image-repos.outputs.backend_repo }}:${{ needs.resolve-target.outputs.deploy_sha }}
+
+      - name: Build and push browser-service image
+        id: build-browser-service
+        uses: docker/build-push-action@v6
+        with:
+          context: ./browser-service
+          file: ./browser-service/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image-repos.outputs.browser_service_repo }}:${{ needs.resolve-target.outputs.deploy_sha }}
+
+      - name: Build and push telegram-bot image
+        id: build-telegram-bot
+        uses: docker/build-push-action@v6
+        with:
+          context: ./telegram-bot
+          file: ./telegram-bot/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image-repos.outputs.telegram_bot_repo }}:${{ needs.resolve-target.outputs.deploy_sha }}
+
+      - name: Build and push AI runtime image
+        id: build-ai
+        uses: docker/build-push-action@v6
+        with:
+          context: ./ai-service
+          file: ./ai-service/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image-repos.outputs.ai_repo }}:${{ needs.resolve-target.outputs.deploy_sha }}
+          build-args: |
+            EMBEDDING_MODEL=all-MiniLM-L6-v2
+
+      - name: Export published image refs
+        id: image-refs
+        run: |
+          set -euo pipefail
+          echo "backend_image=${{ steps.image-repos.outputs.backend_repo }}@${{ steps.build-backend.outputs.digest }}" >> "${GITHUB_OUTPUT}"
+          echo "browser_service_image=${{ steps.image-repos.outputs.browser_service_repo }}@${{ steps.build-browser-service.outputs.digest }}" >> "${GITHUB_OUTPUT}"
+          echo "telegram_bot_image=${{ steps.image-repos.outputs.telegram_bot_repo }}@${{ steps.build-telegram-bot.outputs.digest }}" >> "${GITHUB_OUTPUT}"
+          echo "ai_image=${{ steps.image-repos.outputs.ai_repo }}@${{ steps.build-ai.outputs.digest }}" >> "${GITHUB_OUTPUT}"
+
   deploy-staging:
     runs-on: ubuntu-latest
     needs:
       - resolve-target
       - verify-gates
       - release-preflight-gate
+      - publish-runtime-images
     if: ${{ needs.resolve-target.outputs.run_staging == 'true' }}
     concurrency:
       group: deploy-staging
@@ -230,19 +326,33 @@ jobs:
         env:
           DEPLOY_SHA: ${{ needs.resolve-target.outputs.deploy_sha }}
           ORIGIN_URL: ${{ github.server_url }}/${{ github.repository }}.git
+          BACKEND_IMAGE: ${{ needs.publish-runtime-images.outputs.backend_image }}
+          BROWSER_SERVICE_IMAGE: ${{ needs.publish-runtime-images.outputs.browser_service_image }}
+          TELEGRAM_BOT_IMAGE: ${{ needs.publish-runtime-images.outputs.telegram_bot_image }}
+          AI_IMAGE: ${{ needs.publish-runtime-images.outputs.ai_image }}
+          IMAGE_REGISTRY: ghcr.io
+          IMAGE_REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          IMAGE_REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
         with:
           host: ${{ secrets.STAGING_SSH_HOST }}
           username: ${{ secrets.STAGING_SSH_USER }}
           key: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
           script_stop: true
           command_timeout: 30m
-          envs: DEPLOY_SHA,ORIGIN_URL
+          envs: DEPLOY_SHA,ORIGIN_URL,BACKEND_IMAGE,BROWSER_SERVICE_IMAGE,TELEGRAM_BOT_IMAGE,AI_IMAGE,IMAGE_REGISTRY,IMAGE_REGISTRY_USERNAME,IMAGE_REGISTRY_PASSWORD
           script: |
             set -euo pipefail
             BASE_PATH="${{ secrets.STAGING_DEPLOY_PATH }}"
             STATE_DIR="$(dirname "${BASE_PATH}")/.$(basename "${BASE_PATH}")-deploy"
             REPO_DIR="${STATE_DIR}/repo"
             RUN_ROOT=""
+
+            if [ -n "${IMAGE_REGISTRY_USERNAME:-}" ] || [ -n "${IMAGE_REGISTRY_PASSWORD:-}" ]; then
+              : "${IMAGE_REGISTRY:?IMAGE_REGISTRY is required when registry credentials are configured}"
+              : "${IMAGE_REGISTRY_USERNAME:?IMAGE_REGISTRY_USERNAME is required when registry credentials are configured}"
+              : "${IMAGE_REGISTRY_PASSWORD:?IMAGE_REGISTRY_PASSWORD is required when registry credentials are configured}"
+              printf '%s' "${IMAGE_REGISTRY_PASSWORD}" | docker login "${IMAGE_REGISTRY}" -u "${IMAGE_REGISTRY_USERNAME}" --password-stdin
+            fi
 
             if [ -d "${REPO_DIR}/.git" ]; then
               git -C "${REPO_DIR}" fetch --all --prune --tags
@@ -334,6 +444,7 @@ jobs:
       - deploy-staging
       - staging-smoke-e2e-gate
       - production-approval
+      - publish-runtime-images
     if: ${{ needs.resolve-target.outputs.run_production == 'true' }}
     environment: production
     concurrency:
@@ -345,19 +456,33 @@ jobs:
         env:
           DEPLOY_SHA: ${{ needs.resolve-target.outputs.deploy_sha }}
           ORIGIN_URL: ${{ github.server_url }}/${{ github.repository }}.git
+          BACKEND_IMAGE: ${{ needs.publish-runtime-images.outputs.backend_image }}
+          BROWSER_SERVICE_IMAGE: ${{ needs.publish-runtime-images.outputs.browser_service_image }}
+          TELEGRAM_BOT_IMAGE: ${{ needs.publish-runtime-images.outputs.telegram_bot_image }}
+          AI_IMAGE: ${{ needs.publish-runtime-images.outputs.ai_image }}
+          IMAGE_REGISTRY: ghcr.io
+          IMAGE_REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          IMAGE_REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
         with:
           host: ${{ secrets.PROD_SSH_HOST }}
           username: ${{ secrets.PROD_SSH_USER }}
           key: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
           script_stop: true
           command_timeout: 30m
-          envs: DEPLOY_SHA,ORIGIN_URL
+          envs: DEPLOY_SHA,ORIGIN_URL,BACKEND_IMAGE,BROWSER_SERVICE_IMAGE,TELEGRAM_BOT_IMAGE,AI_IMAGE,IMAGE_REGISTRY,IMAGE_REGISTRY_USERNAME,IMAGE_REGISTRY_PASSWORD
           script: |
             set -euo pipefail
             BASE_PATH="${{ secrets.PROD_DEPLOY_PATH }}"
             STATE_DIR="$(dirname "${BASE_PATH}")/.$(basename "${BASE_PATH}")-deploy"
             REPO_DIR="${STATE_DIR}/repo"
             RUN_ROOT=""
+
+            if [ -n "${IMAGE_REGISTRY_USERNAME:-}" ] || [ -n "${IMAGE_REGISTRY_PASSWORD:-}" ]; then
+              : "${IMAGE_REGISTRY:?IMAGE_REGISTRY is required when registry credentials are configured}"
+              : "${IMAGE_REGISTRY_USERNAME:?IMAGE_REGISTRY_USERNAME is required when registry credentials are configured}"
+              : "${IMAGE_REGISTRY_PASSWORD:?IMAGE_REGISTRY_PASSWORD is required when registry credentials are configured}"
+              printf '%s' "${IMAGE_REGISTRY_PASSWORD}" | docker login "${IMAGE_REGISTRY}" -u "${IMAGE_REGISTRY_USERNAME}" --password-stdin
+            fi
 
             if [ -d "${REPO_DIR}/.git" ]; then
               git -C "${REPO_DIR}" fetch --all --prune --tags

@@ -15,6 +15,22 @@
       "type": "redis_url",
       "documentation": "active"
     },
+    "BACKEND_IMAGE": {
+      "type": "oci_image_digest",
+      "documentation": "active"
+    },
+    "BROWSER_SERVICE_IMAGE": {
+      "type": "oci_image_digest",
+      "documentation": "active"
+    },
+    "TELEGRAM_BOT_IMAGE": {
+      "type": "oci_image_digest",
+      "documentation": "active"
+    },
+    "AI_IMAGE": {
+      "type": "oci_image_digest",
+      "documentation": "active"
+    },
     "API_AUTH_TOKEN": {
       "type": "secret",
       "min_length": 32,
@@ -89,12 +105,14 @@
     "backend-migrate": {
       "must_have_env_file": true,
       "must_reference": [
-        "DATABASE_URL"
+        "DATABASE_URL",
+        "BACKEND_IMAGE"
       ]
     },
     "backend-api": {
       "must_have_env_file": true,
       "must_reference": [
+        "BACKEND_IMAGE",
         "DATABASE_URL",
         "REDIS_URL",
         "API_ADDR",
@@ -109,13 +127,21 @@
     "backend-crawler": {
       "must_have_env_file": true,
       "must_reference": [
+        "BACKEND_IMAGE",
         "DATABASE_URL",
         "REDIS_URL"
+      ]
+    },
+    "browser-service": {
+      "must_have_env_file": false,
+      "must_reference": [
+        "BROWSER_SERVICE_IMAGE"
       ]
     },
     "backend-notifier": {
       "must_have_env_file": true,
       "must_reference": [
+        "BACKEND_IMAGE",
         "DATABASE_URL",
         "REDIS_URL"
       ]
@@ -123,6 +149,7 @@
     "ai-service": {
       "must_have_env_file": true,
       "must_reference": [
+        "AI_IMAGE",
         "DATABASE_URL",
         "REDIS_URL"
       ]
@@ -130,6 +157,7 @@
     "ai-user-embed": {
       "must_have_env_file": true,
       "must_reference": [
+        "AI_IMAGE",
         "DATABASE_URL",
         "REDIS_URL"
       ]
@@ -137,6 +165,7 @@
     "ai-user-rematch": {
       "must_have_env_file": true,
       "must_reference": [
+        "AI_IMAGE",
         "DATABASE_URL",
         "REDIS_URL"
       ]
@@ -144,6 +173,7 @@
     "ai-ac-consumer": {
       "must_have_env_file": true,
       "must_reference": [
+        "AI_IMAGE",
         "DATABASE_URL",
         "REDIS_URL"
       ]
@@ -151,6 +181,7 @@
     "telegram-bot": {
       "must_have_env_file": true,
       "must_reference": [
+        "TELEGRAM_BOT_IMAGE",
         "API_URL",
         "BOT_MODE",
         "WEBHOOK_URL",

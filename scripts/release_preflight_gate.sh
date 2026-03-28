@@ -71,6 +71,9 @@ run_step "Production docker compose validation" \
 run_step "Production config contract consistency" \
   "${PY_BIN}" ./scripts/production_config_contract.py check-consistency
 
+run_step "Production deploy immutability contract" \
+  "${PY_BIN}" ./scripts/check_production_immutability.py
+
 run_step "Backend release smoke contract tests" \
   bash -lc "GO_TOOLCHAIN='${GO_TOOLCHAIN}' GO_GOMODCACHE='${GO_GOMODCACHE}' GO_GOCACHE='${GO_GOCACHE}' ./scripts/go_test_backend.sh ./internal/api -run '^TestReleaseSmoke' -count=1"
 

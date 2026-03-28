@@ -173,7 +173,7 @@ services:
     restart: unless-stopped
 
   ai-service:
-    image: ${AI_IMAGE:-siteparserforfreelans-ai-runtime:prod}
+    image: ${AI_IMAGE:?set_AI_IMAGE_in_.env.production}
     command: ["python", "cmd/consumer/main.py"]
     env_file:
       - .env.production
@@ -208,7 +208,7 @@ services:
     restart: unless-stopped
 
   ai-user-embed:
-    image: ${AI_IMAGE:-siteparserforfreelans-ai-runtime:prod}
+    image: ${AI_IMAGE:?set_AI_IMAGE_in_.env.production}
     command: ["python", "cmd/user_embed_consumer/main.py"]
     env_file:
       - .env.production
@@ -243,7 +243,7 @@ services:
     restart: unless-stopped
 
   ai-user-rematch:
-    image: ${AI_IMAGE:-siteparserforfreelans-ai-runtime:prod}
+    image: ${AI_IMAGE:?set_AI_IMAGE_in_.env.production}
     command: ["python", "cmd/user_rematch_consumer/main.py"]
     env_file:
       - .env.production
@@ -276,7 +276,7 @@ services:
     restart: unless-stopped
 
   ai-ac-consumer:
-    image: ${AI_IMAGE:-siteparserforfreelans-ai-runtime:prod}
+    image: ${AI_IMAGE:?set_AI_IMAGE_in_.env.production}
     command: ["python", "cmd/ac_consumer/main.py"]
     env_file:
       - .env.production

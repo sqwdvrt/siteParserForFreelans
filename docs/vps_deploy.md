@@ -253,7 +253,7 @@ git clone <repo-url> repo
 mkdir -p releases shared/backups
 ```
 
-`shared/.env.production` хранит mutable production env (заполнить по образцу `.env.production.example`):
+`shared/.env.production` хранит base production env (секреты и host-specific значения, без release-specific image digests):
 
 ```bash
 # Ключевые значения для VPS:
@@ -267,8 +267,25 @@ API_PORT=8443
 API_URL=https://api.freematch.ru
 ```
 
+Первый immutable bootstrap release нужно делать через deploy pipeline или через `scripts/deploy_release.sh`, передав digest-pinned image refs:
+
 ```bash
-docker compose -f docker-compose.prod.yml -f docker-compose.ssl.yml --env-file .env.production up -d --build
+BACKEND_IMAGE=ghcr.io/<owner>/siteparserforfreelans-backend@sha256:<digest> \
+BROWSER_SERVICE_IMAGE=ghcr.io/<owner>/siteparserforfreelans-browser-service@sha256:<digest> \
+TELEGRAM_BOT_IMAGE=ghcr.io/<owner>/siteparserforfreelans-telegram-bot@sha256:<digest> \
+AI_IMAGE=ghcr.io/<owner>/siteparserforfreelans-ai-runtime@sha256:<digest> \
+bash ./scripts/deploy_release.sh \
+  --base-path "$PROD_DEPLOY_PATH" \
+  --sha <commit-sha> \
+  --origin-url <repo-url>
+```
+
+Во время release deploy pipeline эти digest-pinned `BACKEND_IMAGE`, `BROWSER_SERVICE_IMAGE`, `TELEGRAM_BOT_IMAGE` и `AI_IMAGE` записываются в release-local `.env.production` активного релиза. После того как live symlink уже указывает на release, операторские команды из live path используют этот resolved env:
+
+```bash
+cd "$PROD_DEPLOY_PATH"
+docker compose -f docker-compose.prod.yml -f docker-compose.ssl.yml --env-file .env.production pull
+docker compose -f docker-compose.prod.yml -f docker-compose.ssl.yml --env-file .env.production up -d --no-build
 ```
 
 ### 4.1 pgAdmin (optional, localhost-only)

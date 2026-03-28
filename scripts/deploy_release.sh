@@ -7,6 +7,7 @@ ENV_FILE=".env.production"
 ORIGIN_URL=""
 POST_DEPLOY_GATE=""
 COMPOSE_FILES=("docker-compose.prod.yml" "docker-compose.ssl.yml")
+RUNTIME_IMAGE_VARS=("BACKEND_IMAGE" "BROWSER_SERVICE_IMAGE" "TELEGRAM_BOT_IMAGE" "AI_IMAGE")
 
 usage() {
   cat <<'EOF'
@@ -192,6 +193,28 @@ ensure_shared_state() {
   [[ -f "$SHARED_ENV_FILE" ]] || die "shared env file is missing: ${SHARED_ENV_FILE}"
 }
 
+require_runtime_image_env() {
+  local image_var
+  for image_var in "${RUNTIME_IMAGE_VARS[@]}"; do
+    [[ -n "${!image_var:-}" ]] || die "${image_var} must be set to a digest-pinned image ref"
+  done
+}
+
+write_release_env_file() {
+  local release_env_file="${RELEASE_DIR}/${ENV_FILE}"
+  local image_var
+  local image_value
+
+  rm -f "$release_env_file"
+  cp "$SHARED_ENV_FILE" "$release_env_file"
+  for image_var in "${RUNTIME_IMAGE_VARS[@]}"; do
+    image_value="${!image_var}"
+    awk -v key="${image_var}" 'index($0, key "=") != 1' "$release_env_file" > "${release_env_file}.filtered"
+    mv "${release_env_file}.filtered" "$release_env_file"
+    printf '%s=%s\n' "$image_var" "$image_value" >> "$release_env_file"
+  done
+}
+
 ensure_release_worktree() {
   if [[ -e "$RELEASE_DIR" ]]; then
     [[ -d "$RELEASE_DIR" ]] || die "release path exists and is not a directory: ${RELEASE_DIR}"
@@ -210,9 +233,6 @@ ensure_release_worktree() {
 }
 
 link_shared_state() {
-  rm -f "${RELEASE_DIR}/${ENV_FILE}"
-  ln -s "$SHARED_ENV_FILE" "${RELEASE_DIR}/${ENV_FILE}"
-
   rm -rf "${RELEASE_DIR}/backups"
   ln -s "$SHARED_BACKUPS_DIR" "${RELEASE_DIR}/backups"
 
@@ -233,7 +253,8 @@ compose_release() {
   (
     cd "$RELEASE_DIR"
     bash ./scripts/validate-env-production.sh "$ENV_FILE"
-    docker compose --env-file "$ENV_FILE" "${compose_args[@]}" up -d --build
+    docker compose --env-file "$ENV_FILE" "${compose_args[@]}" pull
+    docker compose --env-file "$ENV_FILE" "${compose_args[@]}" up -d --no-build
     docker compose --env-file "$ENV_FILE" "${compose_args[@]}" ps
   )
 }
@@ -269,7 +290,9 @@ main() {
   migrate_legacy_checkout_if_needed
   prepare_repo_cache
   ensure_shared_state
+  require_runtime_image_env
   ensure_release_worktree
+  write_release_env_file
   link_shared_state
   compose_release
   switch_live_release
