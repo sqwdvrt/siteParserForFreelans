@@ -1,10 +1,26 @@
 from __future__ import annotations
 
+import copy
 import urllib.error
 import urllib.parse
 import urllib.request
 
 import pytest
+
+
+class _FakeBatchStateStore:
+    def __init__(self, sessions: dict[str, dict] | None = None):
+        self.sessions = copy.deepcopy(sessions or {})
+
+    def get_batch_session(self, session_id: str):
+        session = self.sessions.get(session_id)
+        return copy.deepcopy(session) if session is not None else None
+
+    def set_batch_session(self, session_id: str, session: dict) -> None:
+        self.sessions[session_id] = copy.deepcopy(session)
+
+    def clear_batch_session(self, session_id: str) -> None:
+        self.sessions.pop(session_id, None)
 
 
 def test_sign_user_request_is_deterministic(bot):
@@ -292,6 +308,227 @@ def test_handle_callback_manual_onboarding_switches_to_edit_mode(bot, monkeypatc
     assert bot._parse_onboarding_state(bot._get_conversation_state(987654)) == {"step": "edit"}
     assert edits
     assert "Отправьте текст профиля" in edits[0][3]
+
+
+def test_batch_nav_callback_edits_message_in_place(bot, monkeypatch):
+    edits = []
+    monkeypatch.setattr(bot, "answer_callback_query", lambda *a, **kw: None)
+    monkeypatch.setattr(bot, "edit_message_text", lambda *a, **kw: edits.append(a))
+    monkeypatch.setattr(bot, "_STATE_STORE", _FakeBatchStateStore({
+        "session-1": {
+            "version": 1,
+            "telegram_id": 987654,
+            "current_index": 0,
+            "items": [
+                {
+                    "job_id": 11,
+                    "title": "Card one",
+                    "description": "First card",
+                    "budget": "1000 ₽",
+                    "url": "https://example.com/job/11",
+                    "why_it_fits": "Matches skills",
+                    "score_percent": 81,
+                    "posted_at_unix": 1700000000,
+                    "created_at_unix": 1700000100,
+                },
+                {
+                    "job_id": 12,
+                    "title": "Card two",
+                    "description": "Second card",
+                    "budget": "2000 ₽",
+                    "url": "https://example.com/job/12",
+                    "why_it_fits": "Better fit",
+                    "score_percent": 91,
+                    "posted_at_unix": 1700000200,
+                    "created_at_unix": 1700000300,
+                },
+            ],
+        }
+    }))
+
+    callback = {
+        "id": "cb-nav",
+        "data": "nav:n:session-1:1",
+        "from": {"id": 987654},
+        "message": {"chat": {"id": 123}, "message_id": 55},
+    }
+    bot.handle_callback(callback, "token", "https://api.example.com", "tok", "hmac")
+
+    assert len(edits) == 1
+    _token, chat_id, message_id, text, keyboard = edits[0]
+    assert chat_id == 123
+    assert message_id == 55
+    assert "Card two" in text
+    assert keyboard[0][0]["callback_data"] == "nav:p:session-1:0"
+    assert keyboard[0][1]["callback_data"] == "nav:i:session-1:1"
+    assert len(keyboard[0]) == 2
+    assert bot._STATE_STORE.sessions["session-1"]["current_index"] == 1
+
+
+def test_batch_feedback_auto_advances_to_next_card(bot, monkeypatch):
+    edits = []
+    feedback_calls = []
+    monkeypatch.setattr(bot, "answer_callback_query", lambda *a, **kw: None)
+    monkeypatch.setattr(bot, "edit_message_text", lambda *a, **kw: edits.append(a))
+    monkeypatch.setattr(bot, "_resolve_user_id", lambda *a, **kw: 42)
+    monkeypatch.setattr(bot, "post_feedback", lambda *a, **kw: feedback_calls.append(a) or True)
+    monkeypatch.setattr(bot, "_STATE_STORE", _FakeBatchStateStore({
+        "session-2": {
+            "version": 1,
+            "telegram_id": 987654,
+            "current_index": 0,
+            "items": [
+                {
+                    "job_id": 21,
+                    "title": "First job",
+                    "description": "Alpha",
+                    "budget": "1000 ₽",
+                    "url": "https://example.com/job/21",
+                    "why_it_fits": "Fits well",
+                    "score_percent": 70,
+                    "posted_at_unix": 1700000400,
+                    "created_at_unix": 1700000500,
+                },
+                {
+                    "job_id": 22,
+                    "title": "Second job",
+                    "description": "Beta",
+                    "budget": "2000 ₽",
+                    "url": "https://example.com/job/22",
+                    "why_it_fits": "Fits better",
+                    "score_percent": 88,
+                    "posted_at_unix": 1700000600,
+                    "created_at_unix": 1700000700,
+                },
+            ],
+        }
+    }))
+
+    callback = {
+        "id": "cb-fb",
+        "data": "fb:g:session-2:0:21",
+        "from": {"id": 987654},
+        "message": {"chat": {"id": 123}, "message_id": 56},
+    }
+    bot.handle_callback(callback, "token", "https://api.example.com", "tok", "hmac")
+
+    assert len(feedback_calls) == 1
+    _api_url, called_user_id, called_telegram_id, job_id, feedback = feedback_calls[0][:5]
+    assert called_user_id == 42
+    assert called_telegram_id == 987654
+    assert job_id == 21
+    assert feedback == "good"
+    assert len(edits) == 1
+    assert "Second job" in edits[0][3]
+    assert bot._STATE_STORE.sessions["session-2"]["current_index"] == 1
+
+
+def test_batch_feedback_on_last_card_replaces_with_completion_text(bot, monkeypatch):
+    edits = []
+    feedback_calls = []
+    monkeypatch.setattr(bot, "answer_callback_query", lambda *a, **kw: None)
+    monkeypatch.setattr(bot, "edit_message_text", lambda *a, **kw: edits.append(a))
+    monkeypatch.setattr(bot, "_resolve_user_id", lambda *a, **kw: 42)
+    monkeypatch.setattr(bot, "post_feedback", lambda *a, **kw: feedback_calls.append(a) or True)
+    monkeypatch.setattr(bot, "_STATE_STORE", _FakeBatchStateStore({
+        "session-3": {
+            "version": 1,
+            "telegram_id": 987654,
+            "current_index": 1,
+            "items": [
+                {
+                    "job_id": 31,
+                    "title": "Prev job",
+                    "description": "Alpha",
+                    "budget": "1000 ₽",
+                    "url": "https://example.com/job/31",
+                    "why_it_fits": "Fits",
+                    "score_percent": 71,
+                    "posted_at_unix": 1700000800,
+                    "created_at_unix": 1700000900,
+                },
+                {
+                    "job_id": 32,
+                    "title": "Last job",
+                    "description": "Omega",
+                    "budget": "3000 ₽",
+                    "url": "https://example.com/job/32",
+                    "why_it_fits": "Best fit",
+                    "score_percent": 97,
+                    "posted_at_unix": 1700001000,
+                    "created_at_unix": 1700001100,
+                },
+            ],
+        }
+    }))
+
+    callback = {
+        "id": "cb-fb-last",
+        "data": "fb:b:session-3:1:32",
+        "from": {"id": 987654},
+        "message": {"chat": {"id": 123}, "message_id": 57},
+    }
+    bot.handle_callback(callback, "token", "https://api.example.com", "tok", "hmac")
+
+    assert len(feedback_calls) == 1
+    assert len(edits) == 1
+    assert "Подборка завершена" in edits[0][3]
+    assert edits[0][4] == []
+    assert "session-3" not in bot._STATE_STORE.sessions
+
+
+def test_batch_stale_callback_is_ignored_gracefully(bot, monkeypatch):
+    edits = []
+    feedback_calls = []
+    answers = []
+    monkeypatch.setattr(bot, "answer_callback_query", lambda *a, **kw: answers.append(a))
+    monkeypatch.setattr(bot, "edit_message_text", lambda *a, **kw: edits.append(a))
+    monkeypatch.setattr(bot, "_resolve_user_id", lambda *a, **kw: 42)
+    monkeypatch.setattr(bot, "post_feedback", lambda *a, **kw: feedback_calls.append(a) or True)
+    monkeypatch.setattr(bot, "_STATE_STORE", _FakeBatchStateStore({
+        "session-4": {
+            "version": 1,
+            "telegram_id": 987654,
+            "current_index": 1,
+            "items": [
+                {
+                    "job_id": 41,
+                    "title": "Old job",
+                    "description": "Alpha",
+                    "budget": "1000 ₽",
+                    "url": "https://example.com/job/41",
+                    "why_it_fits": "Fits",
+                    "score_percent": 60,
+                    "posted_at_unix": 1700001200,
+                    "created_at_unix": 1700001300,
+                },
+                {
+                    "job_id": 42,
+                    "title": "Current job",
+                    "description": "Beta",
+                    "budget": "2000 ₽",
+                    "url": "https://example.com/job/42",
+                    "why_it_fits": "Fits now",
+                    "score_percent": 85,
+                    "posted_at_unix": 1700001400,
+                    "created_at_unix": 1700001500,
+                },
+            ],
+        }
+    }))
+
+    callback = {
+        "id": "cb-stale",
+        "data": "fb:g:session-4:0:41",
+        "from": {"id": 987654},
+        "message": {"chat": {"id": 123}, "message_id": 58},
+    }
+    bot.handle_callback(callback, "token", "https://api.example.com", "tok", "hmac")
+
+    assert answers
+    assert not edits
+    assert not feedback_calls
+    assert bot._STATE_STORE.sessions["session-4"]["current_index"] == 1
 
 
 def test_render_metrics_contains_counters_and_ready_gauge(bot):

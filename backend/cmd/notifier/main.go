@@ -196,6 +196,7 @@ func main() {
 		BreakerOpenInterval:     breakerOpenInterval,
 		BreakerOpenJitter:       breakerOpenJitter,
 	})
+	notifier.ConfigureBatchSessionStore(telegram.NewRedisBatchSessionStore(rdb), os.Getenv("BOT_REDIS_PREFIX"))
 	sendNotif := usecase.NewSendNotification(notifRepo, userRepo, jobRepo, notifier, rateLimit, maxPerDay).
 		WithProductEventRepo(productEventRepo)
 

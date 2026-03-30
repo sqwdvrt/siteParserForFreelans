@@ -462,6 +462,37 @@ class _RedisStateStore:
         self._client.delete(self._key("conversation", telegram_id))
         _METRICS.inc("telegram_bot_state_store_operations_total", operation="clear_conversation_state", result="ok")
 
+    def set_batch_session(self, session_id: str, session: dict) -> None:
+        key = self._key_text("batch-session", session_id)
+        self._client.set(
+            key,
+            json.dumps(session, separators=(",", ":"), ensure_ascii=False),
+            ex=self._conversation_state_ttl_sec,
+        )
+        _METRICS.inc("telegram_bot_state_store_operations_total", operation="set_batch_session", result="ok")
+
+    def get_batch_session(self, session_id: str) -> dict | None:
+        raw = self._client.get(self._key_text("batch-session", session_id))
+        if raw is None:
+            _METRICS.inc("telegram_bot_state_store_operations_total", operation="get_batch_session", result="miss")
+            return None
+        try:
+            data = json.loads(raw)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            self._client.delete(self._key_text("batch-session", session_id))
+            _METRICS.inc("telegram_bot_state_store_operations_total", operation="get_batch_session", result="invalid")
+            return None
+        if not isinstance(data, dict):
+            self._client.delete(self._key_text("batch-session", session_id))
+            _METRICS.inc("telegram_bot_state_store_operations_total", operation="get_batch_session", result="invalid")
+            return None
+        _METRICS.inc("telegram_bot_state_store_operations_total", operation="get_batch_session", result="hit")
+        return data
+
+    def clear_batch_session(self, session_id: str) -> None:
+        self._client.delete(self._key_text("batch-session", session_id))
+        _METRICS.inc("telegram_bot_state_store_operations_total", operation="clear_batch_session", result="ok")
+
     def claim_update_id(self, update_id: int) -> str:
         claimed = bool(
             self._client.set(
@@ -609,6 +640,9 @@ class _RedisStateStore:
 
     def _key(self, kind: str, entity_id: int) -> str:
         return f"{self._prefix}:{kind}:{entity_id}"
+
+    def _key_text(self, kind: str, raw_id: str) -> str:
+        return f"{self._prefix}:{kind}:{str(raw_id).strip()}"
 
 
 _STATE_STORE: _RedisStateStore | None = None
@@ -1251,6 +1285,151 @@ def _clear_conversation_state(telegram_id: int) -> None:
             )
     if removed is not None:
         _METRICS.inc("telegram_bot_cache_operations_total", cache="conversation_state", result="clear")
+
+
+def _get_batch_session(session_id: str) -> dict | None:
+    session_key = (session_id or "").strip()
+    if not session_key or _STATE_STORE is None:
+        return None
+    try:
+        session = _STATE_STORE.get_batch_session(session_key)
+    except Exception as e:
+        logger.warning("redis state store get_batch_session failed: %s", _exception_name(e))
+        _METRICS.inc("telegram_bot_state_store_operations_total", operation="get_batch_session", result="error")
+        return None
+    if not isinstance(session, dict):
+        return None
+    if "version" not in session:
+        return None
+    try:
+        int(session.get("telegram_id"))
+    except (TypeError, ValueError):
+        return None
+    if _batch_session_current_index(session) is None:
+        return None
+    return session
+
+
+def _save_batch_session(session_id: str, session: dict) -> None:
+    session_key = (session_id or "").strip()
+    if not session_key or _STATE_STORE is None:
+        return
+    try:
+        _STATE_STORE.set_batch_session(session_key, session)
+    except Exception as e:
+        logger.warning("redis state store set_batch_session failed: %s", _exception_name(e))
+        _METRICS.inc("telegram_bot_state_store_operations_total", operation="set_batch_session", result="error")
+
+
+def _clear_batch_session(session_id: str) -> None:
+    session_key = (session_id or "").strip()
+    if not session_key or _STATE_STORE is None:
+        return
+    try:
+        _STATE_STORE.clear_batch_session(session_key)
+    except Exception as e:
+        logger.warning("redis state store clear_batch_session failed: %s", _exception_name(e))
+        _METRICS.inc("telegram_bot_state_store_operations_total", operation="clear_batch_session", result="error")
+
+
+def _batch_session_items(session: dict) -> list[dict] | None:
+    items = session.get("items")
+    if not isinstance(items, list) or not items:
+        return None
+    normalized: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict):
+            return None
+        normalized.append(item)
+    return normalized
+
+
+def _batch_session_current_index(session: dict) -> int | None:
+    try:
+        current_index = int(session.get("current_index"))
+    except (TypeError, ValueError):
+        return None
+    items = _batch_session_items(session)
+    if items is None or current_index < 0 or current_index >= len(items):
+        return None
+    return current_index
+
+
+def _format_unix_timestamp(raw_value: object) -> str | None:
+    try:
+        timestamp = int(raw_value)
+    except (TypeError, ValueError):
+        return None
+    if timestamp <= 0:
+        return None
+    return time.strftime("%d.%m.%Y %H:%M", time.localtime(timestamp))
+
+
+def _render_batch_card(session_id: str, session: dict, index: int | None = None) -> tuple[str, list[list[dict]]] | None:
+    items = _batch_session_items(session)
+    if items is None:
+        return None
+    if index is None:
+        index = _batch_session_current_index(session)
+    if index is None or index < 0 or index >= len(items):
+        return None
+    item = items[index]
+    try:
+        job_id = int(item.get("job_id"))
+    except (TypeError, ValueError):
+        return None
+    if job_id <= 0:
+        return None
+    title = html.escape(str(item.get("title") or "Без названия"))
+    description = html.escape(str(item.get("description") or "").strip())
+    budget = html.escape(str(item.get("budget") or "").strip())
+    why_it_fits = html.escape(str(item.get("why_it_fits") or "").strip())
+    score_percent = _to_int_or_default(item.get("score_percent"), 0)
+    posted_at = _format_unix_timestamp(item.get("posted_at_unix"))
+    created_at = _format_unix_timestamp(item.get("created_at_unix"))
+    url = str(item.get("url") or "").strip()
+    if not url:
+        return None
+
+    lines = [f"<b>{title}</b>"]
+    if description:
+        lines.append(description)
+    meta: list[str] = []
+    if budget:
+        meta.append(f"Бюджет: {budget}")
+    if score_percent > 0:
+        meta.append(f"Совпадение: {score_percent}%")
+    if posted_at:
+        meta.append(f"Опубликовано: {posted_at}")
+    if created_at:
+        meta.append(f"Добавлено: {created_at}")
+    if meta:
+        lines.append("")
+        lines.extend(meta)
+    if why_it_fits:
+        lines.append("")
+        lines.append(f"Почему подходит: {why_it_fits}")
+
+    nav_row: list[dict] = []
+    if index > 0:
+        nav_row.append({"text": "◀️", "callback_data": f"nav:p:{session_id}:{index - 1}"})
+    nav_row.append({"text": f"{index + 1}/{len(items)}", "callback_data": f"nav:i:{session_id}:{index}"})
+    if index + 1 < len(items):
+        nav_row.append({"text": "▶️", "callback_data": f"nav:n:{session_id}:{index + 1}"})
+
+    keyboard: list[list[dict]] = [nav_row]
+    keyboard.append(
+        [
+            {"text": "👍", "callback_data": f"fb:g:{session_id}:{index}:{job_id}"},
+            {"text": "👎", "callback_data": f"fb:b:{session_id}:{index}:{job_id}"},
+        ]
+    )
+    keyboard.append([{"text": "Открыть проект", "url": url}])
+    return "\n".join(lines), keyboard
+
+
+def _render_batch_completion_text() -> str:
+    return "Подборка завершена. Спасибо за обратную связь."
 
 
 def _mark_first_seen(telegram_id: int) -> bool:
@@ -1955,6 +2134,131 @@ def _menu_handle_callback(
         send_message(token, chat_id, "Отправьте следующим сообщением час от 0 до 23 (по МСК).")
 
 
+def _parse_batch_nav_callback(data: str) -> tuple[str, str, int] | None:
+    parts = data.split(":")
+    if len(parts) != 4 or parts[0] != "nav" or parts[1] not in {"p", "i", "n"}:
+        return None
+    session_id = parts[2].strip()
+    if not session_id:
+        return None
+    try:
+        target_index = int(parts[3])
+    except (TypeError, ValueError):
+        return None
+    if target_index < 0:
+        return None
+    return parts[1], session_id, target_index
+
+
+def _parse_batch_feedback_callback(data: str) -> tuple[str, str, int, int] | None:
+    parts = data.split(":")
+    if len(parts) != 5 or parts[0] != "fb" or parts[1] not in {"g", "b"}:
+        return None
+    session_id = parts[2].strip()
+    if not session_id:
+        return None
+    try:
+        current_index = int(parts[3])
+        job_id = int(parts[4])
+    except (TypeError, ValueError):
+        return None
+    if current_index < 0 or job_id <= 0:
+        return None
+    return parts[1], session_id, current_index, job_id
+
+
+def _handle_batch_nav_callback(
+    data: str,
+    token: str,
+    chat_id: int,
+    message_id: int,
+    telegram_id: int,
+) -> None:
+    parsed = _parse_batch_nav_callback(data)
+    if parsed is None:
+        return
+    _nav_kind, session_id, target_index = parsed
+    session = _get_batch_session(session_id)
+    if session is None:
+        return
+    try:
+        session_telegram_id = int(session.get("telegram_id"))
+    except (TypeError, ValueError):
+        return
+    if session_telegram_id != telegram_id:
+        return
+    items = _batch_session_items(session)
+    if items is None or target_index >= len(items):
+        return
+    session["current_index"] = target_index
+    _save_batch_session(session_id, session)
+    rendered = _render_batch_card(session_id, session, target_index)
+    if rendered is None:
+        return
+    text, keyboard = rendered
+    edit_message_text(token, chat_id, message_id, text, keyboard)
+
+
+def _handle_batch_feedback_callback(
+    data: str,
+    token: str,
+    chat_id: int,
+    message_id: int,
+    telegram_id: int,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> bool:
+    parsed = _parse_batch_feedback_callback(data)
+    if parsed is None:
+        return False
+    fb_kind, session_id, current_index, job_id = parsed
+    session = _get_batch_session(session_id)
+    if session is None:
+        return True
+    try:
+        session_telegram_id = int(session.get("telegram_id"))
+    except (TypeError, ValueError):
+        return True
+    if session_telegram_id != telegram_id:
+        return True
+    session_current_index = _batch_session_current_index(session)
+    if session_current_index is None or session_current_index != current_index:
+        return True
+    item = _batch_session_items(session)
+    if item is None or current_index >= len(item):
+        return True
+    current_item = item[current_index]
+    try:
+        current_job_id = int(current_item.get("job_id"))
+    except (TypeError, ValueError):
+        return True
+    if current_job_id != job_id:
+        return True
+
+    feedback = "good" if fb_kind == "g" else "bad"
+    user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+    if user_id is not None:
+        if not post_feedback(api_url, user_id, telegram_id, job_id, feedback, api_auth_token, api_user_hmac_secret):
+            logger.warning("batch feedback failed: session_id=%s job_id=%d", session_id, job_id)
+    else:
+        logger.warning("batch feedback: could not resolve user_id for telegram_id=%s", telegram_id)
+
+    next_index = current_index + 1
+    if next_index < len(item):
+        session["current_index"] = next_index
+        _save_batch_session(session_id, session)
+        rendered = _render_batch_card(session_id, session, next_index)
+        if rendered is not None:
+            text, keyboard = rendered
+            edit_message_text(token, chat_id, message_id, text, keyboard)
+        return True
+
+    _clear_batch_session(session_id)
+    edit_message_text(token, chat_id, message_id, _render_batch_completion_text(), [])
+    return True
+
+
 def handle_callback(
     callback: dict,
     token: str,
@@ -1962,7 +2266,7 @@ def handle_callback(
     api_auth_token: str,
     api_user_hmac_secret: str,
 ) -> None:
-    """Handle inline keyboard callback (onboarding wizard + 👍/👎 feedback)."""
+    """Handle inline keyboard callback (onboarding wizard + batch navigation + feedback)."""
     data = callback.get("data", "")
     callback_id = callback.get("id", "")
     from_user = callback.get("from", {})
@@ -1977,6 +2281,41 @@ def handle_callback(
                     data, token, cb_chat_id, message_id, telegram_id,
                     api_url, api_auth_token, api_user_hmac_secret,
                 )
+        elif data.startswith("nav:") and telegram_id is not None:
+            msg = callback.get("message") or {}
+            cb_chat_id = msg.get("chat", {}).get("id") or from_user.get("id")
+            message_id = msg.get("message_id")
+            if cb_chat_id and message_id:
+                _handle_batch_nav_callback(data, token, cb_chat_id, message_id, telegram_id)
+        elif data.startswith("fb:") and telegram_id is not None:
+            msg = callback.get("message") or {}
+            cb_chat_id = msg.get("chat", {}).get("id") or from_user.get("id")
+            message_id = msg.get("message_id")
+            handled = False
+            if cb_chat_id and message_id:
+                handled = _handle_batch_feedback_callback(
+                    data,
+                    token,
+                    cb_chat_id,
+                    message_id,
+                    telegram_id,
+                    api_url,
+                    api_auth_token,
+                    api_user_hmac_secret,
+                )
+            if not handled:
+                parts = data.split(":")
+                if len(parts) == 3 and parts[1] in ("g", "b"):
+                    feedback = "good" if parts[1] == "g" else "bad"
+                    job_id = int(parts[2])
+                    user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+                    if user_id is not None:
+                        post_feedback(api_url, user_id, telegram_id, job_id, feedback, api_auth_token, api_user_hmac_secret)
+                        logger.info("feedback sent: job_id=%d feedback=%s", job_id, feedback)
+                    else:
+                        logger.warning("feedback: could not resolve user_id for telegram_id=%s", telegram_id)
+                elif data.startswith("fb:"):
+                    logger.warning("feedback: unknown callback_data format, ignoring: %s", data)
         elif data.startswith("menu:") and telegram_id is not None:
             msg = callback.get("message") or {}
             cb_chat_id = msg.get("chat", {}).get("id") or from_user.get("id")
@@ -1985,19 +2324,6 @@ def handle_callback(
                     data, token, cb_chat_id, telegram_id,
                     api_url, api_auth_token, api_user_hmac_secret,
                 )
-        elif data.startswith("fb:") and telegram_id is not None:
-            parts = data.split(":")
-            if len(parts) == 3 and parts[1] in ("g", "b"):
-                feedback = "good" if parts[1] == "g" else "bad"
-                job_id = int(parts[2])
-                user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
-                if user_id is not None:
-                    post_feedback(api_url, user_id, telegram_id, job_id, feedback, api_auth_token, api_user_hmac_secret)
-                    logger.info("feedback sent: job_id=%d feedback=%s", job_id, feedback)
-                else:
-                    logger.warning("feedback: could not resolve user_id for telegram_id=%s", telegram_id)
-            elif data.startswith("fb:"):
-                logger.warning("feedback: unknown callback_data format, ignoring: %s", data)
     except Exception as e:
         logger.error("callback handling failed: %s", _exception_name(e))
     finally:

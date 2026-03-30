@@ -45,6 +45,19 @@ func (m *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}, nil
 }
 
+type captureBatchSessionStore struct {
+	key   string
+	value []byte
+	ttl   time.Duration
+}
+
+func (s *captureBatchSessionStore) Set(_ context.Context, key string, value []byte, ttl time.Duration) error {
+	s.key = key
+	s.value = append([]byte(nil), value...)
+	s.ttl = ttl
+	return nil
+}
+
 func TestNotifier_Send_Success(t *testing.T) {
 	n := NewNotifierWithClient("test-token", &http.Client{
 		Transport: &mockTransport{status: 200},
@@ -108,31 +121,39 @@ func TestNotifier_Send_NilJob(t *testing.T) {
 	}
 }
 
-func TestNotifier_Send_BatchPayload_Success(t *testing.T) {
+func TestNotifier_Send_BatchPayload_UsesSingleCardAndNavigationKeyboard(t *testing.T) {
 	transport := &captureTransport{status: 200}
+	store := &captureBatchSessionStore{}
 	n := NewNotifierWithClient("token", &http.Client{
 		Transport: transport,
 		Timeout:   5 * time.Second,
 	})
+	n.ConfigureBatchSessionStore(store, "")
 	err := n.Send(context.Background(), 123456, port.NotifyPayload{
 		Batch: []port.BatchNotifyItem{
 			{
 				Job: &domain.Job{
-					ID:    2,
-					Title: "Second",
-					URL:   "https://kwork.ru/projects/2",
+					ID:          2,
+					Title:       "Second",
+					Description: "Detailed second description",
+					Budget:      "2000₽",
+					URL:         "https://kwork.ru/projects/2",
 				},
-				WhyItFits: "Second reason",
-				Rank:      2,
+				WhyItFits:  "Second reason",
+				Rank:       2,
+				FinalScore: 0.88,
 			},
 			{
 				Job: &domain.Job{
-					ID:    1,
-					Title: "First",
-					URL:   "https://kwork.ru/projects/1",
+					ID:          1,
+					Title:       "First",
+					Description: "Detailed first description",
+					Budget:      "1000₽",
+					URL:         "https://kwork.ru/projects/1",
 				},
-				WhyItFits: "First reason",
-				Rank:      1,
+				WhyItFits:  "First reason",
+				Rank:       1,
+				FinalScore: 0.91,
 			},
 		},
 		CriticScore: 8.2,
@@ -146,40 +167,157 @@ func TestNotifier_Send_BatchPayload_Success(t *testing.T) {
 		t.Fatalf("decode request body: %v", err)
 	}
 	text, _ := body["text"].(string)
-	if !strings.Contains(text, "Подборка для вас") {
-		t.Fatalf("batch text header missing: %q", text)
+	if strings.Contains(text, "Подборка для вас") || strings.Contains(text, "Открыть #1") || strings.Contains(text, "Открыть #2") {
+		t.Fatalf("batch text still looks like a list: %q", text)
 	}
-	if !strings.Contains(text, "8.2/10") {
-		t.Fatalf("batch score missing: %q", text)
-	}
-	if !strings.Contains(text, "<b>1. First</b>") || !strings.Contains(text, "<b>2. Second</b>") {
-		t.Fatalf("ranked titles missing: %q", text)
-	}
-	if !strings.Contains(text, `Открыть #1`) || !strings.Contains(text, `Открыть #2`) {
-		t.Fatalf("batch links labels missing: %q", text)
+	if !strings.Contains(text, "<b>First</b>") || !strings.Contains(text, "Detailed first description") || !strings.Contains(text, "1000₽") {
+		t.Fatalf("first card text missing required fields: %q", text)
 	}
 	if previewDisabled, ok := body["disable_web_page_preview"].(bool); !ok || !previewDisabled {
 		t.Fatalf("disable_web_page_preview must be true, got: %#v", body["disable_web_page_preview"])
 	}
 	replyMarkup, ok := body["reply_markup"].(map[string]any)
 	if !ok {
-		t.Fatalf("batch reply_markup missing: %#v", body["reply_markup"])
+		t.Fatalf("reply_markup missing: %#v", body["reply_markup"])
 	}
 	inlineKeyboard, ok := replyMarkup["inline_keyboard"].([]any)
-	if !ok || len(inlineKeyboard) != 2 {
-		t.Fatalf("batch inline_keyboard invalid: %#v", replyMarkup["inline_keyboard"])
+	if !ok || len(inlineKeyboard) != 3 {
+		t.Fatalf("inline_keyboard invalid: %#v", replyMarkup["inline_keyboard"])
 	}
 	firstRow, ok := inlineKeyboard[0].([]any)
-	if !ok || len(firstRow) != 2 {
-		t.Fatalf("first feedback row invalid: %#v", inlineKeyboard[0])
+	if !ok || len(firstRow) != 3 {
+		t.Fatalf("navigation row invalid: %#v", inlineKeyboard[0])
 	}
-	firstUp, ok := firstRow[0].(map[string]any)
-	if !ok || firstUp["callback_data"] != "fb:g:1" {
-		t.Fatalf("first feedback button invalid: %#v", firstRow[0])
+	secondRow, ok := inlineKeyboard[1].([]any)
+	if !ok || len(secondRow) != 2 {
+		t.Fatalf("feedback row invalid: %#v", inlineKeyboard[1])
 	}
-	firstDown, ok := firstRow[1].(map[string]any)
-	if !ok || firstDown["callback_data"] != "fb:b:1" {
-		t.Fatalf("second feedback button invalid: %#v", firstRow[1])
+	thirdRow, ok := inlineKeyboard[2].([]any)
+	if !ok || len(thirdRow) != 1 {
+		t.Fatalf("url row invalid: %#v", inlineKeyboard[2])
+	}
+	currentButton, _ := firstRow[1].(map[string]any)
+	currentData, _ := currentButton["callback_data"].(string)
+	if !strings.HasPrefix(currentData, "nav:i:") {
+		t.Fatalf("current callback must use nav:i, got %q", currentData)
+	}
+	upButton, _ := secondRow[0].(map[string]any)
+	downButton, _ := secondRow[1].(map[string]any)
+	upData, _ := upButton["callback_data"].(string)
+	downData, _ := downButton["callback_data"].(string)
+	if !strings.HasPrefix(upData, "fb:g:") || !strings.HasPrefix(downData, "fb:b:") {
+		t.Fatalf("feedback callbacks invalid: up=%q down=%q", upData, downData)
+	}
+	if urlButton, _ := thirdRow[0].(map[string]any); urlButton["text"] != "Открыть проект" {
+		t.Fatalf("url button invalid: %#v", thirdRow[0])
+	}
+}
+
+func TestNotifier_Send_BatchPayload_StoresSessionPayload(t *testing.T) {
+	transport := &captureTransport{status: 200}
+	store := &captureBatchSessionStore{}
+	n := NewNotifierWithClient("token", &http.Client{
+		Transport: transport,
+		Timeout:   5 * time.Second,
+	})
+	n.ConfigureBatchSessionStore(store, "")
+
+	err := n.Send(context.Background(), 123456, port.NotifyPayload{
+		Batch: []port.BatchNotifyItem{
+			{
+				Job: &domain.Job{
+					ID:          99,
+					Title:       "Storage first",
+					Description: "Storage description",
+					Budget:      "3000₽",
+					URL:         "https://kwork.ru/projects/99",
+				},
+				WhyItFits:  "Storage reason",
+				Rank:       1,
+				FinalScore: 0.73,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Send batch: %v", err)
+	}
+	if store.key == "" {
+		t.Fatal("batch session was not stored")
+	}
+	if store.ttl != 24*time.Hour {
+		t.Fatalf("batch session ttl = %v, want 24h", store.ttl)
+	}
+	if !strings.HasPrefix(store.key, "telegram-bot:batch-session:") {
+		t.Fatalf("unexpected batch session key: %q", store.key)
+	}
+
+	var session struct {
+		Version      int   `json:"version"`
+		TelegramID   int64 `json:"telegram_id"`
+		CurrentIndex int   `json:"current_index"`
+		Items        []struct {
+			JobID         int64   `json:"job_id"`
+			Title         string  `json:"title"`
+			Description   string  `json:"description"`
+			Budget        string  `json:"budget"`
+			URL           string  `json:"url"`
+			WhyItFits     string  `json:"why_it_fits"`
+			ScorePercent  float64 `json:"score_percent"`
+			PostedAtUnix  int64   `json:"posted_at_unix"`
+			CreatedAtUnix int64   `json:"created_at_unix"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(store.value, &session); err != nil {
+		t.Fatalf("decode stored session: %v", err)
+	}
+	if session.Version != 1 {
+		t.Fatalf("session version = %d, want 1", session.Version)
+	}
+	if session.TelegramID != 123456 {
+		t.Fatalf("session telegram_id = %d, want 123456", session.TelegramID)
+	}
+	if session.CurrentIndex != 0 {
+		t.Fatalf("session current_index = %d, want 0", session.CurrentIndex)
+	}
+	if len(session.Items) != 1 {
+		t.Fatalf("session items = %d, want 1", len(session.Items))
+	}
+	if session.Items[0].JobID != 99 || session.Items[0].Title != "Storage first" {
+		t.Fatalf("stored item mismatch: %+v", session.Items[0])
+	}
+	if session.Items[0].Description != "Storage description" || session.Items[0].Budget != "3000₽" {
+		t.Fatalf("stored item data mismatch: %+v", session.Items[0])
+	}
+	if session.Items[0].ScorePercent != 73 {
+		t.Fatalf("score_percent = %v, want 73", session.Items[0].ScorePercent)
+	}
+
+	var body map[string]any
+	if err := json.Unmarshal([]byte(transport.lastBody), &body); err != nil {
+		t.Fatalf("decode request body: %v", err)
+	}
+	replyMarkup, ok := body["reply_markup"].(map[string]any)
+	if !ok {
+		t.Fatalf("reply_markup missing: %#v", body["reply_markup"])
+	}
+	inlineKeyboard, ok := replyMarkup["inline_keyboard"].([]any)
+	if !ok || len(inlineKeyboard) != 3 {
+		t.Fatalf("inline_keyboard invalid: %#v", replyMarkup["inline_keyboard"])
+	}
+	row1, _ := inlineKeyboard[0].([]any)
+	row2, _ := inlineKeyboard[1].([]any)
+	if len(row1) != 3 || len(row2) != 2 {
+		t.Fatalf("keyboard rows invalid: %#v", replyMarkup["inline_keyboard"])
+	}
+	currentButton, _ := row1[1].(map[string]any)
+	upButton, _ := row2[0].(map[string]any)
+	downButton, _ := row2[1].(map[string]any)
+	currentData, _ := currentButton["callback_data"].(string)
+	upData, _ := upButton["callback_data"].(string)
+	downData, _ := downButton["callback_data"].(string)
+	sessionID := strings.TrimPrefix(store.key, "telegram-bot:batch-session:")
+	if !strings.Contains(currentData, sessionID) || !strings.Contains(upData, sessionID) || !strings.Contains(downData, sessionID) {
+		t.Fatalf("callbacks must reference session id %q: current=%q up=%q down=%q", sessionID, currentData, upData, downData)
 	}
 }
 

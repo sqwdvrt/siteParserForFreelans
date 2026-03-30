@@ -43,6 +43,9 @@ type Notifier struct {
 	breakerOpenInterval     time.Duration
 	breakerOpenJitter       float64
 	breaker                 *circuitBreaker
+	batchSessionStore       batchSessionStore
+	batchSessionPrefix      string
+	batchSessionTTL         time.Duration
 }
 
 // NewNotifier создаёт Notifier с заданным токеном бота.
@@ -58,6 +61,7 @@ func NewNotifier(token string) *Notifier {
 		breakerOpenInterval:     breakerOpenInterval,
 		breakerOpenJitter:       breakerOpenJitter,
 		breaker:                 newCircuitBreaker(breakerFailureThreshold, breakerOpenInterval, breakerOpenJitter),
+		batchSessionTTL:         defaultBatchSessionTTL,
 	}
 }
 
@@ -75,6 +79,15 @@ func NewNotifierWithClient(token string, client *http.Client) *Notifier {
 		breakerOpenInterval:     breakerOpenInterval,
 		breakerOpenJitter:       breakerOpenJitter,
 		breaker:                 newCircuitBreaker(breakerFailureThreshold, breakerOpenInterval, breakerOpenJitter),
+		batchSessionTTL:         defaultBatchSessionTTL,
+	}
+}
+
+// ConfigureBatchSessionStore configures Redis-backed batch sessions.
+func (n *Notifier) ConfigureBatchSessionStore(store batchSessionStore, prefix string) {
+	n.configureBatchSessionStore(store, prefix)
+	if n.batchSessionTTL <= 0 {
+		n.batchSessionTTL = defaultBatchSessionTTL
 	}
 }
 
@@ -130,6 +143,9 @@ func (n *Notifier) ensureConfigDefaults() {
 	if n.breaker == nil {
 		n.breaker = newCircuitBreaker(n.breakerFailureThreshold, n.breakerOpenInterval, n.breakerOpenJitter)
 	}
+	if n.batchSessionTTL <= 0 {
+		n.batchSessionTTL = defaultBatchSessionTTL
+	}
 }
 
 func clampJitter(v float64) float64 {
@@ -150,10 +166,34 @@ func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayl
 	n.ensureConfigDefaults()
 
 	text := ""
+	var keyboard [][]map[string]interface{}
 	if len(p.Batch) > 0 {
-		text = formatBatchMessage(p)
+		items := sortedBatchItems(p.Batch)
+		if len(items) == 0 {
+			return fmt.Errorf("job is nil")
+		}
+		first := items[0]
+		text = formatMessage(port.NotifyPayload{
+			Job:           first.Job,
+			Score:         first.FinalScore,
+			FinalScore:    first.FinalScore,
+			RankerVersion: first.RankerVersion,
+			ReasonCodes:   first.ReasonCodes,
+			WhyItFits:     first.WhyItFits,
+		})
+
+		if n.batchSessionStore != nil {
+			state, err := n.storeBatchSession(ctx, telegramID, items)
+			if err != nil {
+				return err
+			}
+			keyboard = buildBatchNavigationKeyboard(state)
+		} else {
+			keyboard = buildFeedbackKeyboard(port.NotifyPayload{Job: first.Job})
+		}
 	} else {
 		text = formatMessage(p)
+		keyboard = buildFeedbackKeyboard(p)
 	}
 
 	url := apiBase + n.token + "/sendMessage"
@@ -163,10 +203,8 @@ func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayl
 		"parse_mode":               "HTML",
 		"disable_web_page_preview": true,
 	}
-	if keyboard := buildFeedbackKeyboard(p); len(keyboard) > 0 {
-		body["reply_markup"] = map[string]interface{}{
-			"inline_keyboard": keyboard,
-		}
+	if len(keyboard) > 0 {
+		body["reply_markup"] = map[string]interface{}{"inline_keyboard": keyboard}
 	}
 	raw, err := json.Marshal(body)
 	if err != nil {
@@ -698,20 +736,6 @@ func formatBatchMessage(p port.NotifyPayload) string {
 }
 
 func buildFeedbackKeyboard(p port.NotifyPayload) [][]map[string]interface{} {
-	if len(p.Batch) > 0 {
-		items := sortedBatchItems(p.Batch)
-		rows := make([][]map[string]interface{}, 0, len(items))
-		for idx, item := range items {
-			if item.Job == nil || item.Job.ID <= 0 {
-				continue
-			}
-			rows = append(rows, []map[string]interface{}{
-				{"text": fmt.Sprintf("👍 #%d", idx+1), "callback_data": fmt.Sprintf("fb:g:%d", item.Job.ID)},
-				{"text": fmt.Sprintf("👎 #%d", idx+1), "callback_data": fmt.Sprintf("fb:b:%d", item.Job.ID)},
-			})
-		}
-		return rows
-	}
 	if p.Job == nil || p.Job.ID <= 0 {
 		return nil
 	}
