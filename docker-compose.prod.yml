@@ -7,7 +7,8 @@ services:
     environment:
       APP_ENV: production
       DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
-      # DATABASE_MIGRATE_URL — session pooler для Supabase (порт 5432, нужен pg_advisory_lock).
+      # DATABASE_MIGRATE_URL — optional dedicated DSN for migrations when you want to
+      # separate migration access from the main runtime connection.
       DATABASE_MIGRATE_URL: ${DATABASE_MIGRATE_URL:-}
       RUN_MIGRATIONS: "1"
     read_only: true
@@ -66,7 +67,7 @@ services:
       - /tmp:mode=1777,size=64m
       - /home/app:mode=0700,size=16m
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "--no-check-certificate", "https://127.0.0.1:8443/healthz"]
+      test: ["CMD", "curl", "-fsk", "https://127.0.0.1:8443/healthz"]
       interval: 30s
       timeout: 5s
       retries: 3
