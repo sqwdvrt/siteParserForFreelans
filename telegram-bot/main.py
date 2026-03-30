@@ -2310,7 +2310,15 @@ def handle_callback(
                     job_id = int(parts[2])
                     user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
                     if user_id is not None:
-                        post_feedback(api_url, user_id, telegram_id, job_id, feedback, api_auth_token, api_user_hmac_secret)
+                        post_feedback(
+                            api_url,
+                            user_id,
+                            telegram_id,
+                            job_id,
+                            feedback,
+                            api_auth_token,
+                            api_user_hmac_secret,
+                        )
                         logger.info("feedback sent: job_id=%d feedback=%s", job_id, feedback)
                     else:
                         logger.warning("feedback: could not resolve user_id for telegram_id=%s", telegram_id)
