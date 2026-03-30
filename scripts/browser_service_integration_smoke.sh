@@ -50,7 +50,14 @@ if [[ ! -f "${FIXTURE_DIR}/index.html" ]]; then
 fi
 
 HTTP_SERVER_PORT="${HTTP_SERVER_PORT:-$(pick_port)}"
+if [[ -n "${BROWSER_SERVICE_PORT}" && "${BROWSER_SERVICE_PORT}" = "${HTTP_SERVER_PORT}" ]]; then
+  echo "ERROR: BROWSER_SMOKE_SERVICE_PORT must differ from BROWSER_SMOKE_FIXTURE_PORT" >&2
+  exit 1
+fi
 BROWSER_SERVICE_PORT="${BROWSER_SERVICE_PORT:-$(pick_port)}"
+while [[ "${BROWSER_SERVICE_PORT}" = "${HTTP_SERVER_PORT}" ]]; do
+  BROWSER_SERVICE_PORT="$(pick_port)"
+done
 
 echo "[browser-smoke] serving fixture from ${FIXTURE_DIR} on 0.0.0.0:${HTTP_SERVER_PORT}"
 (

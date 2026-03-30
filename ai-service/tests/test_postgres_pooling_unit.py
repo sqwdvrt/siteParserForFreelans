@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import ai_service.adapter.postgres._pooled_repository as pooled_repository_module
 import pytest
 
+import ai_service.adapter.postgres._pooled_repository as pooled_repository_module
 from ai_service.adapter.postgres import PostgresJobRepository, PostgresMatchRepository, PostgresUserRepository
 from ai_service.adapter.postgres._pooled_repository import PooledPostgresRepository
 from ai_service.util import fallback_metrics
@@ -206,7 +206,7 @@ def test_shared_pool_reused_across_repo_instances(monkeypatch: pytest.MonkeyPatc
 def test_closing_one_repo_keeps_shared_pool_alive_for_other_repo(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    created = _make_fake_pool_fixture(monkeypatch)
+    _make_fake_pool_fixture(monkeypatch)
     repo_a = _DummyRepo(
         "postgresql://fake/fake",
         minconn=2,

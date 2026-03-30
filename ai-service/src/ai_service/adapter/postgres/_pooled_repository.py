@@ -5,8 +5,8 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import threading
-from dataclasses import dataclass, field
 from collections.abc import Generator
+from dataclasses import dataclass, field
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from pgvector.psycopg2 import register_vector
