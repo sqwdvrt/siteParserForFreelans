@@ -242,7 +242,7 @@ groups:
           description: "Redis has aof_enabled=0. Data in queues will be lost on restart. Fix: add '--appendonly yes --appendfsync everysec' to Redis command."
 
       - alert: SiteParserRedisRDBSaveFailed
-        expr: redis_rdb_last_bgsave_status{job="redis-exporter"} == 0
+        expr: redis_rdb_last_bgsave_status{job="redis-exporter", status="err"} == 1
         for: 10m
         labels:
           severity: warning

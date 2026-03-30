@@ -42,6 +42,7 @@ services:
 
   redis:
     image: redis:7-alpine
+    # Dev: 200mb maxmemory; production infra Redis should use 512mb+ (see docs/vps_deploy.md §4.3)
     command: >
       redis-server
       --appendonly yes
