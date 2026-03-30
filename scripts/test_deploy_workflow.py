@@ -64,6 +64,56 @@ class DeployWorkflowTest(unittest.TestCase):
             job_block,
         )
 
+    def test_manual_workflow_exposes_deploy_scope_input(self) -> None:
+        workflow_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("deploy_scope:", workflow_text)
+        self.assertIn('default: full', workflow_text)
+        self.assertIn("- ai-only", workflow_text)
+
+    def test_resolve_target_exports_deploy_scope(self) -> None:
+        workflow_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("deploy_scope: ${{ steps.meta.outputs.deploy_scope }}", workflow_text)
+        self.assertIn("INPUT_SCOPE: ${{ github.event.inputs.deploy_scope }}", workflow_text)
+        self.assertIn('deploy_scope="${INPUT_SCOPE:-full}"', workflow_text)
+
+    def test_publish_runtime_images_skips_non_ai_builds_for_ai_only(self) -> None:
+        job_block = self.job_block("publish-runtime-images")
+
+        self.assertIn("if: ${{ needs.resolve-target.outputs.deploy_scope == 'full' }}", job_block)
+        self.assertIn(
+            "if: ${{ needs.resolve-target.outputs.deploy_scope == 'full' || "
+            "needs.resolve-target.outputs.deploy_scope == 'ai-only' }}",
+            job_block,
+        )
+
+    def test_remote_deploy_branch_reuses_current_non_ai_images_for_ai_only(self) -> None:
+        workflow_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("DEPLOY_SCOPE", workflow_text)
+        self.assertIn('if [ "${DEPLOY_SCOPE}" = "ai-only" ]; then', workflow_text)
+        self.assertIn('current_env="${STATE_DIR}/current/.env.production"', workflow_text)
+        self.assertIn('if [ ! -f "${current_env}" ] && [ -f "${BASE_PATH}/.env.production" ]; then', workflow_text)
+        self.assertIn('current_env="${BASE_PATH}/.env.production"', workflow_text)
+        self.assertIn('BACKEND_IMAGE="$(awk -F= \'/^BACKEND_IMAGE=/{print substr($0,15)}\' "${current_env}")"', workflow_text)
+        self.assertIn('BROWSER_SERVICE_IMAGE="$(awk -F= \'/^BROWSER_SERVICE_IMAGE=/{print substr($0,23)}\' "${current_env}")"', workflow_text)
+        self.assertIn('TELEGRAM_BOT_IMAGE="$(awk -F= \'/^TELEGRAM_BOT_IMAGE=/{print substr($0,20)}\' "${current_env}")"', workflow_text)
+        self.assertIn('bash "${RUN_ROOT}/scripts/deploy_release.sh"', workflow_text)
+
+    def test_ai_only_deploy_scope_rejects_non_ai_target_commits(self) -> None:
+        workflow_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'changed_paths="$(git -C "${RUN_ROOT}" diff-tree --no-commit-id --name-only -r "${DEPLOY_SHA}")"',
+            workflow_text,
+        )
+        self.assertIn(
+            'ai-service/*|.github/workflows/deploy.yml|scripts/test_deploy_workflow.py|docs/operations.md|docs/vps_deploy.md|README.md)',
+            workflow_text,
+        )
+        self.assertIn('ERROR: ai-only deploy cannot include non-AI path:', workflow_text)
+
 
 if __name__ == "__main__":
     unittest.main()

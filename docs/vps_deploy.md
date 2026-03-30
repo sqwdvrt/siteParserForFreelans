@@ -1,20 +1,24 @@
 # VPS Deployment Guide
 
-Руководство по развёртыванию проекта на чистом VPS с самоподписанными TLS-сертификатами.
+Руководство по текущему production-развёртыванию проекта на одном VPS.
 
-## Требования
+Текущая схема:
+- приложение запускается из release-каталога под `/home/deploy/app/.siteParserForFreelans-deploy/current`;
+- PostgreSQL и Redis живут на том же VPS в `/home/deploy/infra`;
+- публичный вход идет через nginx на `api.freematch.ru`;
+- `/webhook` проксируется в `http://127.0.0.1:8080`, а остальной трафик в `https://127.0.0.1:8443`;
+- мониторинг и `pgAdmin` доступны только локально на loopback и через SSH tunnel.
+
+## 1. Требования
 
 - VPS с Ubuntu 22.04+, минимум 2 GB RAM, 20 GB диска
 - Docker + Docker Compose v2
-- Домен с A-записью на IP VPS (freematch.ru → 185.154.193.193)
+- Домен `api.freematch.ru`, указывающий на IP VPS
 - Пользователь `deploy` с правами sudo
 
----
+## 2. Swap
 
-## 0. Swap (обязательно для 2 GB VPS)
-
-AI-сервисы загружают embedding-модели (~500 MB каждый). Без swap OOM killer завершит
-процессы при пиковой нагрузке. Настрой swap **до** запуска контейнеров.
+AI-сервисы загружают embedding-модели и на 2 GB VPS без swap это нестабильно. Настрой swap до запуска контейнеров:
 
 ```bash
 sudo fallocate -l 2G /swapfile
@@ -22,39 +26,29 @@ sudo chmod 600 /swapfile
 sudo mkswap /swapfile
 sudo swapon /swapfile
 
-# Сделать постоянным после перезагрузки
 echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
-
-# Уменьшить aggressiveness свопирования (10 = swap только при острой нехватке RAM)
 echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf
 sudo sysctl -p
 ```
 
 Проверка:
+
 ```bash
-free -h   # должен появиться Swap: 2.0G
+free -h
 swapon --show
 ```
 
----
+## 3. Public TLS + nginx
 
-## 1. Nginx + TLS (Let's Encrypt)
+На VPS публичный TLS заканчивается на nginx. Внутри nginx используются обычные Let’s Encrypt сертификаты, а к локальным контейнерам он ходит по loopback.
 
 ```bash
 sudo apt install -y nginx certbot
-
-# Открыть порты
 sudo ufw allow 80 && sudo ufw allow 443 && sudo ufw allow 22/tcp
-
-# Получить сертификат (порт 80 должен быть свободен)
 sudo certbot certonly --standalone -d api.freematch.ru
-
-# Исправить права для чтения без root
-sudo chmod 755 /etc/letsencrypt/live/ /etc/letsencrypt/archive/
-sudo chmod 644 /etc/letsencrypt/archive/api.freematch.ru/*.pem
 ```
 
-Конфиг nginx `/etc/nginx/sites-available/api.freematch.ru`:
+Конфиг `/etc/nginx/sites-available/api.freematch.ru`:
 
 ```nginx
 server {
@@ -70,7 +64,6 @@ server {
     ssl_certificate     /etc/letsencrypt/live/api.freematch.ru/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/api.freematch.ru/privkey.pem;
 
-    # Telegram webhook must bypass backend-api and go straight to telegram-bot.
     location = /webhook {
         proxy_pass         http://127.0.0.1:8080;
         proxy_http_version 1.1;
@@ -91,29 +84,30 @@ server {
 }
 ```
 
+Активировать конфиг:
+
 ```bash
 sudo ln -s /etc/nginx/sites-available/api.freematch.ru /etc/nginx/sites-enabled/
 sudo nginx -t && sudo systemctl enable --now nginx
 ```
 
-`telegram-bot` в production слушает loopback `BOT_BIND_IP:BOT_PORT` (`127.0.0.1:8080` по умолчанию) по plain HTTP, поэтому nginx должен проксировать `https://api.freematch.ru/webhook` именно в `http://127.0.0.1:8080`, а не в backend API. Для `.env.production` это соответствует:
+Проверка ingress:
 
-```env
-API_URL=https://api.freematch.ru
-BOT_MODE=webhook
-BOT_BIND_IP=127.0.0.1
-BOT_PORT=8080
-WEBHOOK_URL=https://api.freematch.ru/webhook
+```bash
+curl -fsS https://api.freematch.ru/healthz
 ```
 
----
+## 4. Self-hosted infra
 
-## 2. Инфраструктура (Postgres + Redis)
+Инфраструктура живет отдельно в `/home/deploy/infra`.
+
+### 4.1 TLS для internal services
+
+Сертификат нужен только для доверия между контейнерами `postgres` и `redis`.
 
 ```bash
 mkdir -p /home/deploy/infra/certs
 
-# Генерация самоподписанного сертификата с SAN для postgres и redis
 docker run --rm \
   -v /home/deploy/infra/certs:/certs \
   --user root \
@@ -128,238 +122,143 @@ docker run --rm \
     chown 999:999 /certs/server.key /certs/server.crt && \
     chmod 600 /certs/server.key && chmod 644 /certs/server.crt
   "
+```
 
-# Пароли
+### 4.2 Infra env
+
+```bash
 cat > /home/deploy/infra/.env << EOF
 POSTGRES_PASSWORD=$(openssl rand -hex 24)
 REDIS_PASSWORD=$(openssl rand -hex 24)
 EOF
 ```
 
-`/home/deploy/infra/docker-compose.yml`:
+### 4.3 Infra compose
 
-```yaml
-services:
-  postgres:
-    image: pgvector/pgvector:pg16
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: site_parser
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: site_parser
-    command: >
-      postgres
-      -c ssl=on
-      -c ssl_cert_file=/etc/ssl/certs/server.crt
-      -c ssl_key_file=/etc/ssl/private/server.key
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-      - ./certs/server.crt:/etc/ssl/certs/server.crt:ro
-      - ./certs/server.key:/etc/ssl/private/server.key:ro
-    ports:
-      - "127.0.0.1:5432:5432"
+Файл `/home/deploy/infra/docker-compose.yml` поднимает:
+- `postgres` на `127.0.0.1:5432`
+- `redis` на `127.0.0.1:6379`
 
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    command: >
-      redis-server
-      --requirepass ${REDIS_PASSWORD}
-      --appendonly yes
-      --maxmemory 512mb
-      --maxmemory-policy allkeys-lru
-      --tls-port 6379
-      --port 0
-      --tls-cert-file /tls/server.crt
-      --tls-key-file /tls/server.key
-      --tls-ca-cert-file /tls/server.crt
-      --tls-auth-clients no
-    volumes:
-      - redisdata:/data
-      - ./certs/server.crt:/tls/server.crt:ro
-      - ./certs/server.key:/tls/server.key:ro
-    ports:
-      - "127.0.0.1:6379:6379"
-
-volumes:
-  pgdata:
-  redisdata:
-```
+Оба сервиса работают с TLS и доступны app-контейнерам через сеть `infra_default`.
 
 ```bash
-cd /home/deploy/infra && docker compose up -d
+cd /home/deploy/infra
+docker network create infra_default 2>/dev/null || true
+docker compose up -d
+```
 
-# Проверить SSL у postgres
+Проверка:
+
+```bash
 docker exec infra-postgres-1 psql -U site_parser -d site_parser -c "SHOW ssl;"
-# Должно вернуть: on
-
-# Проверить TLS у redis
 docker compose logs redis | grep "Ready to accept connections tls"
 ```
 
----
+## 5. App deployment
 
-## 3. Миграция данных из Supabase
-
-```bash
-# Дамп без таблицы jobs (из-за SSL timeout на большой таблице)
-docker run --rm \
-  -v /home/deploy:/dump \
-  postgres:17 \
-  pg_dump \
-  "postgresql://<supabase-pooler-url>" \
-  --no-owner --no-acl \
-  --exclude-table-data=public.jobs \
-  --format=custom \
-  -f /dump/supabase_dump.dump
-
-# Дамп только jobs
-docker run --rm \
-  -v /home/deploy:/dump \
-  postgres:17 \
-  pg_dump \
-  "postgresql://<supabase-pooler-url>" \
-  --no-owner --no-acl \
-  --table=public.jobs \
-  --format=custom \
-  -f /dump/jobs_dump.dump
-
-# Восстановить (ошибки pg_graphql/supabase_vault — ignorable, это Supabase-расширения)
-docker run --rm \
-  -v /home/deploy:/dump \
-  --network infra_default \
-  -e PGPASSWORD=<POSTGRES_PASSWORD> \
-  postgres:17 \
-  pg_restore \
-  -h 172.18.0.2 -p 5432 \
-  -U site_parser -d site_parser \
-  --no-owner --no-acl \
-  /dump/supabase_dump.dump
-
-docker run --rm \
-  -v /home/deploy:/dump \
-  --network infra_default \
-  -e PGPASSWORD=<POSTGRES_PASSWORD> \
-  postgres:17 \
-  pg_restore \
-  -h 172.18.0.2 -p 5432 \
-  -U site_parser -d site_parser \
-  --no-owner --no-acl \
-  --data-only \
-  /dump/jobs_dump.dump
-
-# Проверить
-docker exec infra-postgres-1 psql -U site_parser -d site_parser -c "
-  SELECT 'jobs' as t, count(*) FROM public.jobs
-  UNION ALL SELECT 'users', count(*) FROM public.users
-  UNION ALL SELECT 'notifications', count(*) FROM public.notifications;"
-```
-
----
-
-## 4. Приложение
-
-В новой схеме mutable deploy state вынесен в скрытую sibling-директорию рядом с live path:
+Текущий layout на VPS:
 
 ```text
-<live deploy path> -> <hidden deploy state dir>/current
-<hidden deploy state dir>/
-├── repo/
-├── releases/
-├── current -> releases/<current release>
-└── shared/
-    ├── .env.production
-    └── backups/
+/home/deploy/app/
+├── .siteParserForFreelans-deploy/
+│   ├── repo/
+│   ├── releases/
+│   ├── current -> releases/<current release>
+│   └── shared/
+│       ├── .env.production
+│       └── backups/
+└── siteParserForFreelans -> .siteParserForFreelans-deploy/current
 ```
 
-Операторские команды по-прежнему выполняются через `cd "$PROD_DEPLOY_PATH"` / `cd "$STAGING_DEPLOY_PATH"`; эти пути теперь указывают на live symlink `current`, который ведёт в активный release.
+Операторский путь всегда остается `cd /home/deploy/app/siteParserForFreelans`, но это live symlink на active release.
 
-```bash
-cd /home/deploy/<hidden-deploy-state-dir>
-git clone <repo-url> repo
-mkdir -p releases shared/backups
-```
+Базовые production env values на VPS должны соответствовать self-hosted infra:
 
-`shared/.env.production` хранит base production env (секреты и host-specific значения, без release-specific image digests):
-
-```bash
-# Ключевые значения для VPS:
+```env
+APP_ENV=production
+API_URL=https://api.freematch.ru
+WEBHOOK_URL=https://api.freematch.ru/webhook
+WEBHOOK_SECRET_TOKEN=<output of: openssl rand -hex 32>
+BOT_MODE=webhook
+BOT_BIND_IP=127.0.0.1
+BOT_PORT=8080
 DATABASE_URL=postgresql://site_parser:<POSTGRES_PASSWORD>@postgres:5432/site_parser?sslmode=require
 DATABASE_MIGRATE_URL=postgresql://site_parser:<POSTGRES_PASSWORD>@postgres:5432/site_parser?sslmode=require
 REDIS_URL=rediss://:<REDIS_PASSWORD>@redis:6379/0
+BACKEND_IMAGE=ghcr.io/<owner>/siteparserforfreelans-backend@sha256:<64-hex-digest>
+BROWSER_SERVICE_IMAGE=ghcr.io/<owner>/siteparserforfreelans-browser-service@sha256:<64-hex-digest>
+TELEGRAM_BOT_IMAGE=ghcr.io/<owner>/siteparserforfreelans-telegram-bot@sha256:<64-hex-digest>
+AI_IMAGE=ghcr.io/<owner>/siteparserforfreelans-ai-runtime@sha256:<64-hex-digest>
+API_AUTH_TOKEN=<output of: openssl rand -hex 24>
+API_USER_HMAC_SECRET=<output of: openssl rand -hex 24>
+ADMIN_AUTH_TOKEN=<output of: openssl rand -hex 24>
 API_TLS_CERT_HOST_PATH=/etc/letsencrypt/live/api.freematch.ru/fullchain.pem
 API_TLS_KEY_HOST_PATH=/etc/letsencrypt/live/api.freematch.ru/privkey.pem
-API_ADDR=:8443
-API_PORT=8443
-API_URL=https://api.freematch.ru
-```
-
-Первый immutable bootstrap release нужно делать через deploy pipeline или через `scripts/deploy_release.sh`, передав digest-pinned image refs:
-
-```bash
-BACKEND_IMAGE=ghcr.io/<owner>/siteparserforfreelans-backend@sha256:<digest> \
-BROWSER_SERVICE_IMAGE=ghcr.io/<owner>/siteparserforfreelans-browser-service@sha256:<digest> \
-TELEGRAM_BOT_IMAGE=ghcr.io/<owner>/siteparserforfreelans-telegram-bot@sha256:<digest> \
-AI_IMAGE=ghcr.io/<owner>/siteparserforfreelans-ai-runtime@sha256:<digest> \
-bash ./scripts/deploy_release.sh \
-  --base-path "$PROD_DEPLOY_PATH" \
-  --sha <commit-sha> \
-  --origin-url <repo-url>
-```
-
-Во время release deploy pipeline эти digest-pinned `BACKEND_IMAGE`, `BROWSER_SERVICE_IMAGE`, `TELEGRAM_BOT_IMAGE` и `AI_IMAGE` записываются в release-local `.env.production` активного релиза. После того как live symlink уже указывает на release, операторские команды из live path используют этот resolved env:
-
-```bash
-cd "$PROD_DEPLOY_PATH"
-docker compose -f docker-compose.prod.yml -f docker-compose.ssl.yml --env-file .env.production pull
-docker compose -f docker-compose.prod.yml -f docker-compose.ssl.yml --env-file .env.production up -d --no-build
-```
-
-### 4.1 pgAdmin (optional, localhost-only)
-
-`pgAdmin` можно поднять в том же production compose-контуре для ручной диагностики БД.
-Сервис публикуется только на loopback хоста (`127.0.0.1:5050`), поэтому наружу не торчит
-и предполагает доступ через SSH tunnel. По умолчанию сервис не стартует вместе с основным
-production стеком: он вынесен в profile `admin` и запускается только явно.
-
-Добавьте в `.env.production`:
-
-```env
-PGADMIN_EMAIL=admin@yourdomain.com
+PGADMIN_EMAIL=admin@example.com
 PGADMIN_PASSWORD=<output of: openssl rand -hex 16>
+GRAFANA_ADMIN_PASSWORD=<output of: openssl rand -hex 16>
 ```
+
+Bootstrap нового VPS делайте через `Deploy Pipeline` или `scripts/deploy_release.sh`, чтобы release layout (`shared/`, `releases/`, `current`) и release-local `.env.production` были собраны автоматически. Ручной `docker compose ... up` ниже подходит только для уже активного live release, где `.env.production` уже содержит digest-pinned image refs.
+
+Запуск production stack из live release:
+
+```bash
+cd /home/deploy/app/siteParserForFreelans
+docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml pull
+docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml up -d --no-build
+```
+
+Проверить сервисы:
+
+```bash
+docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml config --services
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+```
+
+Точечный AI-only hotfix делайте не через `docker build` на VPS, а через manual run `Deploy Pipeline` с `deploy_scope=ai-only`. В этом режиме workflow публикует новый digest-pinned `AI_IMAGE`, reuse'ит текущие non-AI image refs с хоста и прогоняет тот же release-based deploy path.
+
+Ограничения этого режима:
+- нужен уже существующий live release с корректным `.env.production`; для первого deploy используйте обычный full deploy path;
+- target SHA должен быть AI-only commit: workflow отклонит `ai-only` rollout, если commit меняет что-то вне `ai-service/` и allowlist файлов deploy/runbook.
+
+## 6. pgAdmin
+
+`pgAdmin` в production compose есть как optional admin profile и слушает только loopback на VPS.
 
 Запуск:
 
 ```bash
-cd "$PROD_DEPLOY_PATH"
-docker compose -f docker-compose.prod.yml -f docker-compose.ssl.yml --env-file .env.production --profile admin up -d pgadmin
+cd /home/deploy/app/siteParserForFreelans
+docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml --profile admin up -d pgadmin
 ```
 
 SSH tunnel с локальной машины:
 
 ```bash
-ssh -L 5050:localhost:5050 deploy@185.154.193.193
+ssh -N -L 5050:127.0.0.1:5050 deploy@185.154.193.193
 ```
 
-После этого откройте `http://localhost:5050` и войдите под `PGADMIN_EMAIL` / `PGADMIN_PASSWORD`.
+Открыть в браузере:
 
-Для подключения к PostgreSQL внутри `pgAdmin` используйте:
+```text
+http://127.0.0.1:5050
+```
 
+В `pgAdmin` подключайся к базе так:
 - Host: `postgres`
 - Port: `5432`
 - Database: `site_parser`
 - Username: `site_parser`
-- Password: значение `POSTGRES_PASSWORD` из `/home/deploy/infra/.env`
+- Password: `POSTGRES_PASSWORD` из `/home/deploy/infra/.env`
 - SSL mode: `Require`
 
-### 4.2 Monitoring stack
+## 7. Monitoring
 
-Мониторинг на VPS поднимай в том же compose-контуре, что и приложение, то есть вместе с `docker-compose.ssl.yml`.
-Это сохраняет общую `infra_default` сеть для доступа к self-hosted Redis/Postgres и даёт monitoring-контейнерам тот же CA.
+Monitoring запускается на том же VPS и тоже использует `infra_default`.
 
 ```bash
-cd "$PROD_DEPLOY_PATH"
+cd /home/deploy/app/siteParserForFreelans
 docker compose --env-file .env.production \
   -f docker-compose.prod.yml \
   -f docker-compose.ssl.yml \
@@ -367,63 +266,56 @@ docker compose --env-file .env.production \
   --profile monitoring up -d
 ```
 
-Если приложение и мониторинг запускаешь разными командами, используй один и тот же `-p <project>` на обеих.
+Доступ только локально:
+- Grafana: `http://127.0.0.1:3000`
+- Prometheus: `http://127.0.0.1:9090`
+- Alertmanager: `http://127.0.0.1:9093`
 
----
+Логин Grafana:
+- User: `admin`
+- Password: `GRAFANA_ADMIN_PASSWORD` из `.env.production`
 
-## 5. Проверка
+Production monitoring overrides должны указывать на:
+- `backend-api:8443`
+- `rediss://...`
+- `postgresql://...sslmode=require`
+
+## 8. Backup and restore
+
+PostgreSQL - источник истины. Redis - transient queues, его обычно не восстанавливают как полноценный state store.
+
+Рекомендуемый backup:
 
 ```bash
-curl -s https://api.freematch.ru/healthz
-# Ожидается: ok
+cd /home/deploy/app/siteParserForFreelans
+mkdir -p /home/deploy/app/.siteParserForFreelans-deploy/shared/backups
+set -a
+. ./.env.production
+set +a
+BACKUP_DIR=/home/deploy/app/.siteParserForFreelans-deploy/shared/backups ./scripts/backup_postgres.sh
 ```
 
----
-
-## 6. Управление сервисами
+Restore:
 
 ```bash
-# Алиас для удобства (добавить в ~/.bashrc)
-export PROD_COMPOSE="docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml"
-
-# Статус
-$PROD_COMPOSE ps
-
-# Логи
-$PROD_COMPOSE logs <service> -f --tail=50
-
-# Перезапуск
-$PROD_COMPOSE restart <service>
-
-# Полный рестарт
-$PROD_COMPOSE up -d
-
-# Очереди Redis
-docker exec infra-redis-1 redis-cli --tls \
-  --cert /tls/server.crt --key /tls/server.key --cacert /tls/server.crt \
-  -a <REDIS_PASSWORD> LLEN ai-process
+cd /home/deploy/app/siteParserForFreelans
+set -a
+. ./.env.production
+set +a
+./scripts/restore_postgres.sh /path/to/site_parser.dump
 ```
 
----
+Проверка после restore:
 
-## Схема развёртывания
-
-```
-VPS (185.154.193.193)
-├── nginx (443 → https://127.0.0.1:8443)
-│
-├── /home/deploy/infra/          ← postgres:5432 + redis:6379 (оба с TLS)
-│   ├── docker-compose.yml
-│   ├── .env
-│   └── certs/server.crt|key    ← самоподписанный CA (CN=internal, SAN: postgres, redis)
-│
-└── <hidden deploy state dir>/
-    ├── repo/
-    ├── releases/
-    ├── current -> releases/<current release>
-    ├── shared/
-    │   ├── .env.production
-    │   └── backups/
+```bash
+docker exec infra-postgres-1 psql -U site_parser -d site_parser -c "SELECT count(*) FROM public.users;"
+docker exec infra-postgres-1 psql -U site_parser -d site_parser -c "SELECT count(*) FROM public.notifications;"
 ```
 
-Все app-контейнеры подключены к сети `infra_default` и обращаются к `postgres:5432` / `redis:6379` по имени сервиса. Операторский `cd "$PROD_DEPLOY_PATH"` / `cd "$STAGING_DEPLOY_PATH"` остаётся прежним, но теперь попадает в live symlink на текущий release.
+## 9. Quick checklist
+
+1. `infra-postgres-1` и `infra-redis-1` запущены.
+2. `backend-api` отвечает на `/healthz` через nginx.
+3. `/webhook` идет в `127.0.0.1:8080`.
+4. `pgAdmin` доступен только через SSH tunnel.
+5. `Prometheus`, `Grafana`, `Alertmanager` слушают только loopback.

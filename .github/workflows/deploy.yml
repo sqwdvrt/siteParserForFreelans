@@ -18,6 +18,14 @@ on:
         description: "Git ref to deploy (branch/tag/SHA). For manual runs, required gate workflows must already be green for the target SHA."
         required: true
         default: main
+      deploy_scope:
+        description: "Deployment scope"
+        type: choice
+        required: true
+        default: full
+        options:
+          - full
+          - ai-only
 
 permissions:
   contents: read
@@ -29,6 +37,7 @@ jobs:
     outputs:
       deploy_sha: ${{ steps.meta.outputs.deploy_sha }}
       deploy_ref: ${{ steps.meta.outputs.deploy_ref }}
+      deploy_scope: ${{ steps.meta.outputs.deploy_scope }}
       target_environment: ${{ steps.meta.outputs.target_environment }}
       staging_configured: ${{ steps.meta.outputs.staging_configured }}
       run_staging: ${{ steps.meta.outputs.run_staging }}
@@ -46,6 +55,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           INPUT_TARGET: ${{ github.event.inputs.target_environment }}
           INPUT_REF: ${{ github.event.inputs.ref }}
+          INPUT_SCOPE: ${{ github.event.inputs.deploy_scope }}
           PUSH_REF_NAME: ${{ github.ref_name }}
           STAGING_SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
           STAGING_SSH_USER: ${{ secrets.STAGING_SSH_USER }}
@@ -59,9 +69,11 @@ jobs:
           if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
             target_environment="${INPUT_TARGET}"
             deploy_ref="${INPUT_REF}"
+            deploy_scope="${INPUT_SCOPE:-full}"
           else
             target_environment="staging"
             deploy_ref="${PUSH_REF_NAME}"
+            deploy_scope="full"
           fi
 
           staging_configured="true"
@@ -93,6 +105,7 @@ jobs:
           {
             echo "deploy_sha=${deploy_sha}"
             echo "deploy_ref=${deploy_ref}"
+            echo "deploy_scope=${deploy_scope}"
             echo "target_environment=${target_environment}"
             echo "staging_configured=${staging_configured}"
             echo "run_staging=${run_staging}"
@@ -286,6 +299,7 @@ jobs:
 
       - name: Build and push backend image
         id: build-backend
+        if: ${{ needs.resolve-target.outputs.deploy_scope == 'full' }}
         uses: docker/build-push-action@v6
         with:
           context: ./backend
@@ -296,6 +310,7 @@ jobs:
 
       - name: Build and push browser-service image
         id: build-browser-service
+        if: ${{ needs.resolve-target.outputs.deploy_scope == 'full' }}
         uses: docker/build-push-action@v6
         with:
           context: ./browser-service
@@ -306,6 +321,7 @@ jobs:
 
       - name: Build and push telegram-bot image
         id: build-telegram-bot
+        if: ${{ needs.resolve-target.outputs.deploy_scope == 'full' }}
         uses: docker/build-push-action@v6
         with:
           context: ./telegram-bot
@@ -316,6 +332,7 @@ jobs:
 
       - name: Build and push AI runtime image
         id: build-ai
+        if: ${{ needs.resolve-target.outputs.deploy_scope == 'full' || needs.resolve-target.outputs.deploy_scope == 'ai-only' }}
         uses: docker/build-push-action@v6
         with:
           context: ./ai-service
@@ -328,13 +345,21 @@ jobs:
 
       - name: Export published image refs
         id: image-refs
+        env:
+          DEPLOY_SCOPE: ${{ needs.resolve-target.outputs.deploy_scope }}
         run: |
           set -euo pipefail
           {
-            echo "backend_image=${{ steps.image-repos.outputs.backend_repo }}@${{ steps.build-backend.outputs.digest }}"
-            echo "browser_service_image=${{ steps.image-repos.outputs.browser_service_repo }}@${{ steps.build-browser-service.outputs.digest }}"
-            echo "telegram_bot_image=${{ steps.image-repos.outputs.telegram_bot_repo }}@${{ steps.build-telegram-bot.outputs.digest }}"
             echo "ai_image=${{ steps.image-repos.outputs.ai_repo }}@${{ steps.build-ai.outputs.digest }}"
+            if [ "${DEPLOY_SCOPE}" = "full" ]; then
+              echo "backend_image=${{ steps.image-repos.outputs.backend_repo }}@${{ steps.build-backend.outputs.digest }}"
+              echo "browser_service_image=${{ steps.image-repos.outputs.browser_service_repo }}@${{ steps.build-browser-service.outputs.digest }}"
+              echo "telegram_bot_image=${{ steps.image-repos.outputs.telegram_bot_repo }}@${{ steps.build-telegram-bot.outputs.digest }}"
+            else
+              echo "backend_image="
+              echo "browser_service_image="
+              echo "telegram_bot_image="
+            fi
           } >> "${GITHUB_OUTPUT}"
 
   deploy-staging:
@@ -354,6 +379,7 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         env:
           DEPLOY_SHA: ${{ needs.resolve-target.outputs.deploy_sha }}
+          DEPLOY_SCOPE: ${{ needs.resolve-target.outputs.deploy_scope }}
           ORIGIN_URL: ${{ github.server_url }}/${{ github.repository }}.git
           BACKEND_IMAGE: ${{ needs.publish-runtime-images.outputs.backend_image }}
           BROWSER_SERVICE_IMAGE: ${{ needs.publish-runtime-images.outputs.browser_service_image }}
@@ -368,7 +394,7 @@ jobs:
           key: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
           script_stop: true
           command_timeout: 30m
-          envs: DEPLOY_SHA,ORIGIN_URL,BACKEND_IMAGE,BROWSER_SERVICE_IMAGE,TELEGRAM_BOT_IMAGE,AI_IMAGE,IMAGE_REGISTRY,IMAGE_REGISTRY_USERNAME,IMAGE_REGISTRY_PASSWORD
+          envs: DEPLOY_SHA,DEPLOY_SCOPE,ORIGIN_URL,BACKEND_IMAGE,BROWSER_SERVICE_IMAGE,TELEGRAM_BOT_IMAGE,AI_IMAGE,IMAGE_REGISTRY,IMAGE_REGISTRY_USERNAME,IMAGE_REGISTRY_PASSWORD
           script: |
             set -euo pipefail
             BASE_PATH="${{ secrets.STAGING_DEPLOY_PATH }}"
@@ -394,6 +420,33 @@ jobs:
             else
               echo "ERROR: no repo cache or legacy checkout found for ${BASE_PATH}" >&2
               exit 1
+            fi
+
+            if [ "${DEPLOY_SCOPE}" = "ai-only" ]; then
+              current_env="${STATE_DIR}/current/.env.production"
+              if [ ! -f "${current_env}" ] && [ -f "${BASE_PATH}/.env.production" ]; then
+                current_env="${BASE_PATH}/.env.production"
+              fi
+              [ -f "${current_env}" ] || { echo "ERROR: current env file missing: ${current_env}" >&2; exit 1; }
+              changed_paths="$(git -C "${RUN_ROOT}" diff-tree --no-commit-id --name-only -r "${DEPLOY_SHA}")"
+              [ -n "${changed_paths}" ] || { echo "ERROR: ai-only deploy target has no file changes" >&2; exit 1; }
+              while IFS= read -r changed_path; do
+                [ -n "${changed_path}" ] || continue
+                case "${changed_path}" in
+                  ai-service/*|.github/workflows/deploy.yml|scripts/test_deploy_workflow.py|docs/operations.md|docs/vps_deploy.md|README.md) ;;
+                  *)
+                    echo "ERROR: ai-only deploy cannot include non-AI path: ${changed_path}" >&2
+                    exit 1
+                    ;;
+                esac
+              done <<< "${changed_paths}"
+              BACKEND_IMAGE="$(awk -F= '/^BACKEND_IMAGE=/{print substr($0,15)}' "${current_env}")"
+              BROWSER_SERVICE_IMAGE="$(awk -F= '/^BROWSER_SERVICE_IMAGE=/{print substr($0,23)}' "${current_env}")"
+              TELEGRAM_BOT_IMAGE="$(awk -F= '/^TELEGRAM_BOT_IMAGE=/{print substr($0,20)}' "${current_env}")"
+              : "${BACKEND_IMAGE:?current env is missing BACKEND_IMAGE}"
+              : "${BROWSER_SERVICE_IMAGE:?current env is missing BROWSER_SERVICE_IMAGE}"
+              : "${TELEGRAM_BOT_IMAGE:?current env is missing TELEGRAM_BOT_IMAGE}"
+              : "${AI_IMAGE:?AI_IMAGE is required for ai-only deploy}"
             fi
 
             bash "${RUN_ROOT}/scripts/deploy_release.sh" \
@@ -508,6 +561,7 @@ jobs:
         uses: appleboy/ssh-action@v1.2.0
         env:
           DEPLOY_SHA: ${{ needs.resolve-target.outputs.deploy_sha }}
+          DEPLOY_SCOPE: ${{ needs.resolve-target.outputs.deploy_scope }}
           ORIGIN_URL: ${{ github.server_url }}/${{ github.repository }}.git
           BACKEND_IMAGE: ${{ needs.publish-runtime-images.outputs.backend_image }}
           BROWSER_SERVICE_IMAGE: ${{ needs.publish-runtime-images.outputs.browser_service_image }}
@@ -522,7 +576,7 @@ jobs:
           key: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
           script_stop: true
           command_timeout: 30m
-          envs: DEPLOY_SHA,ORIGIN_URL,BACKEND_IMAGE,BROWSER_SERVICE_IMAGE,TELEGRAM_BOT_IMAGE,AI_IMAGE,IMAGE_REGISTRY,IMAGE_REGISTRY_USERNAME,IMAGE_REGISTRY_PASSWORD
+          envs: DEPLOY_SHA,DEPLOY_SCOPE,ORIGIN_URL,BACKEND_IMAGE,BROWSER_SERVICE_IMAGE,TELEGRAM_BOT_IMAGE,AI_IMAGE,IMAGE_REGISTRY,IMAGE_REGISTRY_USERNAME,IMAGE_REGISTRY_PASSWORD
           script: |
             set -euo pipefail
             BASE_PATH="${{ secrets.PROD_DEPLOY_PATH }}"
@@ -548,6 +602,33 @@ jobs:
             else
               echo "ERROR: no repo cache or legacy checkout found for ${BASE_PATH}" >&2
               exit 1
+            fi
+
+            if [ "${DEPLOY_SCOPE}" = "ai-only" ]; then
+              current_env="${STATE_DIR}/current/.env.production"
+              if [ ! -f "${current_env}" ] && [ -f "${BASE_PATH}/.env.production" ]; then
+                current_env="${BASE_PATH}/.env.production"
+              fi
+              [ -f "${current_env}" ] || { echo "ERROR: current env file missing: ${current_env}" >&2; exit 1; }
+              changed_paths="$(git -C "${RUN_ROOT}" diff-tree --no-commit-id --name-only -r "${DEPLOY_SHA}")"
+              [ -n "${changed_paths}" ] || { echo "ERROR: ai-only deploy target has no file changes" >&2; exit 1; }
+              while IFS= read -r changed_path; do
+                [ -n "${changed_path}" ] || continue
+                case "${changed_path}" in
+                  ai-service/*|.github/workflows/deploy.yml|scripts/test_deploy_workflow.py|docs/operations.md|docs/vps_deploy.md|README.md) ;;
+                  *)
+                    echo "ERROR: ai-only deploy cannot include non-AI path: ${changed_path}" >&2
+                    exit 1
+                    ;;
+                esac
+              done <<< "${changed_paths}"
+              BACKEND_IMAGE="$(awk -F= '/^BACKEND_IMAGE=/{print substr($0,15)}' "${current_env}")"
+              BROWSER_SERVICE_IMAGE="$(awk -F= '/^BROWSER_SERVICE_IMAGE=/{print substr($0,23)}' "${current_env}")"
+              TELEGRAM_BOT_IMAGE="$(awk -F= '/^TELEGRAM_BOT_IMAGE=/{print substr($0,20)}' "${current_env}")"
+              : "${BACKEND_IMAGE:?current env is missing BACKEND_IMAGE}"
+              : "${BROWSER_SERVICE_IMAGE:?current env is missing BROWSER_SERVICE_IMAGE}"
+              : "${TELEGRAM_BOT_IMAGE:?current env is missing TELEGRAM_BOT_IMAGE}"
+              : "${AI_IMAGE:?AI_IMAGE is required for ai-only deploy}"
             fi
 
             bash "${RUN_ROOT}/scripts/deploy_release.sh" \

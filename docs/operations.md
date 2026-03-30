@@ -31,12 +31,37 @@ export PROD_COMPOSE="docker compose --env-file .env.production -f docker-compose
 ./scripts/release_preflight_gate.sh
 ```
 
+### 0.1.1 AI-only hotfix rollout
+Если нужен emergency rollout только для Python AI runtime, не собирайте image на VPS и не подменяйте `AI_IMAGE` локальным tag вручную.
+
+Поддержанный путь:
+1. Запустить `Deploy Pipeline` вручную (`.github/workflows/deploy.yml`).
+2. Выбрать `target_environment=staging` или `production`.
+3. Указать `ref` на target SHA с нужным AI fix.
+4. Указать `deploy_scope=ai-only`.
+
+Что делает workflow в этом режиме:
+- собирает и публикует только digest-pinned `AI_IMAGE`;
+- на хосте reuse'ит текущие `BACKEND_IMAGE`, `BROWSER_SERVICE_IMAGE`, `TELEGRAM_BOT_IMAGE` из live `.env.production`;
+- отклоняет target commit, если он меняет что-то вне `ai-service/` и operator allowlist файлов deploy/runbook;
+- вызывает тот же `scripts/deploy_release.sh`, поэтому release layout, `--no-build`, `current` symlink и post-deploy checks остаются каноническими.
+
+Ограничения:
+- это не bootstrap path: на хосте уже должен существовать live release с корректным `.env.production`;
+- target `ref` должен быть отдельным AI-only commit, а не произвольным SHA с backend/compose/runtime изменениями.
+
+Этот путь нужен именно для того, чтобы emergency AI fixes не обходили обычный immutable deploy flow.
+
 ### 0.2 Compose config
 1. Проверить local/dev compose contract:
 ```bash
 docker compose --env-file .env.example -f docker-compose.yml --profile workers --profile ai-user-embed config -q
 ```
-2. Проверить production compose contract:
+2. Проверить production compose contract ровно так же, как его валидирует `release-preflight-gate`:
+```bash
+docker compose --env-file .env.production.example -f docker-compose.prod.yml config -q
+```
+3. Для текущего VPS дополнительно проверить overlay contract:
 ```bash
 docker compose --env-file .env.production.example -f docker-compose.prod.yml -f docker-compose.ssl.yml config -q
 ```
@@ -54,6 +79,7 @@ bash ./scripts/validate-env-production.sh .env.production
    `BOT_MODE=webhook`, `WEBHOOK_URL` и `WEBHOOK_SECRET_TOKEN` обязательны;
    host reverse proxy должен маршрутизировать `WEBHOOK_URL` на loopback-адрес `BOT_BIND_IP:BOT_PORT`.
    Готовый nginx-пример для VPS: `docs/vps_deploy.md` (`/webhook -> http://127.0.0.1:${BOT_PORT}`).
+4. Если включается monitoring profile, подтвердить `GRAFANA_ADMIN_PASSWORD`.
 
 ### 0.4 Smoke and health
 1. После staging deploy проверить health endpoint:
@@ -136,7 +162,7 @@ DATABASE_URL='postgres://...' ./scripts/restore_postgres.sh /path/to/pre_release
 ```
 3. Подтвердить, что rollback owner знает предыдущий рабочий image/tag и порядок остановки writers:
 ```bash
-$PROD_COMPOSE stop backend-api backend-crawler backend-notifier ai-service ai-user-embed ai-user-rematch telegram-bot
+$PROD_COMPOSE stop backend-api backend-crawler backend-notifier ai-service ai-user-embed ai-user-rematch ai-ac-consumer telegram-bot
 ```
 4. Не реже одного раза в месяц выполнить restore drill по разделу `4.4 Restore drill checklist`.
 
@@ -157,6 +183,7 @@ $PROD_COMPOSE stop backend-api backend-crawler backend-notifier ai-service ai-us
 - `ALERTMANAGER_TELEGRAM_BOT_TOKEN` (fallback: `TELEGRAM_BOT_TOKEN`)
 - `ALERTMANAGER_TELEGRAM_CHAT_ID` (fallback: `TELEGRAM_ID`)
 - `ALERTMANAGER_SLACK_WEBHOOK_URL` (опционально)
+- `GRAFANA_ADMIN_PASSWORD` (обязателен, если запускается Grafana)
 
 Не храните токены в plaintext-файлах `monitoring/alertmanager/secrets/*`.
 Если legacy-файлы уже созданы, удалите их:
@@ -226,8 +253,8 @@ docker compose --env-file .env.production \
 
 Проверка:
 ```bash
-curl -fsS http://localhost:8080/healthz
-curl -fsS http://localhost:8080/readyz
+curl -kfsS https://127.0.0.1:8443/healthz
+curl -kfsS https://127.0.0.1:8443/readyz
 ```
 
 ### 1.3 Метрики, которые нужно собирать
@@ -242,7 +269,7 @@ curl -fsS http://localhost:8080/readyz
 - PostgreSQL:
   - active connections, long-running queries, deadlocks;
   - table/index bloat;
-  - replication lag (если managed cluster).
+  - состояние self-hosted инстанса на VPS.
 - Business:
   - jobs parsed/hour;
   - matches/job;
@@ -315,7 +342,7 @@ $PROD_COMPOSE logs --since=15m telegram-bot
 3. Проверить доступность PostgreSQL/Redis.
 4. Перезапуск:
 ```bash
-docker compose restart backend-api
+$PROD_COMPOSE restart backend-api
 ```
 
 ### 3.3 Очереди растут, уведомления не отправляются
@@ -346,7 +373,7 @@ done
 ### 4.2 Backup policy
 - PostgreSQL:
   - еженощный full backup (`pg_dump -Fc`);
-  - WAL/PITR у managed Postgres (если доступно);
+  - WAL/PITR можно добавить позже, если вы отдельно включите такую схему в self-hosted infra;
   - retention не меньше 14 дней.
 - Redis:
   - для очередей можно принимать потерю transient-сообщений;
@@ -391,7 +418,7 @@ Rollback делается вручную по runbook ниже.
 Порядок rollback:
 1. Остановить запись в БД (writers), чтобы зафиксировать состояние:
 ```bash
-docker compose stop backend-api backend-crawler backend-notifier ai-service ai-user-embed ai-user-rematch telegram-bot
+$PROD_COMPOSE stop backend-api backend-crawler backend-notifier ai-service ai-user-embed ai-user-rematch ai-ac-consumer telegram-bot
 ```
 2. Снять аварийный backup текущего (даже «плохого») состояния:
 ```bash
@@ -406,8 +433,9 @@ DATABASE_URL='postgres://...' ./scripts/restore_postgres.sh /path/to/pre_release
 6. Поднять `backend-migrate` и убедиться, что миграции завершаются без ошибок.
 7. Поднять сервисы и выполнить smoke:
 ```bash
-curl -fsS http://localhost:8080/healthz
-curl -fsS http://localhost:8080/readyz
+$PROD_COMPOSE up -d
+curl -kfsS https://127.0.0.1:8443/healthz
+curl -kfsS https://127.0.0.1:8443/readyz
 ./scripts/e2e_test.sh
 ```
 8. Зафиксировать в инциденте: какой dump использован, RPO/RTO, какие миграции признаны проблемными.

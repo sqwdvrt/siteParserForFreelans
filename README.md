@@ -54,7 +54,7 @@ docker compose up -d
 docker compose --profile bot up -d telegram-bot
 
 # (опционально) включить вторичные воркеры:
-# backend-crawler, backend-notifier, ai-service, ai-ac-consumer
+# browser-service, backend-crawler, backend-notifier, ai-service, ai-ac-consumer
 docker compose --profile workers up -d
 
 # (опционально) точечно включить только user-embed consumer
@@ -111,21 +111,22 @@ docker compose up -d ai-user-rematch
 ## Deployment Profiles
 
 - `docker-compose.yml` — локальный dev-профиль (включает локальные PostgreSQL/Redis и допускает `sslmode=disable`, `redis://`, `http://`).
-  Вторичные воркеры (`backend-crawler`, `backend-notifier`, `ai-service`, `ai-ac-consumer`) вынесены в profile `workers` и запускаются on-demand.
+  Вторичные воркеры (`browser-service`, `backend-crawler`, `backend-notifier`, `ai-service`, `ai-ac-consumer`) вынесены в profile `workers` и запускаются on-demand.
   Локальный `telegram-bot` вынесен в profile `bot`; если бот уже живет отдельно, например на Railway, этот profile локально можно не запускать.
   Для точечного запуска отдельный profile сохранён только у `ai-user-embed`.
 - `docker-compose.prod.yml` — production-профиль (`APP_ENV=production`, TLS обязателен).
   `ai-user-embed`, `ai-user-rematch` и `ai-ac-consumer` входят по умолчанию.
   `telegram-bot` публикуется только на loopback (`BOT_BIND_IP`/`BOT_PORT`), поэтому production webhook должен идти через host reverse proxy на `WEBHOOK_URL -> 127.0.0.1:${BOT_PORT}`.
-  Готовый nginx-конфиг для VPS-схемы см. в `docs/vps_deploy.md`.
+  `pgAdmin` тоже публикуется только на loopback и открывается через SSH tunnel.
 - `docker-compose.ssl.yml` — VPS-overlay поверх `docker-compose.prod.yml`.
-  Подключает внешнюю сеть `infra_default` (отдельный инфра-compose с postgres + redis) и пробрасывает самоподписанный CA-сертификат во все контейнеры через `SSL_CERT_FILE`.
-  Запуск: `docker compose -f docker-compose.prod.yml -f docker-compose.ssl.yml --env-file .env.production up -d`.
+  Подключает внешнюю сеть `infra_default` с self-hosted `postgres` и `redis`, а также пробрасывает самоподписанный CA-сертификат во все контейнеры через `SSL_CERT_FILE`.
+  Канонический production-запуск на VPS:
+  `docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml up -d`
   Подробнее: `docs/vps_deploy.md`.
 - `docker-compose.monitoring.yml` — профиль мониторинга (Prometheus + Alertmanager, profile `monitoring`).
   По умолчанию он заточен под локальный dev-compose, а для production на VPS должен запускаться вместе с `docker-compose.ssl.yml`
   и переопределяться env-переменными scrape/DB endpoints.
-  Все compose-файлы снова используют project-scoped default network: не полагайтесь на общий hardcoded Docker network между разными окружениями/`-p` project names.
+  Все compose-файлы используют project-scoped default network: не полагайтесь на общий hardcoded Docker network между разными окружениями/`-p` project names.
 
 ### Monitoring (Docker Compose)
 
@@ -166,10 +167,11 @@ docker compose -p siteparser -f docker-compose.yml -f docker-compose.monitoring.
 - `BACKEND_API_METRICS_TARGET=backend-api:8443`
 - `BACKEND_API_METRICS_SCHEME=https`
 - `BACKEND_API_METRICS_TLS_INSECURE_SKIP_VERIFY=true`
-- `REDIS_URL=rediss://default:replace_with_strong_redis_password@redis.example.com:6380/0`
+- `REDIS_URL=rediss://default:replace_with_strong_redis_password@redis:6379/0`
 - `REDIS_EXPORTER_REDIS_ADDR` только если exporter должен смотреть в другой Redis, чем приложение
 - `POSTGRES_EXPORTER_DATA_SOURCE_NAME=postgresql://...?...sslmode=require`
 - `GRAFANA_POSTGRES_HOST`, `GRAFANA_POSTGRES_PORT`, `GRAFANA_POSTGRES_SSLMODE=require`
+- `GRAFANA_ADMIN_PASSWORD`
 
 Пример production-запуска monitoring stack:
 ```bash
@@ -207,10 +209,10 @@ docker compose --env-file .env.production \
 ```bash
 # 1. Подготовить production env
 cp .env.production.example .env.production
-# Отредактировать .env.production: DATABASE_URL (sslmode=require), REDIS_URL (rediss://), API_URL (https://),
-# API_TLS_CERT_HOST_PATH/API_TLS_KEY_HOST_PATH и секреты.
+# Отредактировать .env.production: host paths для TLS, webhook/admin/monitoring secrets
+# и, при необходимости, pinned image digests.
 
-# 2a. VPS/self-hosted запуск с infra overlay (внешние Postgres/Redis в сети infra_default)
+# 2. Канонический VPS/self-hosted запуск
 docker compose --env-file .env.production \
   -f docker-compose.prod.yml \
   -f docker-compose.ssl.yml \
@@ -219,18 +221,14 @@ docker compose --env-file .env.production \
   -f docker-compose.prod.yml \
   -f docker-compose.ssl.yml \
   up -d --no-build
-
-# 2b. Альтернатива без overlay: managed Postgres/Redis доступны напрямую по TLS
-docker compose --env-file .env.production -f docker-compose.prod.yml pull
-docker compose --env-file .env.production -f docker-compose.prod.yml up -d --no-build
 ```
 
-Для VPS-схемы из `docs/vps_deploy.md` используйте вариант `2a` с `docker-compose.ssl.yml`.
+Для VPS-схемы из `docs/vps_deploy.md` используйте запуск с `docker-compose.ssl.yml`.
 Production `.env.production` должен содержать digest-pinned `BACKEND_IMAGE`, `BROWSER_SERVICE_IMAGE`, `TELEGRAM_BOT_IMAGE` и `AI_IMAGE`.
 
 `ai-user-embed`, `ai-user-rematch` и `ai-ac-consumer` входят в production compose по умолчанию (без отдельного profile).
 
-В production compose **не** поднимает локальные PostgreSQL/Redis контейнеры: используются внешние managed endpoints.
+В production compose **не** поднимает локальные PostgreSQL/Redis контейнеры: они приходят из self-hosted infra в `infra_default`.
 
 ### Railway (монорепо)
 
@@ -245,6 +243,8 @@ Railway backend теперь стартует через `backend/scripts/railwa
 ### Deploy Pipeline: Preflight + Staging Smoke/E2E Gate
 
 Workflow `.github/workflows/deploy.yml` теперь сначала гоняет быстрый job `release-preflight-gate`, который валидирует production compose/config contract и backend smoke contract ещё до `deploy-staging`.
+
+Для emergency AI fixes manual `workflow_dispatch` теперь поддерживает `deploy_scope=ai-only`: pipeline публикует только новый digest-pinned `AI_IMAGE` и reuse'ит текущие non-AI image refs на хосте через тот же `deploy_release.sh`, без `docker build` на VPS. Этот режим рассчитан только на уже существующий live release и только на отдельный AI-only commit; workflow отклоняет target SHA с non-AI runtime изменениями.
 
 Перед production release используйте явный checklist из `docs/operations.md` (`0) Release Checklist`): compose config, env validation, staging smoke, health checks, queue drain, rollback drill.
 
@@ -295,6 +295,7 @@ cd backend && go run ./cmd/crawler
 | `REDIS_URL` | Подключение к Redis (в production только `rediss://` + пароль) |
 | `API_AUTH_TOKEN` | Bearer token для API (обязателен) |
 | `API_USER_HMAC_SECRET` | HMAC-секрет подписи user-level API-запросов (обязателен) |
+| `ADMIN_AUTH_TOKEN` | Bearer token для admin API-эндпоинтов (обязателен в production) |
 | `API_NONCE_TTL_SEC` | TTL (сек) для `X-Request-Nonce` anti-replay; по умолчанию `600` |
 | `API_RATE_LIMIT_WINDOW_SEC` | Размер окна rate-limit (сек); по умолчанию `60` |
 | `API_RATE_LIMIT_IP_RPM` | Лимит API-запросов на IP в окне; по умолчанию `120` |
@@ -305,9 +306,14 @@ cd backend && go run ./cmd/crawler
 | `TELEGRAM_BOT_TOKEN` | Основной токен Telegram-бота для production webhook / notifier / Alertmanager fallback |
 | `LOCAL_TELEGRAM_BOT_TOKEN` | Dev-only override для локального polling и notifier smoke, чтобы не конфликтовать с production webhook |
 | `POLLING_ACTIVE_WEBHOOK_POLICY` | Поведение локального polling при активном webhook на токене: `standby` (по умолчанию) или `ignore` |
+| `BOT_MODE` | Режим telegram-bot: локально возможен `polling`, в production должен быть `webhook` |
+| `BOT_BIND_IP`/`BOT_PORT` | Loopback bind для production webhook ingress (`127.0.0.1:8080` на VPS) |
+| `WEBHOOK_URL` | Публичный HTTPS webhook URL Telegram (`https://api.freematch.ru/webhook` на текущем VPS) |
+| `WEBHOOK_SECRET_TOKEN` | Секрет Telegram webhook, обязателен в production |
 | `TELEGRAM_ID` | Личный chat_id для локальных smoke/e2e-проверок и fallback Alertmanager, если `ALERTMANAGER_TELEGRAM_CHAT_ID` не задан |
 | `ALERTMANAGER_TELEGRAM_BOT_TOKEN` | Отдельный токен бота для Alertmanager (опционально; иначе используется `TELEGRAM_BOT_TOKEN`) |
 | `ALERTMANAGER_TELEGRAM_CHAT_ID` | Отдельный chat_id канала/ops-чата для monitoring alerts (рекомендуется) |
+| `GRAFANA_ADMIN_PASSWORD` | Пароль администратора Grafana для monitoring profile на VPS |
 | `PGADMIN_EMAIL` | Логин для optional `pgAdmin` в production compose; используется только для localhost-only доступа через SSH tunnel |
 | `PGADMIN_PASSWORD` | Пароль для optional `pgAdmin`; задайте сильное значение (`openssl rand -hex 16`) |
 | `NOTIFY_PRO_MAX_PER_DAY` | Предпочтительный суточный лимит уведомлений на пользователя (`backend-notifier`, по умолчанию `5`) |
@@ -320,7 +326,7 @@ cd backend && go run ./cmd/crawler
 | `CRAWL_RETRY_MAX_ATTEMPTS` | Количество попыток fetch для `429/5xx` (по умолчанию `3`) |
 | `CRAWL_RETRY_BASE_BACKOFF` | Базовый exponential backoff между retry (по умолчанию `1s`) |
 | `CRAWL_RETRY_MAX_BACKOFF` | Верхняя граница backoff между retry (по умолчанию `30s`) |
-| `DATABASE_MIGRATE_URL` | Отдельный DSN для миграций; в текущем проектном `.env` совпадает с `DATABASE_URL` |
+| `DATABASE_MIGRATE_URL` | Отдельный DSN для миграций; в production используется, если нужен session/direct endpoint для миграций |
 | `PG_POOL_MAX_CONNS`/`PG_POOL_MIN_CONNS`/`PG_POOL_ACQUIRE_TIMEOUT` | Тюнинг postgres pool для backend и `ai-service` |
 | `BROWSER_SERVICE_URL` | URL browser render service для crawler; в текущем `.env` используется `http://browser-service:8090`. Сервис пропускает только `http/https` и блокирует localhost/private/link-local targets на request-time |
 | `LLM_PROVIDER` | Провайдер actor в `ai-ac-consumer`: только `gemini`; без него процесс завершится с ошибкой |

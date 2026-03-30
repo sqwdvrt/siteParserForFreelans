@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import ai_service.adapter.postgres._pooled_repository as pooled_repository_module
 import pytest
 
-from ai_service.adapter.postgres import PostgresMatchRepository
+from ai_service.adapter.postgres import PostgresJobRepository, PostgresMatchRepository, PostgresUserRepository
 from ai_service.adapter.postgres._pooled_repository import PooledPostgresRepository
 from ai_service.util import fallback_metrics
 
@@ -70,8 +71,32 @@ class _FakePool:
         self.closeall_calls += 1
 
 
+class _ExplodingGetConnPool(_FakePool):
+    def getconn(self):
+        self.getconn_calls += 1
+        raise RuntimeError("pool exhausted")
+
+
 class _DummyRepo(PooledPostgresRepository):
     pass
+
+
+@pytest.fixture(autouse=True)
+def _reset_shared_pool_state() -> None:
+    _drain_shared_pool_state()
+    yield
+    _drain_shared_pool_state()
+
+
+def _drain_shared_pool_state() -> None:
+    with pooled_repository_module._SHARED_POOLS_LOCK:
+        entries = list(pooled_repository_module._SHARED_POOLS.values())
+        pooled_repository_module._SHARED_POOLS.clear()
+    for entry in entries:
+        if entry.pool is not None:
+            entry.pool.closeall()
+    with fallback_metrics._pool_providers_lock:
+        fallback_metrics._pool_providers.clear()
 
 
 def test_pool_created_lazily_for_invalid_embedding(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -121,6 +146,143 @@ def test_pool_reused_and_connections_returned(monkeypatch: pytest.MonkeyPatch) -
 
     repo.close()
     assert pool.closeall_calls == 1
+
+
+def test_repositories_with_same_dsn_and_limits_share_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    created: list[_FakePool] = []
+
+    def fake_pool(minconn: int, maxconn: int, dsn: str) -> _FakePool:
+        pool = _FakePool(minconn, maxconn, dsn)
+        created.append(pool)
+        return pool
+
+    monkeypatch.setattr(
+        "ai_service.adapter.postgres._pooled_repository._VectorThreadedConnectionPool",
+        fake_pool,
+    )
+    job_repo = PostgresJobRepository("postgresql://fake/fake", minconn=0, maxconn=2)
+    user_repo = PostgresUserRepository("postgresql://fake/fake", minconn=0, maxconn=2)
+
+    job_pool = job_repo._get_pool()
+    user_pool = user_repo._get_pool()
+
+    assert job_pool is user_pool
+    assert len(created) == 1
+
+    job_repo.close()
+    assert created[0].closeall_calls == 0
+
+    user_repo.close()
+    assert created[0].closeall_calls == 1
+
+
+def test_shared_pool_reused_across_repo_instances(monkeypatch: pytest.MonkeyPatch) -> None:
+    created = _make_fake_pool_fixture(monkeypatch)
+    repo_a = _DummyRepo(
+        "postgresql://fake/fake",
+        minconn=2,
+        maxconn=5,
+        statement_timeout_ms=2_500,
+    )
+    repo_b = _DummyRepo(
+        "postgresql://fake/fake",
+        minconn=2,
+        maxconn=5,
+        statement_timeout_ms=2_500,
+    )
+
+    pool_a = repo_a._get_pool()
+    pool_b = repo_b._get_pool()
+
+    assert len(created) == 1
+    assert pool_a is pool_b
+    assert pool_a.minconn == 2
+    assert pool_a.maxconn == 5
+
+    repo_a.close()
+    repo_b.close()
+
+
+def test_closing_one_repo_keeps_shared_pool_alive_for_other_repo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = _make_fake_pool_fixture(monkeypatch)
+    repo_a = _DummyRepo(
+        "postgresql://fake/fake",
+        minconn=2,
+        maxconn=5,
+        statement_timeout_ms=2_500,
+    )
+    repo_b = _DummyRepo(
+        "postgresql://fake/fake",
+        minconn=2,
+        maxconn=5,
+        statement_timeout_ms=2_500,
+    )
+
+    pool_a = repo_a._get_pool()
+    pool_b = repo_b._get_pool()
+
+    repo_a.close()
+
+    assert pool_a is pool_b
+    assert pool_a.closeall_calls == 0
+
+    with repo_b._conn():
+        pass
+
+    repo_b.close()
+    assert pool_a.closeall_calls == 1
+
+
+def test_double_close_is_safe_for_shared_pool(monkeypatch: pytest.MonkeyPatch) -> None:
+    created = _make_fake_pool_fixture(monkeypatch)
+    repo = _DummyRepo("postgresql://fake/fake", minconn=0, maxconn=2)
+
+    repo._get_pool()
+    repo.close()
+    repo.close()
+
+    assert len(created) == 1
+    assert created[0].closeall_calls == 1
+
+
+def test_close_waits_for_active_connection_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    created = _make_fake_pool_fixture(monkeypatch)
+    repo = _DummyRepo("postgresql://fake/fake", minconn=0, maxconn=2)
+
+    with repo._conn():
+        pool = created[0]
+        repo.close()
+        assert pool.closeall_calls == 0
+
+    assert pool.closeall_calls == 1
+
+
+def test_getconn_failure_does_not_leak_shared_pool_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    created: list[_ExplodingGetConnPool] = []
+
+    def fake_pool(minconn: int, maxconn: int, dsn: str) -> _ExplodingGetConnPool:
+        pool = _ExplodingGetConnPool(minconn, maxconn, dsn)
+        created.append(pool)
+        return pool
+
+    monkeypatch.setattr(
+        "ai_service.adapter.postgres._pooled_repository._VectorThreadedConnectionPool",
+        fake_pool,
+    )
+    repo = _DummyRepo("postgresql://fake/fake", minconn=0, maxconn=2)
+    metrics_name = next(iter(fallback_metrics.snapshot_pool_stats()))
+
+    with pytest.raises(RuntimeError, match="pool exhausted"):
+        with repo._conn():
+            pass
+
+    repo.close()
+
+    assert len(created) == 1
+    assert created[0].closeall_calls == 1
+    assert metrics_name not in fallback_metrics.snapshot_pool_stats()
 
 
 def test_rollback_on_error_and_return_to_pool(
@@ -261,14 +423,36 @@ def test_pool_stats_reads_idle_and_active_from_pool(monkeypatch: pytest.MonkeyPa
 
 
 def test_pool_provider_registered_on_init_and_deregistered_on_close() -> None:
-    repo = _DummyRepo("postgresql://fake/fake")
-    name = "_DummyRepo"
     snapshot_before = fallback_metrics.snapshot_pool_stats()
-    assert name in snapshot_before
+    before_keys = set(snapshot_before)
+    repo = _DummyRepo("postgresql://fake/fake")
+
+    snapshot_after_init = fallback_metrics.snapshot_pool_stats()
+    added_keys = set(snapshot_after_init) - before_keys
+    assert len(added_keys) == 1
+    metrics_name = next(iter(added_keys))
 
     repo.close()
     snapshot_after = fallback_metrics.snapshot_pool_stats()
-    assert name not in snapshot_after
+    assert metrics_name not in snapshot_after
+
+
+def test_shared_pool_provider_survives_until_last_repo_closes(monkeypatch: pytest.MonkeyPatch) -> None:
+    repo_a = _DummyRepo("postgresql://fake/fake", minconn=0, maxconn=2)
+    snapshot_after_a = fallback_metrics.snapshot_pool_stats()
+    provider_keys = set(snapshot_after_a)
+    assert provider_keys
+
+    repo_b = _DummyRepo("postgresql://fake/fake", minconn=0, maxconn=2)
+    snapshot_after_b = fallback_metrics.snapshot_pool_stats()
+    assert set(snapshot_after_b) == provider_keys
+
+    metrics_name = next(iter(provider_keys))
+    repo_a.close()
+    assert metrics_name in fallback_metrics.snapshot_pool_stats()
+
+    repo_b.close()
+    assert metrics_name not in fallback_metrics.snapshot_pool_stats()
 
 
 def test_pool_metrics_appear_in_prometheus_output(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -291,6 +475,6 @@ def test_pool_metrics_appear_in_prometheus_output(monkeypatch: pytest.MonkeyPatc
     assert "ai_pg_pool_connections_active" in output
     assert "ai_pg_pool_connections_idle" in output
     assert "ai_pg_pool_connections_max" in output
-    assert '_DummyRepo' in output
+    assert 'pool="postgres_pool_' in output
 
     repo.close()
