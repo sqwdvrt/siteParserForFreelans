@@ -20,6 +20,11 @@ func NewExtractor(username string) *Extractor {
 	return &Extractor{channelUsername: username}
 }
 
+// FetchExistingDetails disables detail refetch for already known Telegram posts.
+func (e *Extractor) FetchExistingDetails() bool {
+	return false
+}
+
 // ExtractList парсит https://t.me/s/<channel> и возвращает embed-ссылки на посты.
 // Каждая ссылка имеет вид https://t.me/<channel>/<msgID>?embed=1&mode=tme.
 func (e *Extractor) ExtractList(html []byte) ([]string, error) {

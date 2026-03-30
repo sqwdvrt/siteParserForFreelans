@@ -17,6 +17,10 @@ type CrawlProjects struct {
 	stager    port.JobEmbedDispatchRepository
 }
 
+type existingDetailFetchPolicy interface {
+	FetchExistingDetails() bool
+}
+
 // NewCrawlProjects создаёт use case.
 func NewCrawlProjects(
 	fetcher port.Fetcher,
@@ -47,15 +51,35 @@ func (u *CrawlProjects) Execute(ctx context.Context, listURL string) (saved int,
 	}
 	slog.Info("crawl: found projects", "count", len(urls), "url", listURL)
 	for _, detailURL := range urls {
+		if err := ctx.Err(); err != nil {
+			return saved, err
+		}
+
 		exists, err := u.repo.ExistsByURL(ctx, detailURL)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return saved, ctxErr
+			}
 			slog.Warn("crawl: check exists failed", "url", detailURL, "err", err)
+			continue
+		}
+
+		if exists && !shouldFetchExistingDetails(u.extractor) {
+			if touchErr := u.repo.TouchSeenAt(ctx, detailURL); touchErr != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return saved, ctxErr
+				}
+				slog.Warn("crawl: touch seen_at failed", "url", detailURL, "err", touchErr)
+			}
 			continue
 		}
 
 		// Fetch detail for ALL URLs — this is the only way to detect 404/410 for existing jobs too.
 		detailHTML, err := u.fetcher.Fetch(ctx, detailURL)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return saved, ctxErr
+			}
 			slog.Warn("crawl: fetch detail failed", "url", detailURL, "err", err)
 			if domain.IsGone(err) {
 				expiredIDs, expErr := u.repo.ExpireByURL(ctx, detailURL)
@@ -72,6 +96,9 @@ func (u *CrawlProjects) Execute(ctx context.Context, listURL string) (saved int,
 
 		if exists {
 			if touchErr := u.repo.TouchSeenAt(ctx, detailURL); touchErr != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return saved, ctxErr
+				}
 				slog.Warn("crawl: touch seen_at failed", "url", detailURL, "err", touchErr)
 			}
 			continue
@@ -92,6 +119,9 @@ func (u *CrawlProjects) Execute(ctx context.Context, listURL string) (saved int,
 			observability.QueueDispatchTraceFromContext(ctx),
 		)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return saved, ctxErr
+			}
 			slog.Warn("crawl: save failed", "url", detailURL, "err", err)
 			continue
 		}
@@ -103,6 +133,14 @@ func (u *CrawlProjects) Execute(ctx context.Context, listURL string) (saved int,
 	}
 	slog.Info("crawl: done", "saved", saved, "total_found", len(urls))
 	return saved, nil
+}
+
+func shouldFetchExistingDetails(extractor port.Extractor) bool {
+	policy, ok := extractor.(existingDetailFetchPolicy)
+	if !ok {
+		return true
+	}
+	return policy.FetchExistingDetails()
 }
 
 // RequeueOrphaned finds jobs with no embedding and stages them for deferred enqueue.

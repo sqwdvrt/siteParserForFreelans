@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/tgchannel"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 )
@@ -15,9 +16,11 @@ type mockFetcher struct {
 	listErr  error
 	details  map[string][]byte
 	failURLs map[string]error
+	calls    []string
 }
 
 func (m *mockFetcher) Fetch(ctx context.Context, url string) ([]byte, error) {
+	m.calls = append(m.calls, url)
 	if err, ok := m.failURLs[url]; ok {
 		return nil, err
 	}
@@ -215,6 +218,35 @@ func TestCrawlProjects_Execute_Success(t *testing.T) {
 	}
 }
 
+func TestCrawlProjects_Execute_TgchannelExistingJob_SkipsDetailFetchAndTouchesSeenAt(t *testing.T) {
+	existingURL := "https://t.me/freelance_ru/1001?embed=1&mode=tme"
+	ext := tgchannel.NewExtractor("freelance_ru")
+	fetcher := &mockFetcher{
+		listHTML: []byte(`<html><body><a class="tgme_widget_message_date" href="https://t.me/freelance_ru/1001">post</a></body></html>`),
+		failURLs: map[string]error{
+			existingURL: errors.New("detail fetch should be skipped for existing tgchannel jobs"),
+		},
+	}
+	repo := &mockRepo{
+		exists: map[string]bool{existingURL: true},
+	}
+
+	uc := NewCrawlProjects(fetcher, ext, repo, nil)
+	saved, err := uc.Execute(context.Background(), "https://t.me/s/freelance_ru")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if saved != 0 {
+		t.Fatalf("want saved=0, got %d", saved)
+	}
+	if len(fetcher.calls) != 1 || fetcher.calls[0] != "https://t.me/s/freelance_ru" {
+		t.Fatalf("want only list fetch, got %v", fetcher.calls)
+	}
+	if len(repo.touchedURLs) != 1 || repo.touchedURLs[0] != existingURL {
+		t.Fatalf("want TouchSeenAt called for %q, got %v", existingURL, repo.touchedURLs)
+	}
+}
+
 func TestCrawlProjects_Execute_FetchListFails(t *testing.T) {
 	fetcher := &mockFetcher{listErr: errors.New("network error")}
 	ext := &mockExtractor{listURLs: []string{}}
@@ -374,6 +406,29 @@ func TestCrawlProjects_Execute_ExistingJob_TouchSeenAtWhenFetchOK(t *testing.T) 
 	}
 	if len(repo.expiredURLs) != 0 {
 		t.Fatalf("want no ExpireByURL, got %v", repo.expiredURLs)
+	}
+}
+
+func TestCrawlProjects_Execute_ReturnsCtxErr_WhenDetailFetchIsCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	url := "https://kwork.ru/projects/cancelled/view"
+	ext := &mockExtractor{
+		listURLs: []string{url},
+	}
+	fetcher := &mockFetcher{
+		listHTML: []byte("<html>list</html>"),
+		failURLs: map[string]error{
+			url: ctx.Err(),
+		},
+	}
+	repo := &mockRepo{}
+
+	uc := NewCrawlProjects(fetcher, ext, repo, nil)
+	_, err := uc.Execute(ctx, "https://kwork.ru/projects")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
 	}
 }
 
