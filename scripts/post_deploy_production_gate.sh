@@ -140,4 +140,28 @@ expect_http_code \
   --header "Content-Type: application/json" \
   --data ''
 
+echo "=== Production post-deploy Redis persistence gate ==="
+_redis_container="$(docker ps --format '{{.Names}}' | grep -i redis | grep -v redis-exporter | head -n1 || true)"
+if [[ -z "${_redis_container}" ]]; then
+  echo "WARNING: no Redis container found via docker ps (may be remote Redis) — skipping AOF check"
+else
+  echo "Found Redis container: ${_redis_container}"
+  _redis_info="$(docker exec "${_redis_container}" redis-cli INFO persistence 2>&1)" || {
+    echo "WARNING: docker exec into '${_redis_container}' failed — skipping AOF check"
+    _redis_info=""
+  }
+  if [[ -n "${_redis_info}" ]]; then
+    if echo "${_redis_info}" | grep -q 'aof_enabled:0'; then
+      echo "ERROR: Redis AOF persistence is disabled (aof_enabled:0)." >&2
+      echo "FIX: Add '--appendonly yes --appendfsync everysec' to infra Redis command and restart." >&2
+      echo "See docs/vps_deploy.md section 'Redis persistence' for instructions." >&2
+      exit 1
+    elif echo "${_redis_info}" | grep -q 'aof_enabled:1'; then
+      echo "OK: Redis AOF persistence is enabled"
+    else
+      echo "WARNING: could not determine aof_enabled status from redis-cli output — skipping AOF check"
+    fi
+  fi
+fi
+
 echo "[post-deploy-production-gate] All checks passed."
