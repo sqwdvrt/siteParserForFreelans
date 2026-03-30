@@ -141,6 +141,37 @@ EOF
 
 Оба сервиса работают с TLS и доступны app-контейнерам через сеть `infra_default`.
 
+Redis **должен** быть запущен с AOF persistence. Пример конфигурации redis-сервиса в `/home/deploy/infra/docker-compose.yml`:
+
+```yaml
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: >
+      redis-server
+      --requirepass ${REDIS_PASSWORD}
+      --appendonly yes
+      --appendfsync everysec
+      --maxmemory 512mb
+      --maxmemory-policy allkeys-lru
+      --tls-port 6379
+      --port 0
+      --tls-cert-file /tls/server.crt
+      --tls-key-file /tls/server.key
+      --tls-ca-cert-file /tls/server.crt
+      --tls-auth-clients no
+    volumes:
+      - redisdata:/data
+      - ./certs/server.crt:/tls/server.crt:ro
+      - ./certs/server.key:/tls/server.key:ro
+    ports:
+      - "127.0.0.1:6379:6379"
+
+volumes:
+  pgdata:
+  redisdata:
+```
+
 ```bash
 cd /home/deploy/infra
 docker network create infra_default 2>/dev/null || true
@@ -158,7 +189,7 @@ docker compose logs redis | grep "Ready to accept connections tls"
 
 Redis используется как **durable state store** (очереди задач, webhook-inbox Telegram-бота). При рестарте без persistence данные теряются.
 
-Конфигурация уже включена в `/home/deploy/infra/docker-compose.yml` (параметры `--appendonly yes`, `--maxmemory-policy allkeys-lru`, том `redisdata:/data`). Проверить после рестарта:
+Конфигурация уже включена в `/home/deploy/infra/docker-compose.yml` (параметры `--appendonly yes`, `--appendfsync everysec`, `--maxmemory-policy allkeys-lru`, том `redisdata:/data`). Проверить после рестарта:
 
 ```bash
 docker exec infra-redis-1 redis-cli --tls \
