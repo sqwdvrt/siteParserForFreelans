@@ -89,10 +89,7 @@ func TestCrawlerRunJob_SkipsOverlappingRuns(t *testing.T) {
 	close(releaseFirst)
 
 	deadline := time.After(time.Second)
-	for {
-		if lock.isReleased() {
-			break
-		}
+	for !lock.isReleased() {
 		select {
 		case <-deadline:
 			t.Fatal("expected first lease to be released")
