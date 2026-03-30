@@ -105,6 +105,19 @@ func TestCrawlerRunJob_SkipsOverlappingRuns(t *testing.T) {
 	}
 }
 
+func TestCrawlerRunJob_ReleasesLeaseAfterLongRun(t *testing.T) {
+	lock := &deadlineAwareCrawlerRunLock{}
+	job := newCrawlerRunJob(lock, "crawler:test", time.Minute, func() {
+		time.Sleep(crawlerRunLockReleaseTimeout + 100*time.Millisecond)
+	})
+
+	job()
+
+	if !lock.isReleased() {
+		t.Fatal("expected lease to be released after long-running job")
+	}
+}
+
 type stubCrawlerRunLock struct {
 	mu           sync.Mutex
 	held         bool
@@ -145,5 +158,29 @@ func (l *stubCrawlerRunLease) Release(_ context.Context) (bool, error) {
 	defer l.parent.mu.Unlock()
 	l.parent.held = false
 	l.parent.released = true
+	return true, nil
+}
+
+type deadlineAwareCrawlerRunLock struct {
+	released atomic.Bool
+}
+
+func (l *deadlineAwareCrawlerRunLock) Acquire(_ context.Context, _ string, _ time.Duration) (crawlerRunLease, bool, error) {
+	return &deadlineAwareCrawlerRunLease{released: &l.released}, true, nil
+}
+
+func (l *deadlineAwareCrawlerRunLock) isReleased() bool {
+	return l.released.Load()
+}
+
+type deadlineAwareCrawlerRunLease struct {
+	released *atomic.Bool
+}
+
+func (l *deadlineAwareCrawlerRunLease) Release(ctx context.Context) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	l.released.Store(true)
 	return true, nil
 }

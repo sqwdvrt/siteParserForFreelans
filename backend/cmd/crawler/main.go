@@ -87,9 +87,10 @@ func newCrawlerRunJob(lock crawlerRunLocker, lockKey string, lockTTL time.Durati
 			return
 		}
 
-		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), crawlerRunLockReleaseTimeout)
-		defer releaseCancel()
 		defer func() {
+			releaseCtx, releaseCancel := context.WithTimeout(context.Background(), crawlerRunLockReleaseTimeout)
+			defer releaseCancel()
+
 			released, releaseErr := lease.Release(releaseCtx)
 			if releaseErr != nil {
 				slog.Error("crawl lock release failed", "key", lockKey, "err", releaseErr)
