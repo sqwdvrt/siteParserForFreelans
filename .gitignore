@@ -1,5 +1,6 @@
 .env
 .env.production
+.worktrees/
 backups/
 *.log
 backend/bin/
