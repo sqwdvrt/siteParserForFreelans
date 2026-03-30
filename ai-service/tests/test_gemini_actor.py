@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+import urllib.error
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -150,3 +151,98 @@ def test_explain_batch_invalid_length_returns_empty(mock_open) -> None:
     result = actor.explain_batch(_user(), _jobs()[:2])
 
     assert result == []
+
+
+# --- 429 retry tests ---
+
+
+def _http_error(code: int, retry_after: str | None = None) -> urllib.error.HTTPError:
+    hdrs = MagicMock()
+    hdrs.get = lambda k, d=None: retry_after if k == "Retry-After" else d
+    return urllib.error.HTTPError(url="http://x", code=code, msg=str(code), hdrs=hdrs, fp=None)
+
+
+def _success_resp(payload: dict) -> MagicMock:
+    resp = MagicMock()
+    resp.__enter__ = lambda s: s
+    resp.__exit__ = MagicMock(return_value=False)
+    resp.read.return_value = json.dumps(payload).encode()
+    return resp
+
+
+@patch("urllib.request.urlopen")
+@patch("time.sleep")
+def test_explain_batch_retries_on_429_then_succeeds(mock_sleep, mock_open) -> None:
+    """429 на первой попытке → retry → успех."""
+    mock_open.side_effect = [
+        _http_error(429),
+        _success_resp(_gemini_response(json.dumps({"explanations": ["Good fit"]}))),
+    ]
+    actor = GeminiActorAgent(api_key="k", model="m", max_retries=2, base_delay_sec=1.0)
+
+    result = actor.explain_batch(_user(), _jobs()[:1])
+
+    assert result == ["Good fit"]
+    assert mock_sleep.call_count == 1
+    mock_sleep.assert_called_once_with(1.0)  # base_delay_sec * 2^0
+
+
+@patch("urllib.request.urlopen")
+@patch("time.sleep")
+def test_explain_batch_raises_after_max_retries(mock_sleep, mock_open) -> None:
+    """Все retries исчерпаны → исключение пробрасывается."""
+    mock_open.side_effect = _http_error(429)
+    actor = GeminiActorAgent(api_key="k", model="m", max_retries=2, base_delay_sec=1.0)
+
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        actor.explain_batch(_user(), _jobs()[:1])
+
+    assert exc_info.value.code == 429
+    assert mock_sleep.call_count == 2  # retry 1 и retry 2
+
+
+@patch("urllib.request.urlopen")
+@patch("time.sleep")
+def test_non_429_http_error_not_retried(mock_sleep, mock_open) -> None:
+    """HTTP 500 не ретраится."""
+    mock_open.side_effect = _http_error(500)
+    actor = GeminiActorAgent(api_key="k", model="m", max_retries=2, base_delay_sec=1.0)
+
+    with pytest.raises(urllib.error.HTTPError) as exc_info:
+        actor.select(_user(), _jobs()[:1])
+
+    assert exc_info.value.code == 500
+    mock_sleep.assert_not_called()
+
+
+@patch("urllib.request.urlopen")
+@patch("time.sleep")
+def test_retry_uses_retry_after_header_if_present(mock_sleep, mock_open) -> None:
+    """Если Gemini вернул Retry-After: 30, sleep должен быть 30.0."""
+    mock_open.side_effect = [
+        _http_error(429, retry_after="30"),
+        _success_resp(_gemini_response(json.dumps({"explanations": ["fit"]}))),
+    ]
+    actor = GeminiActorAgent(api_key="k", model="m", max_retries=2, base_delay_sec=1.0)
+
+    actor.explain_batch(_user(), _jobs()[:1])
+
+    mock_sleep.assert_called_once_with(30.0)
+
+
+@patch("urllib.request.urlopen")
+@patch("time.sleep")
+def test_retry_exponential_backoff_delay(mock_sleep, mock_open) -> None:
+    """Второй retry ждёт base * 2^1 = 2.0."""
+    mock_open.side_effect = [
+        _http_error(429),
+        _http_error(429),
+        _success_resp(_gemini_response(json.dumps({"explanations": ["fit"]}))),
+    ]
+    actor = GeminiActorAgent(api_key="k", model="m", max_retries=2, base_delay_sec=1.0)
+
+    actor.explain_batch(_user(), _jobs()[:1])
+
+    assert mock_sleep.call_count == 2
+    calls = [c.args[0] for c in mock_sleep.call_args_list]
+    assert calls == [1.0, 2.0]  # base * 2^0, base * 2^1

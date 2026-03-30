@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import logging
+import time
+import urllib.error
 import urllib.request
 
 from ai_service.domain.job import Job
@@ -81,6 +83,8 @@ class GeminiActorAgent(ActorAgent):
         breaker_failure_threshold: int = 3,
         breaker_open_interval_sec: float = 30.0,
         breaker: CircuitBreaker | None = None,
+        max_retries: int = 2,
+        base_delay_sec: float = 5.0,
     ) -> None:
         self._api_key = api_key
         self._model = model
@@ -89,6 +93,8 @@ class GeminiActorAgent(ActorAgent):
             failure_threshold=breaker_failure_threshold,
             open_interval_sec=breaker_open_interval_sec,
         )
+        self._max_retries = max_retries
+        self._base_delay_sec = base_delay_sec
 
     def select(
         self,
@@ -170,15 +176,31 @@ class GeminiActorAgent(ActorAgent):
             },
             method="POST",
         )
-        with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # noqa: S310
-            data = json.loads(resp.read().decode())
-        candidates = data.get("candidates", [])
-        if not candidates:
-            return ""
-        parts = candidates[0].get("content", {}).get("parts", [])
-        if not parts:
-            return ""
-        return parts[0].get("text", "")
+        for attempt in range(self._max_retries + 1):
+            try:
+                with urllib.request.urlopen(req, timeout=self._timeout) as resp:  # noqa: S310
+                    data = json.loads(resp.read().decode())
+                candidates = data.get("candidates", [])
+                if not candidates:
+                    return ""
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if not parts:
+                    return ""
+                return parts[0].get("text", "")
+            except urllib.error.HTTPError as exc:
+                if exc.code == 429 and attempt < self._max_retries:
+                    retry_after = exc.headers.get("Retry-After")
+                    delay = float(retry_after) if retry_after else self._base_delay_sec * (2.0 ** attempt)
+                    logger.warning(
+                        "actor: Gemini 429 rate limit, retry %d/%d after %.1fs",
+                        attempt + 1,
+                        self._max_retries,
+                        delay,
+                    )
+                    time.sleep(delay)
+                    continue
+                raise
+        raise RuntimeError("unreachable")  # noqa: EM101
 
     def _parse_response(self, raw: str, candidates: list[Job]) -> list[RankedJob]:
         try:
