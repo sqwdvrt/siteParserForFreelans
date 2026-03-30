@@ -46,7 +46,7 @@ services:
       redis-server
       --appendonly yes
       --appendfsync everysec
-      --maxmemory 512mb
+      --maxmemory 200mb
       --maxmemory-policy allkeys-lru
     ports:
       - "${REDIS_BIND_IP:-127.0.0.1}:${REDIS_PORT:-6379}:6379"
