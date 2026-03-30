@@ -154,6 +154,23 @@ docker exec infra-postgres-1 psql -U site_parser -d site_parser -c "SHOW ssl;"
 docker compose logs redis | grep "Ready to accept connections tls"
 ```
 
+### 2.1 Redis persistence
+
+Redis используется как **durable state store** (очереди задач, webhook-inbox Telegram-бота). При рестарте без persistence данные теряются.
+
+Конфигурация уже включена в `/home/deploy/infra/docker-compose.yml` (параметры `--appendonly yes`, `--maxmemory-policy allkeys-lru`, том `redisdata:/data`). Проверить после рестарта:
+
+```bash
+docker exec infra-redis-1 redis-cli --tls \
+  --cert /tls/server.crt --key /tls/server.key --cacert /tls/server.crt \
+  -a <REDIS_PASSWORD> INFO persistence | grep aof_enabled
+# → aof_enabled:1
+```
+
+PostgreSQL — источник истины для всех пользовательских данных. Redis — дополнительный persistence слой для task queues и webhook-inbox Telegram-бота (AOF enabled). Потеря Redis данных приведёт к повторной обработке части событий, но не к потере пользовательских данных.
+
+---
+
 ## 5. App deployment
 
 Текущий layout на VPS:
