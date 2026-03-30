@@ -38,6 +38,72 @@ import (
 
 const jobEmbedDispatchFlushPeriod = 2 * time.Second
 
+const (
+	defaultCrawlerRunLockKey      = "crawler:run:leader"
+	crawlerRunLockReleaseTimeout  = 5 * time.Second
+	crawlerRunLockAcquireTimeout  = 5 * time.Second
+	crawlerRunLockTTLExtraPadding = time.Minute
+)
+
+type crawlerRunLease interface {
+	Release(ctx context.Context) (bool, error)
+}
+
+type crawlerRunLocker interface {
+	Acquire(ctx context.Context, key string, ttl time.Duration) (crawlerRunLease, bool, error)
+}
+
+type crawlerRedisRunLock struct {
+	inner *redisqueue.RedisLock
+}
+
+func (l crawlerRedisRunLock) Acquire(ctx context.Context, key string, ttl time.Duration) (crawlerRunLease, bool, error) {
+	if l.inner == nil {
+		return nil, false, fmt.Errorf("redis run lock is not configured")
+	}
+	return l.inner.Acquire(ctx, key, ttl)
+}
+
+func newCrawlerRunJob(lock crawlerRunLocker, lockKey string, lockTTL time.Duration, run func()) func() {
+	return func() {
+		if run == nil {
+			return
+		}
+		if lock == nil || lockKey == "" {
+			run()
+			return
+		}
+
+		acquireCtx, acquireCancel := context.WithTimeout(context.Background(), crawlerRunLockAcquireTimeout)
+		defer acquireCancel()
+
+		lease, ok, err := lock.Acquire(acquireCtx, lockKey, lockTTL)
+		if err != nil {
+			slog.Error("crawl lock acquire failed", "key", lockKey, "err", err)
+			return
+		}
+		if !ok {
+			slog.Info("crawl skipped; lock already held", "key", lockKey)
+			return
+		}
+
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), crawlerRunLockReleaseTimeout)
+		defer releaseCancel()
+		defer func() {
+			released, releaseErr := lease.Release(releaseCtx)
+			if releaseErr != nil {
+				slog.Error("crawl lock release failed", "key", lockKey, "err", releaseErr)
+				return
+			}
+			if !released {
+				slog.Warn("crawl lock release skipped; token no longer owned", "key", lockKey)
+			}
+		}()
+
+		run()
+	}
+}
+
 func main() {
 	_ = godotenv.Load()
 	_ = godotenv.Load("../.env") // при запуске из backend/
@@ -217,6 +283,7 @@ func main() {
 		queueName = "ai-process"
 	}
 	queue := redisqueue.NewQueue(rdb, queueName)
+	crawlRunLock := crawlerRedisRunLock{inner: redisqueue.NewRedisLock(rdb)}
 	dispatchRepo := postgres.NewDispatchRepository(pool)
 	jobEmbedDispatcher := usecase.NewPendingJobEmbedDispatcher(dispatchRepo, queue, 30*time.Second)
 	registry := prometheus.NewRegistry()
@@ -409,8 +476,15 @@ func main() {
 		}
 	}
 
+	serializedRunCrawl := newCrawlerRunJob(
+		crawlRunLock,
+		defaultCrawlerRunLockKey,
+		crawlRunTimeout+crawlerRunLockTTLExtraPadding,
+		runCrawl,
+	)
+
 	c := cron.New()
-	_, err = c.AddFunc(cronSpec, runCrawl)
+	_, err = c.AddFunc(cronSpec, serializedRunCrawl)
 	if err != nil {
 		slog.Error("cron add func", "spec", cronSpec, "err", err)
 		os.Exit(1)
@@ -418,7 +492,7 @@ func main() {
 	c.Start()
 
 	// Первый запуск сразу
-	runCrawl()
+	serializedRunCrawl()
 
 	slog.Info("crawler started", "cron", cronSpec)
 	sigCh := make(chan os.Signal, 1)

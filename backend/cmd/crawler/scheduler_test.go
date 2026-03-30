@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -58,4 +59,94 @@ func TestScheduler_StopDrainsRunningJob(t *testing.T) {
 		t.Fatal("Stop() did not drain within 500ms")
 	}
 	<-jobDone
+}
+
+func TestCrawlerRunJob_SkipsOverlappingRuns(t *testing.T) {
+	lock := &stubCrawlerRunLock{}
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var runs int32
+
+	job := newCrawlerRunJob(lock, "crawler:test", time.Minute, func() {
+		if atomic.AddInt32(&runs, 1) == 1 {
+			close(firstStarted)
+			<-releaseFirst
+		}
+	})
+
+	go job()
+	<-firstStarted
+
+	job()
+
+	if got := atomic.LoadInt32(&runs); got != 1 {
+		t.Fatalf("runs after overlapping invocation = %d, want 1", got)
+	}
+	if got := lock.acquireCalls(); got != 2 {
+		t.Fatalf("acquire calls = %d, want 2", got)
+	}
+
+	close(releaseFirst)
+
+	deadline := time.After(time.Second)
+	for {
+		if lock.isReleased() {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("expected first lease to be released")
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	job()
+
+	if got := atomic.LoadInt32(&runs); got != 2 {
+		t.Fatalf("runs after released invocation = %d, want 2", got)
+	}
+}
+
+type stubCrawlerRunLock struct {
+	mu           sync.Mutex
+	held         bool
+	acquireCount int
+	released     bool
+}
+
+func (l *stubCrawlerRunLock) Acquire(_ context.Context, _ string, _ time.Duration) (crawlerRunLease, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.acquireCount++
+	if l.held {
+		return nil, false, nil
+	}
+	l.held = true
+	l.released = false
+	return &stubCrawlerRunLease{parent: l}, true, nil
+}
+
+func (l *stubCrawlerRunLock) acquireCalls() int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.acquireCount
+}
+
+func (l *stubCrawlerRunLock) isReleased() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.released
+}
+
+type stubCrawlerRunLease struct {
+	parent *stubCrawlerRunLock
+}
+
+func (l *stubCrawlerRunLease) Release(_ context.Context) (bool, error) {
+	l.parent.mu.Lock()
+	defer l.parent.mu.Unlock()
+	l.parent.held = false
+	l.parent.released = true
+	return true, nil
 }
