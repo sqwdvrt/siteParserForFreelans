@@ -231,6 +231,26 @@ groups:
           summary: "Redis is unavailable"
           description: "redis-exporter reports redis_up=0 for more than 2 minutes."
 
+      - alert: SiteParserRedisAOFDisabled
+        expr: redis_aof_enabled{job="redis-exporter"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: redis
+        annotations:
+          summary: "Redis AOF persistence is disabled"
+          description: "Redis has aof_enabled=0. Data in queues will be lost on restart. Fix: add '--appendonly yes --appendfsync everysec' to Redis command."
+
+      - alert: SiteParserRedisRDBSaveFailed
+        expr: redis_rdb_last_bgsave_status{job="redis-exporter"} == 0
+        for: 10m
+        labels:
+          severity: warning
+          service: redis
+        annotations:
+          summary: "Redis last RDB save failed"
+          description: "Redis reports the last background RDB save failed. AOF is the primary durability mechanism, but check disk space and permissions."
+
       - alert: SiteParserPostgresUnavailable
         expr: pg_up{job="postgres-exporter"} == 0
         for: 2m
