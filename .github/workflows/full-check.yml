@@ -49,6 +49,7 @@ jobs:
           cache: "pip"
           cache-dependency-path: |
             ai-service/requirements.txt
+            browser-service/requirements-dev.txt
             telegram-bot/pyproject.toml
 
       # Install all Python deps once up front so every full_check.sh step
@@ -58,6 +59,7 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install -r ai-service/requirements.txt
+          python -m pip install -r browser-service/requirements-dev.txt
           python -m pip install -e "./telegram-bot[dev]"
           python -m pip install "pytest>=7.0" "pytest-cov>=4.0" "python-dotenv>=1.0"
 
