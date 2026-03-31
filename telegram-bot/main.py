@@ -2952,6 +2952,7 @@ def run_webhook(
         logger.info("shutdown signal received: %s", signal_name)
         t = threading.Thread(target=server.shutdown, daemon=True, name="telegram-webhook-shutdown")
         t.start()
+        stop_event.set()
 
     signal.signal(signal.SIGTERM, _handle_shutdown)
     signal.signal(signal.SIGINT, _handle_shutdown)
@@ -2989,7 +2990,7 @@ def run_webhook(
     finally:
         stop_event.set()
         heartbeat_thread.join(timeout=5)
-        worker_thread.join(timeout=5)
+        worker_thread.join(timeout=15)
         try:
             server.server_close()
         except Exception:
