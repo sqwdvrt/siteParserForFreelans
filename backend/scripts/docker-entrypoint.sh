@@ -44,7 +44,7 @@ run_migration_with_retry() {
   migration_file="$1"
   attempt=1
   while [ "$attempt" -le "$MIGRATION_RETRY_ATTEMPTS" ]; do
-    if psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration_file"; then
+    if PGOPTIONS="-c lock_timeout=30s" psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$migration_file"; then
       return 0
     fi
 

@@ -114,6 +114,13 @@ class RedisQueueConsumer(JobQueueConsumer):
         target_queue = self._dlq_queue if to_dlq else self._queue
         if to_dlq:
             logger.error("job_id=%s moved to DLQ after retry limit", job_id)
+        else:
+            try:
+                _retry_count = int(json.loads(out_raw).get("_retry_count", 1))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                _retry_count = 1
+            backoff_sec = min(2 ** (_retry_count - 1), 16)
+            time.sleep(backoff_sec)
         pipe = self._client.pipeline(transaction=True)
         pipe.lrem(self._processing_queue, 1, raw)
         pipe.rpush(target_queue, out_raw)
