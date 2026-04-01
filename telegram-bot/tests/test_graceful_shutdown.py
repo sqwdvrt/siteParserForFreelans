@@ -4,7 +4,6 @@ import ast
 import pathlib
 import textwrap
 
-
 _MAIN_SRC = pathlib.Path(__file__).parent.parent / "main.py"
 
 
