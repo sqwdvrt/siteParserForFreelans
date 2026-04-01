@@ -202,6 +202,7 @@ func main() {
 	r.Use(httpMetrics.Middleware)
 	r.Use(api.RequestIDMiddleware())
 	r.Use(api.RequestLoggingMiddleware(slog.Default()))
+	r.Use(api.CORSMiddleware())
 	var redisHealth redisPinger
 	if rdb != nil {
 		redisHealth = redisClientPinger{client: rdb}
