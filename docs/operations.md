@@ -398,6 +398,75 @@ DATABASE_URL='postgres://...' ./scripts/backup_postgres.sh
 DATABASE_URL='postgres://...' ./scripts/restore_postgres.sh /path/to/backup.dump
 ```
 
+### 4.3.1 Автоматизация backup (cron / systemd timer)
+
+`backup_vps_cron.sh` существует в `scripts/`, но его нужно подключить к планировщику на VPS.
+
+**Вариант 1 — crontab (простой):**
+
+```bash
+# От пользователя deploy на VPS:
+crontab -e
+```
+
+Добавить строку (ежедневно в 03:00):
+```
+0 3 * * * /home/deploy/app/siteParserForFreelans/scripts/backup_vps_cron.sh >> /var/log/siteparser-backup.log 2>&1
+```
+
+Проверить:
+```bash
+crontab -l
+tail -f /var/log/siteparser-backup.log
+```
+
+**Вариант 2 — systemd timer (рекомендуется для надёжности):**
+
+Создать `/etc/systemd/system/siteparser-backup.service`:
+```ini
+[Unit]
+Description=SiteParser PostgreSQL Backup
+After=docker.service
+
+[Service]
+Type=oneshot
+User=deploy
+ExecStart=/home/deploy/app/siteParserForFreelans/scripts/backup_vps_cron.sh
+StandardOutput=journal
+StandardError=journal
+```
+
+Создать `/etc/systemd/system/siteparser-backup.timer`:
+```ini
+[Unit]
+Description=SiteParser Backup Timer
+
+[Timer]
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Активировать:
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now siteparser-backup.timer
+systemctl list-timers siteparser-backup.timer
+```
+
+Проверить последний запуск:
+```bash
+journalctl -u siteparser-backup.service --since today
+```
+
+**Проверка backup:**
+```bash
+ls -lh /home/deploy/app/.siteParserForFreelans-deploy/shared/backups/
+# Должны быть файлы site_parser_YYYY-MM-DD_*.dump
+```
+
 ### 4.4 Restore drill checklist
 1. Поднять чистую test/staging БД.
 2. Выполнить restore из свежего backup.
