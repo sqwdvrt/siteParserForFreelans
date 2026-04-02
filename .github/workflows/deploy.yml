@@ -449,10 +449,7 @@ jobs:
               : "${AI_IMAGE:?AI_IMAGE is required for ai-only deploy}"
             fi
 
-            bash "${RUN_ROOT}/scripts/deploy_release.sh" \
-              --base-path "${BASE_PATH}" \
-              --sha "${DEPLOY_SHA}" \
-              --origin-url "${ORIGIN_URL}"
+            bash "${RUN_ROOT}/scripts/deploy_release.sh" --base-path "${BASE_PATH}" --sha "${DEPLOY_SHA}" --origin-url "${ORIGIN_URL}"
 
       - name: Staging health check
         env:
@@ -631,11 +628,7 @@ jobs:
               : "${AI_IMAGE:?AI_IMAGE is required for ai-only deploy}"
             fi
 
-            bash "${RUN_ROOT}/scripts/deploy_release.sh" \
-              --base-path "${BASE_PATH}" \
-              --sha "${DEPLOY_SHA}" \
-              --origin-url "${ORIGIN_URL}" \
-              --post-deploy-gate scripts/post_deploy_production_gate.sh
+            bash "${RUN_ROOT}/scripts/deploy_release.sh" --base-path "${BASE_PATH}" --sha "${DEPLOY_SHA}" --origin-url "${ORIGIN_URL}" --post-deploy-gate scripts/post_deploy_production_gate.sh
 
       - name: Production health check
         env:
