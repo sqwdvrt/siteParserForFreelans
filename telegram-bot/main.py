@@ -11,6 +11,7 @@ import logging
 import math
 import os
 import random
+import re
 import secrets
 import signal
 import sys
@@ -1365,6 +1366,16 @@ def _format_unix_timestamp(raw_value: object) -> str | None:
     return time.strftime("%d.%m.%Y %H:%M", time.localtime(timestamp))
 
 
+def _clean_job_text(text: str) -> str:
+    """Strip HTML tags, markdown markers, and normalize whitespace."""
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\*{1,3}(.*?)\*{1,3}", r"\1", text, flags=re.DOTALL)
+    text = re.sub(r"_{1,2}(.*?)_{1,2}", r"\1", text, flags=re.DOTALL)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r" {2,}", " ", text)
+    return text.strip()
+
+
 def _render_batch_card(session_id: str, session: dict, index: int | None = None) -> tuple[str, list[list[dict]]] | None:
     items = _batch_session_items(session)
     if items is None:
@@ -1380,10 +1391,10 @@ def _render_batch_card(session_id: str, session: dict, index: int | None = None)
         return None
     if job_id <= 0:
         return None
-    title = html.escape(str(item.get("title") or "Без названия"))
-    description = html.escape(str(item.get("description") or "").strip())
-    budget = html.escape(str(item.get("budget") or "").strip())
-    why_it_fits = html.escape(str(item.get("why_it_fits") or "").strip())
+    title = html.escape(_clean_job_text(str(item.get("title") or "Без названия")))
+    description = html.escape(_clean_job_text(str(item.get("description") or "")))
+    budget = html.escape(_clean_job_text(str(item.get("budget") or "")))
+    why_it_fits = html.escape(_clean_job_text(str(item.get("why_it_fits") or "")))
     score_percent = _to_int_or_default(item.get("score_percent"), 0)
     posted_at = _format_unix_timestamp(item.get("posted_at_unix"))
     created_at = _format_unix_timestamp(item.get("created_at_unix"))
@@ -1672,10 +1683,20 @@ def post_feedback(
     return True
 
 
-def answer_callback_query(token: str, callback_query_id: str) -> None:
+def answer_callback_query(
+    token: str,
+    callback_query_id: str,
+    *,
+    text: str | None = None,
+    show_alert: bool = False,
+) -> None:
     """Send answerCallbackQuery to dismiss loading state in Telegram."""
     url = f"{TELEGRAM_BASE}{token}/answerCallbackQuery"
-    _http_post(url, {"callback_query_id": callback_query_id})
+    payload: dict = {"callback_query_id": callback_query_id}
+    if text:
+        payload["text"] = text
+        payload["show_alert"] = show_alert
+    _http_post(url, payload)
 
 
 # ---------------------------------------------------------------------------
@@ -2173,6 +2194,7 @@ def _handle_batch_nav_callback(
     chat_id: int,
     message_id: int,
     telegram_id: int,
+    callback_id: str,
 ) -> None:
     parsed = _parse_batch_nav_callback(data)
     if parsed is None:
@@ -2180,6 +2202,11 @@ def _handle_batch_nav_callback(
     _nav_kind, session_id, target_index = parsed
     session = _get_batch_session(session_id)
     if session is None:
+        answer_callback_query(
+            token, callback_id,
+            text="Подборка устарела. Запросите новую: /jobs",
+            show_alert=True,
+        )
         return
     try:
         session_telegram_id = int(session.get("telegram_id"))
@@ -2208,6 +2235,7 @@ def _handle_batch_feedback_callback(
     api_url: str,
     api_auth_token: str,
     api_user_hmac_secret: str,
+    callback_id: str = "",
 ) -> bool:
     parsed = _parse_batch_feedback_callback(data)
     if parsed is None:
@@ -2215,6 +2243,12 @@ def _handle_batch_feedback_callback(
     fb_kind, session_id, current_index, job_id = parsed
     session = _get_batch_session(session_id)
     if session is None:
+        if callback_id:
+            answer_callback_query(
+                token, callback_id,
+                text="Подборка устарела. Запросите новую: /jobs",
+                show_alert=True,
+            )
         return True
     try:
         session_telegram_id = int(session.get("telegram_id"))
@@ -2286,7 +2320,7 @@ def handle_callback(
             cb_chat_id = msg.get("chat", {}).get("id") or from_user.get("id")
             message_id = msg.get("message_id")
             if cb_chat_id and message_id:
-                _handle_batch_nav_callback(data, token, cb_chat_id, message_id, telegram_id)
+                _handle_batch_nav_callback(data, token, cb_chat_id, message_id, telegram_id, callback_id)
         elif data.startswith("fb:") and telegram_id is not None:
             msg = callback.get("message") or {}
             cb_chat_id = msg.get("chat", {}).get("id") or from_user.get("id")
@@ -2302,6 +2336,7 @@ def handle_callback(
                     api_url,
                     api_auth_token,
                     api_user_hmac_secret,
+                    callback_id,
                 )
             if not handled:
                 parts = data.split(":")
