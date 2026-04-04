@@ -114,6 +114,21 @@ class DeployWorkflowTest(unittest.TestCase):
         )
         self.assertIn('ERROR: ai-only deploy cannot include non-AI path:', workflow_text)
 
+    def test_remote_deploy_uses_argument_array_and_env_paths(self) -> None:
+        workflow_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn("BASE_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}", workflow_text)
+        self.assertIn("BASE_PATH: ${{ secrets.PROD_DEPLOY_PATH }}", workflow_text)
+        self.assertIn('BASE_PATH="${BASE_PATH:?BASE_PATH is required}"', workflow_text)
+        self.assertIn("POST_DEPLOY_GATE: scripts/post_deploy_production_gate.sh", workflow_text)
+        self.assertIn('deploy_args=(', workflow_text)
+        self.assertIn('"--base-path" "${BASE_PATH}"', workflow_text)
+        self.assertIn('"--sha" "${DEPLOY_SHA}"', workflow_text)
+        self.assertIn('"--origin-url" "${ORIGIN_URL}"', workflow_text)
+        self.assertIn('if [ -n "${POST_DEPLOY_GATE:-}" ]; then', workflow_text)
+        self.assertIn('deploy_args+=("--post-deploy-gate" "${POST_DEPLOY_GATE}")', workflow_text)
+        self.assertIn('bash "${RUN_ROOT}/scripts/deploy_release.sh" "${deploy_args[@]}"', workflow_text)
+
 
 if __name__ == "__main__":
     unittest.main()

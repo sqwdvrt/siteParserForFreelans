@@ -380,6 +380,7 @@ jobs:
         env:
           DEPLOY_SHA: ${{ needs.resolve-target.outputs.deploy_sha }}
           DEPLOY_SCOPE: ${{ needs.resolve-target.outputs.deploy_scope }}
+          BASE_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
           ORIGIN_URL: ${{ github.server_url }}/${{ github.repository }}.git
           BACKEND_IMAGE: ${{ needs.publish-runtime-images.outputs.backend_image }}
           BROWSER_SERVICE_IMAGE: ${{ needs.publish-runtime-images.outputs.browser_service_image }}
@@ -394,10 +395,10 @@ jobs:
           key: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
           script_stop: true
           command_timeout: 30m
-          envs: DEPLOY_SHA,DEPLOY_SCOPE,ORIGIN_URL,BACKEND_IMAGE,BROWSER_SERVICE_IMAGE,TELEGRAM_BOT_IMAGE,AI_IMAGE,IMAGE_REGISTRY,IMAGE_REGISTRY_USERNAME,IMAGE_REGISTRY_PASSWORD
+          envs: DEPLOY_SHA,DEPLOY_SCOPE,BASE_PATH,ORIGIN_URL,BACKEND_IMAGE,BROWSER_SERVICE_IMAGE,TELEGRAM_BOT_IMAGE,AI_IMAGE,IMAGE_REGISTRY,IMAGE_REGISTRY_USERNAME,IMAGE_REGISTRY_PASSWORD
           script: |
             set -euo pipefail
-            BASE_PATH="${{ secrets.STAGING_DEPLOY_PATH }}"
+            BASE_PATH="${BASE_PATH:?BASE_PATH is required}"
             STATE_DIR="$(dirname "${BASE_PATH}")/.$(basename "${BASE_PATH}")-deploy"
             REPO_DIR="${STATE_DIR}/repo"
             RUN_ROOT=""
@@ -449,7 +450,16 @@ jobs:
               : "${AI_IMAGE:?AI_IMAGE is required for ai-only deploy}"
             fi
 
-            bash "${RUN_ROOT}/scripts/deploy_release.sh" --base-path "${BASE_PATH}" --sha "${DEPLOY_SHA}" --origin-url "${ORIGIN_URL}"
+            deploy_args=(
+              "--base-path" "${BASE_PATH}"
+              "--sha" "${DEPLOY_SHA}"
+              "--origin-url" "${ORIGIN_URL}"
+            )
+            if [ -n "${POST_DEPLOY_GATE:-}" ]; then
+              deploy_args+=("--post-deploy-gate" "${POST_DEPLOY_GATE}")
+            fi
+
+            bash "${RUN_ROOT}/scripts/deploy_release.sh" "${deploy_args[@]}"
 
       - name: Staging health check
         env:
@@ -559,6 +569,8 @@ jobs:
         env:
           DEPLOY_SHA: ${{ needs.resolve-target.outputs.deploy_sha }}
           DEPLOY_SCOPE: ${{ needs.resolve-target.outputs.deploy_scope }}
+          BASE_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
+          POST_DEPLOY_GATE: scripts/post_deploy_production_gate.sh
           ORIGIN_URL: ${{ github.server_url }}/${{ github.repository }}.git
           BACKEND_IMAGE: ${{ needs.publish-runtime-images.outputs.backend_image }}
           BROWSER_SERVICE_IMAGE: ${{ needs.publish-runtime-images.outputs.browser_service_image }}
@@ -573,10 +585,10 @@ jobs:
           key: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
           script_stop: true
           command_timeout: 30m
-          envs: DEPLOY_SHA,DEPLOY_SCOPE,ORIGIN_URL,BACKEND_IMAGE,BROWSER_SERVICE_IMAGE,TELEGRAM_BOT_IMAGE,AI_IMAGE,IMAGE_REGISTRY,IMAGE_REGISTRY_USERNAME,IMAGE_REGISTRY_PASSWORD
+          envs: DEPLOY_SHA,DEPLOY_SCOPE,BASE_PATH,POST_DEPLOY_GATE,ORIGIN_URL,BACKEND_IMAGE,BROWSER_SERVICE_IMAGE,TELEGRAM_BOT_IMAGE,AI_IMAGE,IMAGE_REGISTRY,IMAGE_REGISTRY_USERNAME,IMAGE_REGISTRY_PASSWORD
           script: |
             set -euo pipefail
-            BASE_PATH="${{ secrets.PROD_DEPLOY_PATH }}"
+            BASE_PATH="${BASE_PATH:?BASE_PATH is required}"
             STATE_DIR="$(dirname "${BASE_PATH}")/.$(basename "${BASE_PATH}")-deploy"
             REPO_DIR="${STATE_DIR}/repo"
             RUN_ROOT=""
@@ -628,7 +640,16 @@ jobs:
               : "${AI_IMAGE:?AI_IMAGE is required for ai-only deploy}"
             fi
 
-            bash "${RUN_ROOT}/scripts/deploy_release.sh" --base-path "${BASE_PATH}" --sha "${DEPLOY_SHA}" --origin-url "${ORIGIN_URL}" --post-deploy-gate scripts/post_deploy_production_gate.sh
+            deploy_args=(
+              "--base-path" "${BASE_PATH}"
+              "--sha" "${DEPLOY_SHA}"
+              "--origin-url" "${ORIGIN_URL}"
+            )
+            if [ -n "${POST_DEPLOY_GATE:-}" ]; then
+              deploy_args+=("--post-deploy-gate" "${POST_DEPLOY_GATE}")
+            fi
+
+            bash "${RUN_ROOT}/scripts/deploy_release.sh" "${deploy_args[@]}"
 
       - name: Production health check
         env:
