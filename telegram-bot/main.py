@@ -2271,13 +2271,8 @@ def _handle_batch_feedback_callback(
         return True
 
     feedback = "good" if fb_kind == "g" else "bad"
-    user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
-    if user_id is not None:
-        if not post_feedback(api_url, user_id, telegram_id, job_id, feedback, api_auth_token, api_user_hmac_secret):
-            logger.warning("batch feedback failed: session_id=%s job_id=%d", session_id, job_id)
-    else:
-        logger.warning("batch feedback: could not resolve user_id for telegram_id=%s", telegram_id)
 
+    # Advance card first so the UI updates immediately, before any slow API calls.
     next_index = current_index + 1
     if next_index < len(item):
         session["current_index"] = next_index
@@ -2286,10 +2281,25 @@ def _handle_batch_feedback_callback(
         if rendered is not None:
             text, keyboard = rendered
             edit_message_text(token, chat_id, message_id, text, keyboard)
-        return True
+    else:
+        _clear_batch_session(session_id)
+        edit_message_text(token, chat_id, message_id, _render_batch_completion_text(), [])
 
-    _clear_batch_session(session_id)
-    edit_message_text(token, chat_id, message_id, _render_batch_completion_text(), [])
+    # Dismiss the Telegram spinner before slow backend calls.
+    if callback_id:
+        try:
+            answer_callback_query(token, callback_id)
+        except Exception:
+            pass
+
+    # Post feedback after the card has already advanced.
+    user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+    if user_id is not None:
+        if not post_feedback(api_url, user_id, telegram_id, job_id, feedback, api_auth_token, api_user_hmac_secret):
+            logger.warning("batch feedback failed: session_id=%s job_id=%d", session_id, job_id)
+    else:
+        logger.warning("batch feedback: could not resolve user_id for telegram_id=%s", telegram_id)
+
     return True
 
 
