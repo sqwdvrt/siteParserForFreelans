@@ -441,9 +441,9 @@ jobs:
                     ;;
                 esac
               done <<< "${changed_paths}"
-              BACKEND_IMAGE="$(awk -F= '/^BACKEND_IMAGE=/{print substr($0,15)}' "${current_env}")"
-              BROWSER_SERVICE_IMAGE="$(awk -F= '/^BROWSER_SERVICE_IMAGE=/{print substr($0,23)}' "${current_env}")"
-              TELEGRAM_BOT_IMAGE="$(awk -F= '/^TELEGRAM_BOT_IMAGE=/{print substr($0,20)}' "${current_env}")"
+              BACKEND_IMAGE="$(grep '^BACKEND_IMAGE=' "${current_env}" | cut -d= -f2-)"
+              BROWSER_SERVICE_IMAGE="$(grep '^BROWSER_SERVICE_IMAGE=' "${current_env}" | cut -d= -f2-)"
+              TELEGRAM_BOT_IMAGE="$(grep '^TELEGRAM_BOT_IMAGE=' "${current_env}" | cut -d= -f2-)"
               : "${BACKEND_IMAGE:?current env is missing BACKEND_IMAGE}"
               : "${BROWSER_SERVICE_IMAGE:?current env is missing BROWSER_SERVICE_IMAGE}"
               : "${TELEGRAM_BOT_IMAGE:?current env is missing TELEGRAM_BOT_IMAGE}"
@@ -631,9 +631,9 @@ jobs:
                     ;;
                 esac
               done <<< "${changed_paths}"
-              BACKEND_IMAGE="$(awk -F= '/^BACKEND_IMAGE=/{print substr($0,15)}' "${current_env}")"
-              BROWSER_SERVICE_IMAGE="$(awk -F= '/^BROWSER_SERVICE_IMAGE=/{print substr($0,23)}' "${current_env}")"
-              TELEGRAM_BOT_IMAGE="$(awk -F= '/^TELEGRAM_BOT_IMAGE=/{print substr($0,20)}' "${current_env}")"
+              BACKEND_IMAGE="$(grep '^BACKEND_IMAGE=' "${current_env}" | cut -d= -f2-)"
+              BROWSER_SERVICE_IMAGE="$(grep '^BROWSER_SERVICE_IMAGE=' "${current_env}" | cut -d= -f2-)"
+              TELEGRAM_BOT_IMAGE="$(grep '^TELEGRAM_BOT_IMAGE=' "${current_env}" | cut -d= -f2-)"
               : "${BACKEND_IMAGE:?current env is missing BACKEND_IMAGE}"
               : "${BROWSER_SERVICE_IMAGE:?current env is missing BROWSER_SERVICE_IMAGE}"
               : "${TELEGRAM_BOT_IMAGE:?current env is missing TELEGRAM_BOT_IMAGE}"
