@@ -295,20 +295,47 @@ class ProcessJobUseCase:
         job_title = getattr(job, "title", "") or ""
         job_description = getattr(job, "description", "") or ""
         job_text = clean_text(f"{job_title}\n{job_description}".strip())
-        pairs = [
-            (build_structured_profile_text(str(candidate.profile_text or "").strip()), job_text)
+
+        profiles = [
+            build_structured_profile_text(str(candidate.profile_text or "").strip())
             for candidate in candidates
         ]
+        encoder_indices = [i for i, p in enumerate(profiles) if p]
+
+        if not encoder_indices:
+            logger.warning(
+                "job_id=%s: all %d rerank candidates have empty profile_text, "
+                "skipping cross-encoder",
+                getattr(job, "id", 0),
+                len(candidates),
+            )
+            return candidates
+
+        empty_count = len(candidates) - len(encoder_indices)
+        if empty_count:
+            logger.debug(
+                "job_id=%s: %d/%d candidates have empty profile_text, "
+                "using raw_similarity as rerank_score for them",
+                getattr(job, "id", 0),
+                empty_count,
+                len(candidates),
+            )
+            for i, candidate in enumerate(candidates):
+                if not profiles[i]:
+                    candidate.rerank_score = candidate.raw_similarity
+                    candidate.final_score = candidate.raw_similarity
+
+        pairs = [(profiles[i], job_text) for i in encoder_indices]
         rerank_scores = self._reranker.score_pairs(pairs)
-        if len(rerank_scores) != len(candidates):
+        if len(rerank_scores) != len(encoder_indices):
             raise ValueError(
-                f"reranker returned {len(rerank_scores)} scores for {len(candidates)} candidates"
+                f"reranker returned {len(rerank_scores)} scores for {len(encoder_indices)} candidates"
             )
 
-        for candidate, rerank_score in zip(candidates, rerank_scores, strict=True):
-            candidate.rerank_score = rerank_score
+        for idx, rerank_score in zip(encoder_indices, rerank_scores):
+            candidates[idx].rerank_score = rerank_score
             # Keep final_score aligned with rerank output until downstream scoring takes over.
-            candidate.final_score = rerank_score
+            candidates[idx].final_score = rerank_score
 
         ranked = sorted(
             candidates,

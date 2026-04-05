@@ -236,7 +236,17 @@ def main() -> None:
     filter_event_repo = PostgresFilterEventRepository(db_url, **pg_pool_kwargs)
     accumulate_matches = AccumulateMatchesUseCase(pending_repo)
     embedding = SentenceTransformerEmbedding(model_name)
-    reranker = CrossEncoderReranker(rerank_model)
+    reranker = None
+    try:
+        reranker = CrossEncoderReranker(rerank_model)
+        logger.info("reranker loaded: %s", rerank_model)
+    except Exception as e:
+        logger.warning(
+            "reranker failed to load model=%s, continuing without reranker "
+            "(embedding similarity only): %s",
+            rerank_model,
+            e,
+        )
     classifier = None
     if classifier_enabled and gemini_api_key:
         from ai_service.adapter.gemini import GeminiClassifier
