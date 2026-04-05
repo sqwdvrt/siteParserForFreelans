@@ -393,8 +393,8 @@ jobs:
           host: ${{ secrets.STAGING_SSH_HOST }}
           username: ${{ secrets.STAGING_SSH_USER }}
           key: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
-          script_stop: true
-          command_timeout: 30m
+          script_stop: false
+          command_timeout: 90m
           envs: DEPLOY_SHA,DEPLOY_SCOPE,BASE_PATH,ORIGIN_URL,BACKEND_IMAGE,BROWSER_SERVICE_IMAGE,TELEGRAM_BOT_IMAGE,AI_IMAGE,IMAGE_REGISTRY,IMAGE_REGISTRY_USERNAME,IMAGE_REGISTRY_PASSWORD
           script: |
             set -euo pipefail
@@ -490,7 +490,7 @@ jobs:
           host: ${{ secrets.STAGING_SSH_HOST }}
           username: ${{ secrets.STAGING_SSH_USER }}
           key: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
-          script_stop: true
+          script_stop: false
           command_timeout: 30m
           envs: DEPLOY_SHA,STAGING_GATE_API_URL,STAGING_SMOKE_TELEGRAM_ID
           script: |
@@ -576,8 +576,8 @@ jobs:
           host: ${{ secrets.PROD_SSH_HOST }}
           username: ${{ secrets.PROD_SSH_USER }}
           key: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
-          script_stop: true
-          command_timeout: 30m
+          script_stop: false
+          command_timeout: 90m
           envs: DEPLOY_SHA,DEPLOY_SCOPE,BASE_PATH,POST_DEPLOY_GATE,ORIGIN_URL,BACKEND_IMAGE,BROWSER_SERVICE_IMAGE,TELEGRAM_BOT_IMAGE,AI_IMAGE,IMAGE_REGISTRY,IMAGE_REGISTRY_USERNAME,IMAGE_REGISTRY_PASSWORD
           script: |
             set -euo pipefail

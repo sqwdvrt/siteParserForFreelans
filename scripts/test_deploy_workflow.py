@@ -96,9 +96,9 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn('current_env="${STATE_DIR}/current/.env.production"', workflow_text)
         self.assertIn('if [ ! -f "${current_env}" ] && [ -f "${BASE_PATH}/.env.production" ]; then', workflow_text)
         self.assertIn('current_env="${BASE_PATH}/.env.production"', workflow_text)
-        self.assertIn('BACKEND_IMAGE="$(awk -F= \'/^BACKEND_IMAGE=/{print substr($0,15)}\' "${current_env}")"', workflow_text)
-        self.assertIn('BROWSER_SERVICE_IMAGE="$(awk -F= \'/^BROWSER_SERVICE_IMAGE=/{print substr($0,23)}\' "${current_env}")"', workflow_text)
-        self.assertIn('TELEGRAM_BOT_IMAGE="$(awk -F= \'/^TELEGRAM_BOT_IMAGE=/{print substr($0,20)}\' "${current_env}")"', workflow_text)
+        self.assertIn('BACKEND_IMAGE="$(grep \'^BACKEND_IMAGE=\' "${current_env}" | cut -d= -f2-)"', workflow_text)
+        self.assertIn('BROWSER_SERVICE_IMAGE="$(grep \'^BROWSER_SERVICE_IMAGE=\' "${current_env}" | cut -d= -f2-)"', workflow_text)
+        self.assertIn('TELEGRAM_BOT_IMAGE="$(grep \'^TELEGRAM_BOT_IMAGE=\' "${current_env}" | cut -d= -f2-)"', workflow_text)
         self.assertIn('bash "${RUN_ROOT}/scripts/deploy_release.sh"', workflow_text)
 
     def test_ai_only_deploy_scope_rejects_non_ai_target_commits(self) -> None:
@@ -121,13 +121,16 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn("BASE_PATH: ${{ secrets.PROD_DEPLOY_PATH }}", workflow_text)
         self.assertIn('BASE_PATH="${BASE_PATH:?BASE_PATH is required}"', workflow_text)
         self.assertIn("POST_DEPLOY_GATE: scripts/post_deploy_production_gate.sh", workflow_text)
-        self.assertIn('deploy_args=(', workflow_text)
-        self.assertIn('"--base-path" "${BASE_PATH}"', workflow_text)
-        self.assertIn('"--sha" "${DEPLOY_SHA}"', workflow_text)
-        self.assertIn('"--origin-url" "${ORIGIN_URL}"', workflow_text)
-        self.assertIn('if [ -n "${POST_DEPLOY_GATE:-}" ]; then', workflow_text)
-        self.assertIn('deploy_args+=("--post-deploy-gate" "${POST_DEPLOY_GATE}")', workflow_text)
-        self.assertIn('bash "${RUN_ROOT}/scripts/deploy_release.sh" "${deploy_args[@]}"', workflow_text)
+        self.assertIn("command_timeout: 90m", workflow_text)
+        self.assertIn('set -- --base-path "${BASE_PATH}" --sha "${DEPLOY_SHA}" --origin-url "${ORIGIN_URL}"', workflow_text)
+        self.assertIn('[ -z "${POST_DEPLOY_GATE:-}" ] || set -- "$@" --post-deploy-gate "${POST_DEPLOY_GATE}"', workflow_text)
+        self.assertIn('bash "${RUN_ROOT}/scripts/deploy_release.sh" "$@"', workflow_text)
+
+    def test_deploy_jobs_disable_drone_script_stop_for_multiline_shell(self) -> None:
+        for job_name in ("deploy-staging", "staging-smoke-e2e-gate", "deploy-production"):
+            job_block = self.job_block(job_name)
+            self.assertIn("uses: appleboy/ssh-action@v1.2.0", job_block)
+            self.assertIn("script_stop: false", job_block)
 
 
 if __name__ == "__main__":

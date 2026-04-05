@@ -68,6 +68,49 @@ sanitize_project_name() {
   printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]_.-' '-'
 }
 
+run_with_heartbeat() {
+  local label="$1"
+  shift
+
+  local heartbeat_interval="${DEPLOY_HEARTBEAT_INTERVAL_SEC:-20}"
+  local log_file
+  local command_pid
+  local heartbeat_pid
+  local status
+
+  log_file="$(mktemp)"
+  log "starting ${label}: $*"
+
+  (
+    "$@"
+  ) >"$log_file" 2>&1 &
+  command_pid=$!
+
+  (
+    while kill -0 "$command_pid" 2>/dev/null; do
+      sleep "$heartbeat_interval"
+      kill -0 "$command_pid" 2>/dev/null || exit 0
+      log "${label}: still running"
+    done
+  ) &
+  heartbeat_pid=$!
+
+  set +e
+  wait "$command_pid"
+  status=$?
+  set -e
+
+  kill "$heartbeat_pid" 2>/dev/null || true
+  wait "$heartbeat_pid" 2>/dev/null || true
+
+  cat "$log_file"
+  rm -f "$log_file"
+
+  if [[ "$status" -ne 0 ]]; then
+    die "${label} failed with exit code ${status}"
+  fi
+}
+
 parse_args() {
   local compose_files_set=0
 
@@ -253,8 +296,10 @@ compose_release() {
   (
     cd "$RELEASE_DIR"
     bash ./scripts/validate-env-production.sh "$ENV_FILE"
-    docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" pull
-    docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" up -d --no-build
+    run_with_heartbeat "docker compose pull" \
+      docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" pull
+    run_with_heartbeat "docker compose up" \
+      docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" up -d --no-build
     docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" ps
   )
 }

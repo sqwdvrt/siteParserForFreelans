@@ -22,6 +22,14 @@ class DeployReleaseScriptTest(unittest.TestCase):
 
         self.assertIn("tr '[:upper:]' '[:lower:]'", script_text)
 
+    def test_long_compose_steps_emit_heartbeat_logs(self) -> None:
+        script_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('heartbeat_interval="${DEPLOY_HEARTBEAT_INTERVAL_SEC:-20}"', script_text)
+        self.assertIn('log "${label}: still running"', script_text)
+        self.assertIn('run_with_heartbeat "docker compose pull"', script_text)
+        self.assertIn('run_with_heartbeat "docker compose up"', script_text)
+
 
 if __name__ == "__main__":
     unittest.main()
