@@ -79,6 +79,7 @@ class PooledPostgresRepository:
         self._pool_key = (self._dsn, self._minconn, self._maxconn)
         self._closed = False
         self._pool: AbstractConnectionPool | None = None
+        self._shared_pool_entry: _SharedPoolEntry | None = None
         self._pool_lock = threading.Lock()
         self._retain_shared_pool_entry()
 
@@ -104,12 +105,12 @@ class PooledPostgresRepository:
                 )
             entry.refcount += 1
             entry.closing = False
+            self._shared_pool_entry = entry
 
     def _ensure_shared_pool(self) -> AbstractConnectionPool:
-        with _SHARED_POOLS_LOCK:
-            entry = _SHARED_POOLS.get(self._pool_key)
-            if entry is None:
-                raise RuntimeError("shared pool entry is missing")
+        entry = self._shared_pool_entry
+        if entry is None:
+            raise RuntimeError("shared pool entry is missing")
         with entry.lock:
             if entry.pool is None:
                 entry.pool = _VectorThreadedConnectionPool(
@@ -126,23 +127,28 @@ class PooledPostgresRepository:
             if self._pool is None:
                 self._pool = self._ensure_shared_pool()
             pool = self._pool
+            entry = self._shared_pool_entry
+            if entry is None:
+                raise RuntimeError("shared pool entry is missing")
             with _SHARED_POOLS_LOCK:
-                entry = _SHARED_POOLS.get(self._pool_key)
-                if entry is None:
-                    raise RuntimeError("shared pool entry is missing")
                 entry.active_leases += 1
             return pool
 
     def _release_pool_lease(self) -> None:
         pool_to_close: AbstractConnectionPool | None = None
         metrics_name: str | None = None
+        entry = self._shared_pool_entry
+        if entry is None:
+            return
         with _SHARED_POOLS_LOCK:
-            entry = _SHARED_POOLS.get(self._pool_key)
-            if entry is None:
-                return
             if entry.active_leases > 0:
                 entry.active_leases -= 1
-            if entry.closing and entry.refcount == 0 and entry.active_leases == 0:
+            if (
+                entry.closing
+                and entry.refcount == 0
+                and entry.active_leases == 0
+                and _SHARED_POOLS.get(self._pool_key) is entry
+            ):
                 pool_to_close = entry.pool
                 metrics_name = entry.metrics_name
                 del _SHARED_POOLS[self._pool_key]
@@ -154,15 +160,15 @@ class PooledPostgresRepository:
     def _release_shared_pool_ref(self) -> None:
         pool_to_close: AbstractConnectionPool | None = None
         metrics_name: str | None = None
+        entry = self._shared_pool_entry
+        if entry is None:
+            return
         with _SHARED_POOLS_LOCK:
-            entry = _SHARED_POOLS.get(self._pool_key)
-            if entry is None:
-                return
             if entry.refcount > 0:
                 entry.refcount -= 1
             if entry.refcount == 0:
                 entry.closing = True
-                if entry.active_leases == 0:
+                if entry.active_leases == 0 and _SHARED_POOLS.get(self._pool_key) is entry:
                     pool_to_close = entry.pool
                     metrics_name = entry.metrics_name
                     del _SHARED_POOLS[self._pool_key]

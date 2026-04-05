@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import gc
+
 import pytest
 
 import ai_service.adapter.postgres._pooled_repository as pooled_repository_module
@@ -346,6 +348,26 @@ def test_statement_timeout_set_local_on_each_conn(monkeypatch: pytest.MonkeyPatc
 def test_statement_timeout_zero_skips_set_local(monkeypatch: pytest.MonkeyPatch) -> None:
     created = _make_fake_pool_fixture(monkeypatch)
     repo = _DummyRepo("postgresql://fake/fake", statement_timeout_ms=0)
+
+    with repo._conn():
+        pass
+
+    pool = created[0]
+    assert pool.conn.cursor_obj.execute_calls == []
+    repo.close()
+
+
+def test_stale_repo_finalizer_does_not_drop_new_shared_pool_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created = _make_fake_pool_fixture(monkeypatch)
+    stale_repo = _DummyRepo("postgresql://fake/fake", statement_timeout_ms=5_000)
+
+    _drain_shared_pool_state()
+
+    repo = _DummyRepo("postgresql://fake/fake", statement_timeout_ms=0)
+    del stale_repo
+    gc.collect()
 
     with repo._conn():
         pass
