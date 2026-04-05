@@ -450,16 +450,9 @@ jobs:
               : "${AI_IMAGE:?AI_IMAGE is required for ai-only deploy}"
             fi
 
-            deploy_args=(
-              "--base-path" "${BASE_PATH}"
-              "--sha" "${DEPLOY_SHA}"
-              "--origin-url" "${ORIGIN_URL}"
-            )
-            if [ -n "${POST_DEPLOY_GATE:-}" ]; then
-              deploy_args+=("--post-deploy-gate" "${POST_DEPLOY_GATE}")
-            fi
-
-            bash "${RUN_ROOT}/scripts/deploy_release.sh" "${deploy_args[@]}"
+            set -- --base-path "${BASE_PATH}" --sha "${DEPLOY_SHA}" --origin-url "${ORIGIN_URL}"
+            [ -z "${POST_DEPLOY_GATE:-}" ] || set -- "$@" --post-deploy-gate "${POST_DEPLOY_GATE}"
+            bash "${RUN_ROOT}/scripts/deploy_release.sh" "$@"
 
       - name: Staging health check
         env:
@@ -640,16 +633,9 @@ jobs:
               : "${AI_IMAGE:?AI_IMAGE is required for ai-only deploy}"
             fi
 
-            deploy_args=(
-              "--base-path" "${BASE_PATH}"
-              "--sha" "${DEPLOY_SHA}"
-              "--origin-url" "${ORIGIN_URL}"
-            )
-            if [ -n "${POST_DEPLOY_GATE:-}" ]; then
-              deploy_args+=("--post-deploy-gate" "${POST_DEPLOY_GATE}")
-            fi
-
-            bash "${RUN_ROOT}/scripts/deploy_release.sh" "${deploy_args[@]}"
+            set -- --base-path "${BASE_PATH}" --sha "${DEPLOY_SHA}" --origin-url "${ORIGIN_URL}"
+            [ -z "${POST_DEPLOY_GATE:-}" ] || set -- "$@" --post-deploy-gate "${POST_DEPLOY_GATE}"
+            bash "${RUN_ROOT}/scripts/deploy_release.sh" "$@"
 
       - name: Production health check
         env:
