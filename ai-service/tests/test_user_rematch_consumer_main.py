@@ -60,6 +60,43 @@ def test_main_caps_pop_timeout_to_shutdown_grace(monkeypatch, tmp_path: Path) ->
     assert seen_timeout == [19]
 
 
+def test_main_injects_job_repo_into_process_use_case(monkeypatch, tmp_path: Path) -> None:
+    module = _load_user_rematch_consumer_main_module()
+
+    monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
+    monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
+    monkeypatch.setenv(module.READY_FILE_ENV, str(tmp_path / "ready"))
+
+    user_repo = object()
+    job_repo = object()
+    match_repo = object()
+    feedback_repo = object()
+    notify_queue = object()
+    captured_kwargs: dict[str, object] = {}
+
+    monkeypatch.setattr(module, "PostgresUserRepository", lambda *_args, **_kwargs: user_repo)
+    monkeypatch.setattr(module, "PostgresJobRepository", lambda *_args, **_kwargs: job_repo)
+    monkeypatch.setattr(module, "PostgresMatchRepository", lambda *_args, **_kwargs: match_repo)
+    monkeypatch.setattr(module, "PostgresFeedbackRepository", lambda *_args, **_kwargs: feedback_repo)
+    monkeypatch.setattr(module, "RedisMatchNotifyQueue", lambda *_args, **_kwargs: notify_queue)
+    monkeypatch.setattr(module, "RedisUserRematchQueueConsumer", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module, "start_health_server", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(module.signal, "signal", lambda *_args, **_kwargs: None)
+
+    def fake_process_user_rematch(*args, **kwargs):
+        captured_kwargs["args"] = args
+        captured_kwargs["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setattr(module, "ProcessUserRematchUseCase", fake_process_user_rematch)
+    monkeypatch.setattr(module, "_run_consumer", lambda *_args, **_kwargs: None)
+
+    module.main()
+
+    assert captured_kwargs["args"] == (user_repo, match_repo, notify_queue)
+    assert captured_kwargs["kwargs"]["job_repo"] is job_repo
+
+
 def test_health_port_prefers_documented_env_and_supports_legacy_alias(monkeypatch) -> None:
     module = _load_user_rematch_consumer_main_module()
 

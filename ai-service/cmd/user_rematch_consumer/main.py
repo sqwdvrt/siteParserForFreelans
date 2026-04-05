@@ -20,6 +20,7 @@ except ImportError:
 
 from ai_service.adapter.postgres import (
     PostgresFeedbackRepository,
+    PostgresJobRepository,
     PostgresMatchRepository,
     PostgresUserRepository,
 )
@@ -244,6 +245,7 @@ def main() -> None:
     )
 
     user_repo = PostgresUserRepository(db_url, **pg_pool_kwargs)
+    job_repo = PostgresJobRepository(db_url, **pg_pool_kwargs)
     match_repo = PostgresMatchRepository(db_url, **pg_pool_kwargs)
     feedback_repo = PostgresFeedbackRepository(db_url, **pg_pool_kwargs)
     match_notify_queue = RedisMatchNotifyQueue(redis_url)
@@ -251,6 +253,7 @@ def main() -> None:
         user_repo,
         match_repo,
         match_notify_queue,
+        job_repo=job_repo,
         similarity_threshold=threshold,
         max_jobs=max_jobs,
         days_back=days_back,
