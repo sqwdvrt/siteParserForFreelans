@@ -120,6 +120,24 @@ def test_get_user_stats_returns_none_on_failure(bot, monkeypatch):
     assert bot.get_user_stats("https://api.example.com", 1, 123, "tok", "hmac") is None
 
 
+def test_set_my_commands_registers_public_command_surface(bot, monkeypatch):
+    captured = {}
+
+    def _capture(url, payload, *args, **kwargs):
+        captured["url"] = url
+        captured["payload"] = payload
+        return 200, {"ok": True}
+
+    monkeypatch.setattr(bot, "_http_post", _capture)
+
+    assert bot.set_my_commands("token") is True
+
+    commands = captured["payload"]["commands"]
+    command_names = [item["command"] for item in commands]
+    assert command_names == ["start", "profile", "filters", "status", "help", "pro"]
+    assert "notify_hour" not in command_names
+
+
 def test_get_updates_returns_next_offset(bot, monkeypatch):
     monkeypatch.setattr(
         bot,

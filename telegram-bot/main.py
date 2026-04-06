@@ -1588,11 +1588,12 @@ def set_my_commands(token: str) -> bool:
     """Зарегистрировать меню команд бота через setMyCommands."""
     url = f"{TELEGRAM_BASE}{token}/setMyCommands"
     commands = [
-        {"command": "start",       "description": "Начать / перезапустить настройку профиля"},
-        {"command": "profile",     "description": "Обновить профиль фрилансера вручную"},
-        {"command": "stats",       "description": "Показать статистику подбора за 7 дней"},
-        {"command": "notify_hour", "description": "Установить час дайджеста (Pro, 0–23, МСК)"},
-        {"command": "help",        "description": "Список команд"},
+        {"command": "start", "description": "Открыть главное меню и настройку"},
+        {"command": "profile", "description": "Посмотреть и обновить профиль"},
+        {"command": "filters", "description": "Посмотреть фильтры подбора"},
+        {"command": "status", "description": "Показать статус подбора"},
+        {"command": "help", "description": "Помощь по боту"},
+        {"command": "pro", "description": "Что даёт Pro"},
     ]
     status, _ = _http_post(url, {"commands": commands})
     if status != 200:
@@ -1896,9 +1897,10 @@ def _build_main_reply_keyboard() -> dict:
     """Persistent Reply Keyboard shown to registered users."""
     return {
         "keyboard": [
-            [{"text": "👤 Мой профиль"}, {"text": "📊 Статистика"}],
-            [{"text": "✏️ Обновить профиль"}, {"text": "⚙️ Настройки"}],
-            [{"text": "❓ Помощь"}, {"text": "🔼 Скрыть меню"}],
+            [{"text": "👤 Мой профиль"}, {"text": "📊 Статус"}],
+            [{"text": "🔍 Фильтры"}, {"text": "⚙️ Настройки"}],
+            [{"text": "💎 Pro"}, {"text": "❓ Помощь"}],
+            [{"text": "✏️ Обновить профиль"}, {"text": "🔼 Скрыть меню"}],
         ],
         "resize_keyboard": True,
         "persistent": True,
@@ -2198,6 +2200,26 @@ def _menu_handle_callback(
     api_user_hmac_secret: str,
 ) -> None:
     """Handle menu: callback_data from Settings submenu."""
+    if data == "menu:filters":
+        _send_filters_overview(
+            token,
+            chat_id,
+            telegram_id,
+            api_url,
+            api_auth_token,
+            api_user_hmac_secret,
+        )
+        return
+    if data == "menu:pro":
+        _send_pro_overview(
+            token,
+            chat_id,
+            telegram_id,
+            api_url,
+            api_auth_token,
+            api_user_hmac_secret,
+        )
+        return
     if data == "menu:notify_hour":
         user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
         if user_id is None:
@@ -2248,6 +2270,153 @@ def _parse_batch_feedback_callback(data: str) -> tuple[str, str, int, int] | Non
 def _stale_batch_session_text() -> str:
     """User-facing guidance when an interactive batch session has expired."""
     return "Подборка устарела. Обновите профиль: /profile"
+
+
+def _source_label(source: object) -> str:
+    value = str(source or "").strip().lower()
+    labels = {
+        "kwork": "Kwork",
+        "flru": "FL.ru",
+        "freelancehunt": "Freelancehunt",
+        "telegram": "Telegram",
+    }
+    return labels.get(value, value or "—")
+
+
+def _format_rub_amount(value: object) -> str | None:
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return None
+    if amount < 0:
+        return None
+    normalized = f"{amount:,.0f}".replace(",", " ")
+    return f"{normalized} ₽"
+
+
+def _format_filters_overview_text(prefs: dict | None) -> str:
+    data = prefs if isinstance(prefs, dict) else {}
+    raw_sources = data.get("preferred_sources")
+    sources = []
+    if isinstance(raw_sources, list):
+        sources = [_source_label(item) for item in raw_sources if str(item or "").strip()]
+    include_keywords = data.get("include_keywords") if isinstance(data.get("include_keywords"), list) else []
+    exclude_keywords = data.get("exclude_keywords") if isinstance(data.get("exclude_keywords"), list) else []
+    min_budget = _format_rub_amount(data.get("min_budget"))
+    max_budget = _format_rub_amount(data.get("max_budget"))
+    budget_line = "—"
+    if min_budget and max_budget:
+        budget_line = f"от {min_budget} до {max_budget}"
+    elif min_budget:
+        budget_line = f"от {min_budget}"
+    elif max_budget:
+        budget_line = f"до {max_budget}"
+    sources_line = ", ".join(sources) if sources else "—"
+    include_line = ", ".join(str(item).strip() for item in include_keywords if str(item).strip()) or "—"
+    exclude_line = ", ".join(str(item).strip() for item in exclude_keywords if str(item).strip()) or "—"
+    return (
+        "⚙️ Твои фильтры:\n\n"
+        f"Источники: {sources_line}\n"
+        f"Бюджет: {budget_line}\n"
+        f"Ключевые слова: {include_line}\n"
+        f"Исключить слова: {exclude_line}\n\n"
+        "Редактирование фильтров из бота будет следующим шагом. Пока это экран обзора."
+    )
+
+
+def _format_status_text(stats: dict) -> str:
+    period_days = max(1, _to_int_or_default(stats.get("period_days"), 7))
+    projects_found = max(0, _to_int_or_default(stats.get("projects_found"), 0))
+    projects_shown = max(0, _to_int_or_default(stats.get("projects_shown"), 0))
+    filtered_other = max(0, _to_int_or_default(stats.get("projects_filtered_other"), 0))
+    filtered_by_budget = max(0, _to_int_or_default(stats.get("projects_filtered_by_budget"), 0))
+    budget_filter_active = bool(stats.get("budget_filter_active"))
+    budget_line = (
+        f"• Отфильтровано по бюджету: {filtered_by_budget}"
+        if budget_filter_active
+        else "• Бюджетный фильтр: не задан"
+    )
+    return (
+        "📊 Статус подбора\n\n"
+        f"Статистика за последние {period_days} дней:\n"
+        f"• Найдено подходящих проектов: {projects_found}\n"
+        f"• Показано вам: {projects_shown}\n"
+        f"• Не показано после ранжирования/лимитов: {filtered_other}\n"
+        f"{budget_line}"
+    )
+
+
+def _format_pro_overview_text(is_pro: bool | None) -> str:
+    plan_line = "Сейчас у тебя Pro." if is_pro else "Сейчас у тебя Free."
+    return (
+        "💎 Pro-доступ\n\n"
+        f"{plan_line}\n\n"
+        "Free даёт:\n"
+        "✅ До 5 уведомлений в день\n"
+        "✅ Базовый подбор по всем источникам\n\n"
+        "Pro даёт:\n"
+        "🚀 Больше контроля над доставкой\n"
+        "⏰ Выбор часа дайджеста\n"
+        "📊 Более удобный ежедневный режим\n\n"
+        "Оплата и полный Pro-флоу будут вынесены отдельным шагом."
+    )
+
+
+def _send_filters_overview(
+    token: str,
+    chat_id: int,
+    telegram_id: int,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> bool:
+    user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+    if user_id is None:
+        send_message(token, chat_id, "Сначала отправьте /start")
+        return True
+    prefs = get_user_preferences(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
+    if prefs is None:
+        send_message(token, chat_id, "Не удалось загрузить фильтры. Попробуйте позже.")
+        return True
+    send_with_reply_keyboard(token, chat_id, _format_filters_overview_text(prefs))
+    return True
+
+
+def _send_status_overview(
+    token: str,
+    chat_id: int,
+    telegram_id: int,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> bool:
+    user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+    if user_id is None:
+        send_message(token, chat_id, "Сначала отправьте /start")
+        return True
+    stats = get_user_stats(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
+    if not isinstance(stats, dict):
+        send_message(token, chat_id, "Не удалось получить статус подбора. Попробуйте позже.")
+        return True
+    send_with_reply_keyboard(token, chat_id, _format_status_text(stats))
+    return True
+
+
+def _send_pro_overview(
+    token: str,
+    chat_id: int,
+    telegram_id: int,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> bool:
+    user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+    if user_id is None:
+        send_message(token, chat_id, "Сначала отправьте /start")
+        return True
+    is_pro = get_user_is_pro(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
+    send_with_reply_keyboard(token, chat_id, _format_pro_overview_text(is_pro))
+    return True
 
 
 def _handle_batch_nav_callback(
@@ -2601,7 +2770,13 @@ def _handle_update(
     from_user = msg.get("from", {})
     telegram_id = from_user.get("id")
     # Translate Reply Keyboard button labels to equivalent commands
-    _MENU_CMD_MAP = {"📊 Статистика": "/stats", "❓ Помощь": "/help"}
+    _MENU_CMD_MAP = {
+        "📊 Статистика": "/status",
+        "📊 Статус": "/status",
+        "🔍 Фильтры": "/filters",
+        "💎 Pro": "/pro",
+        "❓ Помощь": "/help",
+    }
     if text in _MENU_CMD_MAP:
         text = _MENU_CMD_MAP[text]
     if chat_id is None or telegram_id is None:
@@ -2674,11 +2849,13 @@ def _handle_update(
             chat_id,
             (
                 "<b>Команды бота:</b>\n"
-                "/start — зарегистрироваться\n"
+                "/start — открыть главное меню\n"
                 "/profile &lt;текст&gt; — обновить профиль фрилансера\n"
-                "/stats — статистика подбора за последние 7 дней\n"
-                "/notify_hour &lt;0–23&gt; — выбрать час дайджеста по МСК (только Pro)\n"
+                "/filters — посмотреть фильтры подбора\n"
+                "/status — статус подбора за последние 7 дней\n"
+                "/pro — что даёт Pro\n"
                 "/help — эта справка\n\n"
+                "Час дайджеста доступен из настроек для Pro-пользователей.\n\n"
                 "После обновления профиля ИИ подберёт подходящие заказы и пришлёт уведомления.\n"
                 "Нажмите 👍 или 👎 под каждым заказом, чтобы обучить алгоритм."
             ),
@@ -2686,45 +2863,42 @@ def _handle_update(
         )
         return True
 
-    if text == "/stats" or text.startswith("/stats@"):
+    if text in {"/filters", "/filters@"} or text.startswith("/filters@"):
         _clear_conversation_state(telegram_id)
-        user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
-        if user_id is None:
-            _record_command("stats", "missing_start")
-            send_message(token, chat_id, "Сначала отправьте /start")
-            return True
-        stats = get_user_stats(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
-        if not isinstance(stats, dict):
-            _record_command("stats", "error")
-            send_message(token, chat_id, "Не удалось получить статистику. Попробуйте позже.")
-            return True
-
-        period_days = max(1, _to_int_or_default(stats.get("period_days"), 7))
-        projects_found = max(0, _to_int_or_default(stats.get("projects_found"), 0))
-        projects_shown = max(0, _to_int_or_default(stats.get("projects_shown"), 0))
-        filtered_other = max(0, _to_int_or_default(stats.get("projects_filtered_other"), 0))
-        filtered_by_budget = max(0, _to_int_or_default(stats.get("projects_filtered_by_budget"), 0))
-        budget_filter_active = bool(stats.get("budget_filter_active"))
-
-        budget_line = (
-            f"• Отфильтровано по бюджету: {filtered_by_budget}"
-            if budget_filter_active
-            else "• Бюджетный фильтр: не задан"
-        )
-
-        send_with_reply_keyboard(
+        _record_command("filters", "ok")
+        return _send_filters_overview(
             token,
             chat_id,
-            (
-                f"📊 Статистика за последние {period_days} дней:\n"
-                f"• Найдено подходящих проектов: {projects_found}\n"
-                f"• Показано вам: {projects_shown}\n"
-                f"• Не показано после ранжирования/лимитов: {filtered_other}\n"
-                f"{budget_line}"
-            ),
+            telegram_id,
+            api_url,
+            api_auth_token,
+            api_user_hmac_secret,
         )
-        _record_command("stats", "ok")
-        return True
+
+    if text in {"/status", "/status@"} or text.startswith("/status@") or text == "/stats" or text.startswith("/stats@"):
+        _clear_conversation_state(telegram_id)
+        command_name = "status" if text.startswith("/status") else "stats"
+        _record_command(command_name, "ok")
+        return _send_status_overview(
+            token,
+            chat_id,
+            telegram_id,
+            api_url,
+            api_auth_token,
+            api_user_hmac_secret,
+        )
+
+    if text in {"/pro", "/pro@"} or text.startswith("/pro@"):
+        _clear_conversation_state(telegram_id)
+        _record_command("pro", "ok")
+        return _send_pro_overview(
+            token,
+            chat_id,
+            telegram_id,
+            api_url,
+            api_auth_token,
+            api_user_hmac_secret,
+        )
 
     if text == "/notify_hour" or text.startswith("/notify_hour "):
         rest = text[len("/notify_hour"):].strip()
@@ -2784,7 +2958,11 @@ def _handle_update(
             token,
             chat_id,
             "⚙️ Настройки",
-            [[{"text": "🕐 Час уведомлений", "callback_data": "menu:notify_hour"}]],
+            [
+                [{"text": "🔍 Фильтры", "callback_data": "menu:filters"}],
+                [{"text": "🕐 Час уведомлений", "callback_data": "menu:notify_hour"}],
+                [{"text": "💎 Pro", "callback_data": "menu:pro"}],
+            ],
         )
         return True
 
