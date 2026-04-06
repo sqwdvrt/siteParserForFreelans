@@ -689,6 +689,36 @@ def test_run_polling_handles_pro_command(bot, monkeypatch):
     assert "Как получить Pro" in text
 
 
+def test_run_polling_handles_pause_command(bot, monkeypatch):
+    updates = [
+        (
+            [
+                {"update_id": 1, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "/pause"}},
+            ],
+            2,
+            True,
+        )
+    ]
+
+    monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
+    monkeypatch.setattr(bot, "post_users", MagicMock(return_value=123))
+    send_keyboard = MagicMock(return_value=88)
+    monkeypatch.setattr(bot, "send_keyboard", send_keyboard)
+
+    with pytest.raises(KeyboardInterrupt):
+        bot.run_polling("token", "https://api.example.com", "tok", "hmac")
+
+    text = send_keyboard.call_args.args[2]
+    keyboard = send_keyboard.call_args.args[3]
+    assert "Пауза уведомлений" in text
+    callback_data = [button["callback_data"] for row in keyboard for button in row]
+    assert "pau:1d" in callback_data
+    assert "pau:3d" in callback_data
+    assert "pau:7d" in callback_data
+    assert "pau:forever" in callback_data
+    assert "pau:resume" in callback_data
+
+
 def test_run_polling_filter_budget_two_step_state_flow(bot, monkeypatch):
     updates = [
         (

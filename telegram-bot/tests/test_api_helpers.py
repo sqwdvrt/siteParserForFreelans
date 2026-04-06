@@ -133,6 +133,19 @@ def test_put_user_preferences_status_returns_status_code(bot, monkeypatch):
     assert status == 204
 
 
+def test_put_user_pause_status_returns_status_code(bot, monkeypatch):
+    monkeypatch.setattr(bot, "_http_put", lambda *args, **kwargs: 204)
+    status = bot.put_user_pause_status(
+        "https://api.example.com",
+        1,
+        123,
+        None,
+        "tok",
+        "hmac",
+    )
+    assert status == 204
+
+
 def test_set_my_commands_registers_public_command_surface(bot, monkeypatch):
     captured = {}
 
@@ -260,6 +273,32 @@ def test_profile_tips_callback_rerenders_message(bot, monkeypatch):
 
     assert edits
     assert "Как улучшить профиль" in edits[0][0][3]
+
+
+def test_pause_callback_updates_pause_and_rerenders_message(bot, monkeypatch):
+    edits = []
+    put_calls = []
+    monkeypatch.setattr(bot, "_resolve_user_id", lambda *args, **kwargs: 42)
+    monkeypatch.setattr(bot, "answer_callback_query", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        bot,
+        "put_user_pause_status",
+        lambda *args, **kwargs: put_calls.append(args[3]) or 204,
+    )
+    monkeypatch.setattr(bot, "edit_message_text", lambda *args, **kwargs: edits.append((args, kwargs)))
+
+    callback = {
+        "id": "cb-pause-1d",
+        "data": "pau:1d",
+        "from": {"id": 987654},
+        "message": {"chat": {"id": 123}, "message_id": 77},
+    }
+    bot.handle_callback(callback, "token", "https://api.example.com", "tok", "h" * 32)
+
+    assert len(put_calls) == 1
+    assert put_calls[0] is not None
+    assert edits
+    assert "Пауза включена" in edits[0][0][3]
 
 
 def test_get_updates_returns_next_offset(bot, monkeypatch):

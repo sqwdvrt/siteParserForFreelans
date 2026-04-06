@@ -1120,6 +1120,26 @@ def put_user_notify_hour(
     )
 
 
+def put_user_pause_status(
+    api_url: str,
+    user_id: int,
+    telegram_id: int,
+    until: str | None,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> int:
+    """PUT /users/:id/pause. until=None снимает паузу."""
+    url = f"{api_url.rstrip('/')}/users/{user_id}/pause"
+    payload = {"until": until}
+    return _http_put(
+        url,
+        payload,
+        make_headers=lambda: _signed_user_headers(
+            api_auth_token, api_user_hmac_secret, "PUT", url, telegram_id, _json_body(payload)
+        ),
+    )
+
+
 def get_user_preferences(
     api_url: str,
     user_id: int,
@@ -2768,6 +2788,63 @@ def _format_pro_overview_text(is_pro: bool | None) -> str:
     )
 
 
+def _format_pause_overview_text() -> str:
+    return (
+        "⏸ Пауза уведомлений\n\n"
+        "Если ты занят, в отпуске или временно закрыл поток клиентов, можно поставить уведомления на паузу.\n\n"
+        "Выбери срок ниже. Если пауза уже активна, её можно снять кнопкой «Возобновить»."
+    )
+
+
+def _build_pause_keyboard() -> list[list[dict]]:
+    return [
+        [
+            {"text": "На 1 день", "callback_data": "pau:1d"},
+            {"text": "На 3 дня", "callback_data": "pau:3d"},
+        ],
+        [
+            {"text": "На неделю", "callback_data": "pau:7d"},
+            {"text": "Бессрочно", "callback_data": "pau:forever"},
+        ],
+        [
+            {"text": "▶️ Возобновить", "callback_data": "pau:resume"},
+        ],
+    ]
+
+
+def _send_pause_overview(
+    token: str,
+    chat_id: int,
+    telegram_id: int,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> bool:
+    user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+    if user_id is None:
+        send_message(token, chat_id, "Сначала отправьте /start")
+        return True
+    return send_keyboard(token, chat_id, _format_pause_overview_text(), _build_pause_keyboard()) is not None
+
+
+def _pause_until_from_choice(choice: str) -> tuple[str | None, str] | None:
+    now = time.time()
+    choices = {
+        "1d": (1 * 24 * 60 * 60, "Пауза включена на 1 день."),
+        "3d": (3 * 24 * 60 * 60, "Пауза включена на 3 дня."),
+        "7d": (7 * 24 * 60 * 60, "Пауза включена на 7 дней."),
+        "forever": (3650 * 24 * 60 * 60, "Пауза включена бессрочно."),
+        "resume": (None, "Пауза снята. Уведомления снова активны."),
+    }
+    if choice not in choices:
+        return None
+    seconds, text = choices[choice]
+    if seconds is None:
+        return None, text
+    until = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + seconds))
+    return until, text
+
+
 def _format_home_dashboard_text(
     *,
     projects_found: int | None = None,
@@ -3129,6 +3206,40 @@ def _handle_profile_callback(
         return
 
 
+def _handle_pause_callback(
+    data: str,
+    token: str,
+    chat_id: int,
+    message_id: int,
+    telegram_id: int,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+    callback_id: str,
+) -> None:
+    choice = data[len("pau:"):].strip().lower()
+    resolved = _pause_until_from_choice(choice)
+    if resolved is None:
+        return
+    until, success_text = resolved
+    user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+    if user_id is None:
+        answer_callback_query(token, callback_id, text="Сначала отправьте /start", show_alert=True)
+        return
+    status = put_user_pause_status(
+        api_url,
+        user_id,
+        telegram_id,
+        until,
+        api_auth_token,
+        api_user_hmac_secret,
+    )
+    if status != 204:
+        answer_callback_query(token, callback_id, text="Не удалось обновить паузу", show_alert=True)
+        return
+    edit_message_text(token, chat_id, message_id, success_text, _build_pause_keyboard())
+
+
 def handle_callback(
     callback: dict,
     token: str,
@@ -3233,6 +3344,22 @@ def handle_callback(
                     api_url,
                     api_auth_token,
                     api_user_hmac_secret,
+                )
+        elif data.startswith("pau:") and telegram_id is not None:
+            msg = callback.get("message") or {}
+            cb_chat_id = msg.get("chat", {}).get("id") or from_user.get("id")
+            message_id = msg.get("message_id")
+            if cb_chat_id and message_id:
+                _handle_pause_callback(
+                    data,
+                    token,
+                    cb_chat_id,
+                    message_id,
+                    telegram_id,
+                    api_url,
+                    api_auth_token,
+                    api_user_hmac_secret,
+                    callback_id,
                 )
     except Exception as e:
         logger.error("callback handling failed: %s", _exception_name(e))
@@ -3588,14 +3715,15 @@ def _handle_update(
 
     if text in {"/pause", "/pause@"} or text.startswith("/pause@"):
         _clear_conversation_state(telegram_id)
-        _record_command("pause", "info")
-        send_with_reply_keyboard(
+        _record_command("pause", "ok")
+        return _send_pause_overview(
             token,
             chat_id,
-            "⏸ Пауза уведомлений появится следующим шагом. Сейчас это место в меню уже зарезервировано, "
-            "чтобы основной сценарий был понятным.",
+            telegram_id,
+            api_url,
+            api_auth_token,
+            api_user_hmac_secret,
         )
-        return True
 
     if text == "/notify_hour" or text.startswith("/notify_hour "):
         rest = text[len("/notify_hour"):].strip()
