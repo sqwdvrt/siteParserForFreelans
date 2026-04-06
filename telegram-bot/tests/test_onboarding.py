@@ -619,7 +619,7 @@ def test_start_command_triggers_onboarding_for_new_user(bot, monkeypatch):
 def test_start_command_does_not_trigger_onboarding_for_returning_user(bot, monkeypatch):
     import time as _time
     onboarding_started: list[bool] = []
-    send_keyboard_calls: list[dict] = []
+    dashboard_calls: list[str] = []
 
     monkeypatch.setattr(bot, "_clear_conversation_state", lambda tid: None)
     monkeypatch.setattr(bot, "post_users", lambda *a, **kw: 99)
@@ -628,13 +628,25 @@ def test_start_command_does_not_trigger_onboarding_for_returning_user(bot, monke
     monkeypatch.setattr(bot, "_get_first_seen_ts", lambda tid: _time.time() - 1)
     monkeypatch.setattr(
         bot,
+        "get_user_stats",
+        lambda *a, **kw: {
+            "period_days": 7,
+            "projects_found": 8,
+            "projects_shown": 3,
+            "projects_filtered_other": 5,
+            "projects_filtered_by_budget": 0,
+            "budget_filter_active": False,
+        },
+    )
+    monkeypatch.setattr(
+        bot,
         "_onboarding_start",
         lambda token, chat_id, telegram_id: onboarding_started.append(True),
     )
     monkeypatch.setattr(
         bot,
-        "send_keyboard",
-        lambda token, chat_id, text, keyboard: send_keyboard_calls.append(text),
+        "send_with_reply_keyboard",
+        lambda token, chat_id, text, **kwargs: dashboard_calls.append(text),
     )
     monkeypatch.setattr(bot, "_record_command", lambda *a: None)
 
@@ -643,7 +655,9 @@ def test_start_command_does_not_trigger_onboarding_for_returning_user(bot, monke
 
     assert result is True
     assert onboarding_started == []
-    assert len(send_keyboard_calls) > 0
+    assert len(dashboard_calls) == 1
+    assert "Найдено проектов" in dashboard_calls[0]
+    assert "Пауза" in dashboard_calls[0]
 
 
 def test_start_command_sends_error_when_post_users_fails(bot, monkeypatch):

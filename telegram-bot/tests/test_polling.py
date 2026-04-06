@@ -47,7 +47,7 @@ def test_run_polling_handles_start(bot, monkeypatch):
     send_keyboard.assert_called_once()  # onboarding wizard starts
 
 
-def test_run_polling_start_for_returning_user_shows_onboarding_actions(bot, monkeypatch):
+def test_run_polling_start_for_returning_user_shows_home_dashboard(bot, monkeypatch):
     updates = [
         (
             [
@@ -68,19 +68,37 @@ def test_run_polling_start_for_returning_user_shows_onboarding_actions(bot, monk
     monkeypatch.setattr(bot, "post_users", MagicMock(return_value=1))
     monkeypatch.setattr(bot, "_mark_first_seen", lambda *_args, **_kwargs: False)
     monkeypatch.setattr(bot, "_get_first_seen_ts", lambda *_args, **_kwargs: int(bot.time.time()))
+    monkeypatch.setattr(
+        bot,
+        "get_user_stats",
+        MagicMock(
+            return_value={
+                "period_days": 7,
+                "projects_found": 8,
+                "projects_shown": 3,
+                "projects_filtered_other": 5,
+                "projects_filtered_by_budget": 0,
+                "budget_filter_active": False,
+            },
+        ),
+    )
     send_keyboard = MagicMock(return_value=42)
-    send_message = MagicMock(return_value=True)
+    send_with_reply_keyboard = MagicMock(return_value=None)
     monkeypatch.setattr(bot, "send_keyboard", send_keyboard)
-    monkeypatch.setattr(bot, "send_message", send_message)
+    monkeypatch.setattr(bot, "send_with_reply_keyboard", send_with_reply_keyboard)
 
     with pytest.raises(KeyboardInterrupt):
         bot.run_polling("token", "https://api.example.com", "tok", "hmac")
 
-    send_message.assert_not_called()
-    send_keyboard.assert_called_once()
-    keyboard = send_keyboard.call_args.args[3]
-    callback_data = [button["callback_data"] for row in keyboard for button in row]
-    assert callback_data == ["ob:restart", "ob:manual", "ob:keep"]
+    send_keyboard.assert_not_called()
+    send_with_reply_keyboard.assert_called_once()
+    text = send_with_reply_keyboard.call_args.args[2]
+    assert "Привет" in text or "С возвращением" in text
+    assert "Найдено проектов" in text
+    assert "Настройки" in text
+    assert "Статус" in text
+    assert "Пауза" in text
+    assert "Pro" in text
 
 
 def test_run_polling_handles_profile(bot, monkeypatch):

@@ -1899,8 +1899,9 @@ def _build_main_reply_keyboard() -> dict:
         "keyboard": [
             [{"text": "👤 Мой профиль"}, {"text": "📊 Статус"}],
             [{"text": "🔍 Фильтры"}, {"text": "⚙️ Настройки"}],
-            [{"text": "💎 Pro"}, {"text": "❓ Помощь"}],
-            [{"text": "✏️ Обновить профиль"}, {"text": "🔼 Скрыть меню"}],
+            [{"text": "⏸ Пауза"}, {"text": "💎 Pro"}],
+            [{"text": "❓ Помощь"}, {"text": "✏️ Обновить профиль"}],
+            [{"text": "🔼 Скрыть меню"}],
         ],
         "resize_keyboard": True,
         "persistent": True,
@@ -2362,6 +2363,64 @@ def _format_pro_overview_text(is_pro: bool | None) -> str:
     )
 
 
+def _format_home_dashboard_text(
+    *,
+    projects_found: int | None = None,
+    projects_shown: int | None = None,
+    period_days: int | None = None,
+    recommend_refresh: bool = False,
+) -> str:
+    lines = ["👋 С возвращением!"]
+    if period_days and projects_found is not None and projects_shown is not None:
+        lines.extend(
+            [
+                "",
+                f"📊 За последние {period_days} дней:",
+                f"• Найдено проектов: {projects_found}",
+                f"• Показано тебе: {projects_shown}",
+            ]
+        )
+    if recommend_refresh:
+        lines.extend(
+            [
+                "",
+                "Профиль давно не обновлялся. Если стек или цели изменились, обнови его для лучшего подбора.",
+            ]
+        )
+    lines.extend(
+        [
+            "",
+            "Через меню ниже можно открыть Настройки, Статус, Пауза, Pro и Помощь.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _send_returning_user_home(
+    token: str,
+    chat_id: int,
+    telegram_id: int,
+    user_id: int,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+    *,
+    recommend_refresh: bool,
+) -> bool:
+    stats = get_user_stats(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
+    if isinstance(stats, dict):
+        text = _format_home_dashboard_text(
+            projects_found=max(0, _to_int_or_default(stats.get("projects_found"), 0)),
+            projects_shown=max(0, _to_int_or_default(stats.get("projects_shown"), 0)),
+            period_days=max(1, _to_int_or_default(stats.get("period_days"), 7)),
+            recommend_refresh=recommend_refresh,
+        )
+    else:
+        text = _format_home_dashboard_text(recommend_refresh=recommend_refresh)
+    send_with_reply_keyboard(token, chat_id, text)
+    return True
+
+
 def _send_filters_overview(
     token: str,
     chat_id: int,
@@ -2774,6 +2833,7 @@ def _handle_update(
         "📊 Статистика": "/status",
         "📊 Статус": "/status",
         "🔍 Фильтры": "/filters",
+        "⏸ Пауза": "/pause",
         "💎 Pro": "/pro",
         "❓ Помощь": "/help",
     }
@@ -2795,26 +2855,16 @@ def _handle_update(
                 first_seen = _get_first_seen_ts(telegram_id)
                 days_since = (time.time() - first_seen) / 86400 if first_seen else 0
                 _record_command("start", "returning")
-                if days_since >= 7:
-                    send_keyboard(
-                        token, chat_id,
-                        "С возвращением! Хотите обновить профиль для лучшего подбора заказов?",
-                        [
-                            [{"text": "🔄 Пройти анкету", "callback_data": "ob:restart"}],
-                            [{"text": "Оставить текущий профиль", "callback_data": "ob:keep"}],
-                        ],
-                    )
-                    send_with_reply_keyboard(token, chat_id, "Меню доступно в любой момент 👇")
-                else:
-                    send_keyboard(
-                        token,
-                        chat_id,
-                        "Вы уже зарегистрированы.\n\n"
-                        "Можно заново пройти короткую анкету, обновить профиль вручную "
-                        "или оставить текущий профиль без изменений.",
-                        _build_returning_user_keyboard(),
-                    )
-                    send_with_reply_keyboard(token, chat_id, "Меню доступно в любой момент 👇")
+                return _send_returning_user_home(
+                    token,
+                    chat_id,
+                    telegram_id,
+                    user_id,
+                    api_url,
+                    api_auth_token,
+                    api_user_hmac_secret,
+                    recommend_refresh=days_since >= 7,
+                )
         else:
             _record_command("start", "error")
             send_message(token, chat_id, "Ошибка регистрации. Попробуйте позже.")
@@ -2899,6 +2949,17 @@ def _handle_update(
             api_auth_token,
             api_user_hmac_secret,
         )
+
+    if text in {"/pause", "/pause@"} or text.startswith("/pause@"):
+        _clear_conversation_state(telegram_id)
+        _record_command("pause", "info")
+        send_with_reply_keyboard(
+            token,
+            chat_id,
+            "⏸ Пауза уведомлений появится следующим шагом. Сейчас это место в меню уже зарезервировано, "
+            "чтобы основной сценарий был понятным.",
+        )
+        return True
 
     if text == "/notify_hour" or text.startswith("/notify_hour "):
         rest = text[len("/notify_hour"):].strip()
