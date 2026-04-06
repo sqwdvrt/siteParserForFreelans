@@ -2598,33 +2598,37 @@ def _format_status_text(stats: dict) -> str:
     filtered_by_budget = max(0, _to_int_or_default(stats.get("projects_filtered_by_budget"), 0))
     budget_filter_active = bool(stats.get("budget_filter_active"))
     budget_line = (
-        f"• Отфильтровано по бюджету: {filtered_by_budget}"
+        f"• Бюджетный фильтр отсеял: {filtered_by_budget}"
         if budget_filter_active
-        else "• Бюджетный фильтр: не задан"
+        else "• Бюджетный фильтр не задан"
     )
     return (
         "📊 Статус подбора\n\n"
-        f"Статистика за последние {period_days} дней:\n"
-        f"• Найдено подходящих проектов: {projects_found}\n"
-        f"• Показано вам: {projects_shown}\n"
-        f"• Не показано после ранжирования/лимитов: {filtered_other}\n"
-        f"{budget_line}"
+        f"За последние {period_days} дней:\n"
+        f"• Найдено проектов: {projects_found}\n"
+        f"• Отправлено тебе: {projects_shown}\n"
+        f"• Не дошло до тебя: {filtered_other}\n"
+        f"{budget_line}\n\n"
+        "Ты ничего не теряешь молча: этот экран показывает, сколько проектов осталось за пределами выдачи."
     )
 
 
 def _format_pro_overview_text(is_pro: bool | None) -> str:
-    plan_line = "Сейчас у тебя Pro." if is_pro else "Сейчас у тебя Free."
+    plan_line = "Текущий план: Pro" if is_pro else "Текущий план: Free"
     return (
         "💎 Pro-доступ\n\n"
         f"{plan_line}\n\n"
-        "Free даёт:\n"
+        "Free:\n"
         "✅ До 5 уведомлений в день\n"
-        "✅ Базовый подбор по всем источникам\n\n"
-        "Pro даёт:\n"
-        "🚀 Больше контроля над доставкой\n"
+        "✅ Все основные источники\n"
+        "✅ Базовый подбор\n\n"
+        "Pro:\n"
+        "🚀 Без дневного лимита уведомлений\n"
         "⏰ Выбор часа дайджеста\n"
-        "📊 Более удобный ежедневный режим\n\n"
-        "Оплата и полный Pro-флоу будут вынесены отдельным шагом."
+        "📊 Более удобный контроль потока\n"
+        "🎯 Приоритетный режим доставки\n\n"
+        "Как получить Pro:\n"
+        "Оплата и полноценный Pro-флоу будут вынесены отдельным шагом."
     )
 
 

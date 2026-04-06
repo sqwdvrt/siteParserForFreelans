@@ -568,10 +568,12 @@ def test_run_polling_handles_stats_command(bot, monkeypatch):
 
     assert send_with_reply_keyboard.call_count == 1
     text = send_with_reply_keyboard.call_args.args[2]
-    assert "Статистика за последние 7 дней" in text
-    assert "Найдено подходящих проектов: 42" in text
-    assert "Показано вам: 12" in text
-    assert "Отфильтровано по бюджету: 18" in text
+    assert "За последние 7 дней" in text
+    assert "Найдено проектов: 42" in text
+    assert "Отправлено тебе: 12" in text
+    assert "Не дошло до тебя: 30" in text
+    assert "Бюджетный фильтр отсеял: 18" in text
+    assert "Ты ничего не теряешь молча" in text
 
 
 def test_run_polling_handles_status_command_as_stats_alias(bot, monkeypatch):
@@ -608,8 +610,10 @@ def test_run_polling_handles_status_command_as_stats_alias(bot, monkeypatch):
         bot.run_polling("token", "https://api.example.com", "tok", "hmac")
 
     text = send_with_reply_keyboard.call_args.args[2]
-    assert "Статус" in text
-    assert "Найдено подходящих проектов: 9" in text
+    assert "Статус подбора" in text
+    assert "Найдено проектов: 9" in text
+    assert "Отправлено тебе: 4" in text
+    assert "Бюджетный фильтр не задан" in text
 
 
 def test_run_polling_handles_filters_command(bot, monkeypatch):
@@ -679,7 +683,10 @@ def test_run_polling_handles_pro_command(bot, monkeypatch):
 
     text = send_with_reply_keyboard.call_args.args[2]
     assert "Pro-доступ" in text
-    assert "Сейчас у тебя Free" in text
+    assert "Текущий план: Free" in text
+    assert "Без дневного лимита уведомлений" in text
+    assert "Выбор часа дайджеста" in text
+    assert "Как получить Pro" in text
 
 
 def test_run_polling_filter_budget_two_step_state_flow(bot, monkeypatch):
