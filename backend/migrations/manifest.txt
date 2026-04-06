@@ -25,3 +25,4 @@
 024_jobs_freshness.sql
 025_rerank_score.sql
 026_notifications_claimed_at.sql
+027_users_pause.sql

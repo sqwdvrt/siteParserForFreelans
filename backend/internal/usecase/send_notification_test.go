@@ -130,6 +130,9 @@ func (m *mockUserRepo) UpdateProfileScoped(ctx context.Context, userID int64, te
 func (m *mockUserRepo) UpdateNotifyHourScoped(ctx context.Context, userID int64, hour int) error {
 	return nil
 }
+func (m *mockUserRepo) UpdatePauseScoped(ctx context.Context, userID int64, until *time.Time) error {
+	return nil
+}
 func (m *mockUserRepo) GetPreferencesScoped(ctx context.Context, userID int64) (*domain.UserPreferences, error) {
 	return &domain.UserPreferences{}, nil
 }
@@ -260,6 +263,34 @@ func TestSendNotification_Execute_DailyLimitReached(t *testing.T) {
 	}
 	if sent {
 		t.Error("must not send when daily limit (5) reached")
+	}
+}
+
+func TestSendNotification_Execute_PausedUserSkipped(t *testing.T) {
+	sent := false
+	now := time.Now().Add(2 * time.Hour)
+	uc := NewSendNotification(
+		&mockNotifRepo{
+			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
+				return true, true, nil
+			},
+		},
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 999, PausedUntil: &now}, nil
+		}},
+		&mockJobRepo{},
+		&mockNotifier{sendFunc: func(context.Context, int64, port.NotifyPayload) error {
+			sent = true
+			return nil
+		}},
+		5*time.Minute,
+		5,
+	)
+	if err := uc.Execute(context.Background(), 1, 1, 0.9, 0.9, "v2", nil, ""); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if sent {
+		t.Fatal("must not send when user is paused")
 	}
 }
 

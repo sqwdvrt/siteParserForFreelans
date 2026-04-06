@@ -210,6 +210,11 @@ type PutUserNotifyHourRequest struct {
 	Hour int `json:"hour"`
 }
 
+// PutUserPauseRequest — тело PUT /users/:id/pause.
+type PutUserPauseRequest struct {
+	Until *time.Time `json:"until"`
+}
+
 // UserPreferencesRequest — тело PUT /users/:id/preferences.
 type UserPreferencesRequest struct {
 	IncludeKeywords  []string `json:"include_keywords"`
@@ -398,6 +403,60 @@ func (h *Handlers) PutUserNotifyHour(w http.ResponseWriter, r *http.Request) {
 		UserID: userID,
 		Properties: map[string]any{
 			"notify_hour": req.Hour,
+		},
+	})
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// PutUserPause обновляет paused_until пользователя. until=null снимает паузу.
+func (h *Handlers) PutUserPause(w http.ResponseWriter, r *http.Request) {
+	if !h.authorize(w, r) {
+		return
+	}
+	var req PutUserPauseRequest
+	rawBody, err := decodeJSONBody(w, r, &req)
+	if err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			http.Error(w, "request body too large", http.StatusRequestEntityTooLarge)
+			return
+		}
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if req.Until != nil && !req.Until.After(time.Now().UTC()) {
+		http.Error(w, "until must be in the future or null", http.StatusBadRequest)
+		return
+	}
+
+	userID, callerTelegramID, ok := h.authorizeOwnedUserRequest(w, r, rawBody)
+	if !ok {
+		return
+	}
+	user, err := h.UserRepo.GetByID(r.Context(), userID)
+	if err != nil {
+		h.logger().Error("put user pause get user failed", "user_id", userID, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	if user == nil {
+		http.Error(w, "user not found", http.StatusNotFound)
+		return
+	}
+	if user.TelegramID != callerTelegramID {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	if err := h.UserRepo.UpdatePauseScoped(r.Context(), userID, req.Until); err != nil {
+		h.logger().Error("put user pause update failed", "user_id", userID, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	h.recordProductEvent(r.Context(), port.ProductEvent{
+		Type:   port.ProductEventPauseUpdated,
+		UserID: userID,
+		Properties: map[string]any{
+			"paused": req.Until != nil,
+			"until":  req.Until,
 		},
 	})
 	w.WriteHeader(http.StatusNoContent)

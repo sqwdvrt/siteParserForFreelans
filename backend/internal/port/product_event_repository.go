@@ -10,6 +10,7 @@ const (
 	ProductEventProfileCompleted   ProductEventType = "profile_completed"
 	ProductEventPreferencesUpdated ProductEventType = "preferences_updated"
 	ProductEventNotifyHourUpdated  ProductEventType = "notify_hour_updated"
+	ProductEventPauseUpdated       ProductEventType = "pause_updated"
 	ProductEventFeedbackSubmitted  ProductEventType = "feedback_submitted"
 	ProductEventNotificationSent   ProductEventType = "notification_sent"
 )

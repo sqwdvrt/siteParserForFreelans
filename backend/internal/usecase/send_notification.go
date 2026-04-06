@@ -82,6 +82,10 @@ func (u *SendNotification) Execute(
 		slog.Debug("send notification: user not found", "user_id", userID)
 		return nil
 	}
+	if user.IsPaused(time.Now()) {
+		slog.Debug("send notification: paused user skipped", "user_id", userID)
+		return nil
+	}
 
 	job, err := u.jobRepo.GetByID(ctx, jobID)
 	if err != nil {
@@ -198,6 +202,10 @@ func (u *SendNotification) ExecuteBatch(
 	}
 	if user == nil {
 		slog.Debug("send batch notification: user not found", "user_id", userID)
+		return nil
+	}
+	if user.IsPaused(time.Now()) {
+		slog.Debug("send batch notification: paused user skipped", "user_id", userID)
 		return nil
 	}
 

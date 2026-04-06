@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"os"
 	"testing"
+	"time"
 )
 
 func setupTestDBForUser(t *testing.T) *pgxpool.Pool {
@@ -170,5 +171,41 @@ func TestUserRepository_UpdateNotifyHourScoped(t *testing.T) {
 	}
 	if u.NotifyHour == nil || *u.NotifyHour != int16(11) {
 		t.Fatalf("notify_hour = %v, want 11", u.NotifyHour)
+	}
+}
+
+func TestUserRepository_UpdatePauseScoped(t *testing.T) {
+	pool := setupTestDBForUser(t)
+	repo := NewUserRepository(pool)
+	ctx := context.Background()
+
+	telegramID := int64(9000000005 + (os.Getpid() % 100000))
+	id, _, err := repo.Save(ctx, telegramID)
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	pausedUntil := time.Date(2030, 1, 2, 15, 4, 5, 0, time.UTC)
+	if err := repo.UpdatePauseScoped(ctx, id, &pausedUntil); err != nil {
+		t.Fatalf("UpdatePauseScoped: %v", err)
+	}
+
+	u, err := repo.GetByTelegramID(ctx, telegramID)
+	if err != nil {
+		t.Fatalf("GetByTelegramID: %v", err)
+	}
+	if u.PausedUntil == nil || !u.PausedUntil.Equal(pausedUntil) {
+		t.Fatalf("paused_until = %v, want %v", u.PausedUntil, pausedUntil)
+	}
+
+	if err := repo.UpdatePauseScoped(ctx, id, nil); err != nil {
+		t.Fatalf("UpdatePauseScoped clear: %v", err)
+	}
+	u, err = repo.GetByTelegramID(ctx, telegramID)
+	if err != nil {
+		t.Fatalf("GetByTelegramID after clear: %v", err)
+	}
+	if u.PausedUntil != nil {
+		t.Fatalf("paused_until = %v, want nil", u.PausedUntil)
 	}
 }

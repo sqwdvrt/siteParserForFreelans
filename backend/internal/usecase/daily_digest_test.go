@@ -41,6 +41,9 @@ func (m *digestUserRepo) UpdateProfileScoped(ctx context.Context, userID int64, 
 func (m *digestUserRepo) UpdateNotifyHourScoped(ctx context.Context, userID int64, hour int) error {
 	return nil
 }
+func (m *digestUserRepo) UpdatePauseScoped(ctx context.Context, userID int64, until *time.Time) error {
+	return nil
+}
 
 func (m *digestUserRepo) GetPreferencesScoped(ctx context.Context, userID int64) (*domain.UserPreferences, error) {
 	return &domain.UserPreferences{}, nil
@@ -364,6 +367,28 @@ func TestDailyDigestSendDigestForUserSkipsOnLimitsAndEmptyData(t *testing.T) {
 	)
 	if err := uc.sendDigestForUser(context.Background(), 3); err != nil {
 		t.Fatalf("empty pending err=%v", err)
+	}
+}
+
+func TestDailyDigestSendDigestForUser_SkipsPausedUser(t *testing.T) {
+	pausedUntil := time.Now().Add(3 * time.Hour)
+	notifier := &digestNotifier{}
+	uc := NewDailyDigest(
+		&digestUserRepo{
+			getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+				return &domain.User{ID: 42, TelegramID: 1042, PausedUntil: &pausedUntil}, nil
+			},
+		},
+		&digestNotifRepo{},
+		&digestJobRepo{},
+		notifier,
+		3,
+	)
+	if err := uc.sendDigestForUser(context.Background(), 42); err != nil {
+		t.Fatalf("sendDigestForUser: %v", err)
+	}
+	if notifier.sentTo != 0 {
+		t.Fatalf("sentTo=%d, want 0", notifier.sentTo)
 	}
 }
 

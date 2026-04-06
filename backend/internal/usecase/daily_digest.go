@@ -91,6 +91,10 @@ func (d *DailyDigest) sendDigestForUser(ctx context.Context, userID int64) error
 	if user == nil {
 		return nil
 	}
+	if user.IsPaused(time.Now()) {
+		slog.Debug("daily digest: paused user skipped", "user_id", userID)
+		return nil
+	}
 
 	countToday, err := d.notifRepo.CountToday(ctx, userID)
 	if err != nil {

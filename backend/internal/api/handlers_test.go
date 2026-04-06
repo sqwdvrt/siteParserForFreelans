@@ -118,6 +118,7 @@ type mockUserRepo struct {
 	updateProfileFunc     func(ctx context.Context, userID int64, profileText string) error
 	updateProfileAndStage func(ctx context.Context, userID int64, profileText string) error
 	updateNotifyHourFunc  func(ctx context.Context, userID int64, hour int) error
+	updatePauseFunc       func(ctx context.Context, userID int64, until *time.Time) error
 	getPreferencesFunc    func(ctx context.Context, userID int64) (*domain.UserPreferences, error)
 	upsertPreferencesFunc func(ctx context.Context, userID int64, prefs domain.UserPreferences) error
 }
@@ -178,6 +179,13 @@ func (m *mockUserRepo) ReleasePendingUserEmbeds(ctx context.Context, userIDs []i
 func (m *mockUserRepo) UpdateNotifyHourScoped(ctx context.Context, userID int64, hour int) error {
 	if m.updateNotifyHourFunc != nil {
 		return m.updateNotifyHourFunc(ctx, userID, hour)
+	}
+	return nil
+}
+
+func (m *mockUserRepo) UpdatePauseScoped(ctx context.Context, userID int64, until *time.Time) error {
+	if m.updatePauseFunc != nil {
+		return m.updatePauseFunc(ctx, userID, until)
 	}
 	return nil
 }
@@ -828,6 +836,77 @@ func TestHandlers_PutUserNotifyHour_UpdateError(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "internal error") {
 		t.Errorf("response = %q, want generic internal error", rr.Body.String())
+	}
+}
+
+func TestHandlers_PutUserPause_Success(t *testing.T) {
+	var gotUserID int64
+	var gotUntil *time.Time
+	repo := &mockUserRepo{
+		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+			return &domain.User{ID: userID, TelegramID: 123456789}, nil
+		},
+		updatePauseFunc: func(ctx context.Context, userID int64, until *time.Time) error {
+			gotUserID = userID
+			gotUntil = until
+			return nil
+		},
+	}
+	h := &Handlers{UserRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+
+	body := []byte(`{"until":"2030-01-02T15:04:05Z"}`)
+	req := newJSONRequest(
+		http.MethodPut,
+		"/users/1/pause",
+		body,
+		newAuthHeadersWithUserSign(http.MethodPut, "/users/1/pause", 123456789, body),
+	)
+	req = attachRouteUserID(req, "1")
+	rr := httptest.NewRecorder()
+
+	h.PutUserPause(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+	if gotUserID != 1 {
+		t.Fatalf("user_id = %d, want 1", gotUserID)
+	}
+	if gotUntil == nil || gotUntil.Format(time.RFC3339) != "2030-01-02T15:04:05Z" {
+		t.Fatalf("until = %v, want 2030-01-02T15:04:05Z", gotUntil)
+	}
+}
+
+func TestHandlers_PutUserPause_ClearPauseWithNull(t *testing.T) {
+	var gotUntil *time.Time
+	repo := &mockUserRepo{
+		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+			return &domain.User{ID: userID, TelegramID: 123456789}, nil
+		},
+		updatePauseFunc: func(ctx context.Context, userID int64, until *time.Time) error {
+			gotUntil = until
+			return nil
+		},
+	}
+	h := &Handlers{UserRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+
+	body := []byte(`{"until":null}`)
+	req := newJSONRequest(
+		http.MethodPut,
+		"/users/1/pause",
+		body,
+		newAuthHeadersWithUserSign(http.MethodPut, "/users/1/pause", 123456789, body),
+	)
+	req = attachRouteUserID(req, "1")
+	rr := httptest.NewRecorder()
+
+	h.PutUserPause(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+	if gotUntil != nil {
+		t.Fatalf("until = %v, want nil", gotUntil)
 	}
 }
 

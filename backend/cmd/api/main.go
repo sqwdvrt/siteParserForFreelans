@@ -212,6 +212,7 @@ func main() {
 	r.Post("/users", handlers.PostUsers)
 	r.Put("/users/{id}/profile", handlers.PutUserProfile)
 	r.Put("/users/{id}/notify-hour", handlers.PutUserNotifyHour)
+	r.Put("/users/{id}/pause", handlers.PutUserPause)
 	r.Get("/users/{id}/preferences", handlers.GetUserPreferences)
 	r.Get("/users/{id}/stats", handlers.GetUserStats)
 	r.Put("/users/{id}/preferences", handlers.PutUserPreferences)

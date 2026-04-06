@@ -2,6 +2,7 @@ package port
 
 import (
 	"context"
+	"time"
 
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 )
@@ -17,6 +18,8 @@ type UserRepository interface {
 	UpdateProfileScoped(ctx context.Context, userID int64, profileText string) error
 	// UpdateNotifyHourScoped обновляет notify_hour в транзакции с установкой app.current_user_id для RLS.
 	UpdateNotifyHourScoped(ctx context.Context, userID int64, hour int) error
+	// UpdatePauseScoped обновляет paused_until в транзакции с установкой app.current_user_id для RLS.
+	UpdatePauseScoped(ctx context.Context, userID int64, until *time.Time) error
 	// UpsertPreferencesScoped обновляет user_preferences в транзакции с установкой app.current_user_id для RLS.
 	UpsertPreferencesScoped(ctx context.Context, userID int64, prefs domain.UserPreferences) error
 	// GetProUsersWithNotifyHour возвращает IDs pro-пользователей с заданным notify_hour (Europe/Moscow).
