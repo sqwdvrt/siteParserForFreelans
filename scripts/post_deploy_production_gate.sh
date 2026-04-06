@@ -93,6 +93,8 @@ expect_http_code() {
     local out_file status
     out_file="${tmp_dir}/$(printf '%s' "${name}" | tr ' /' '__').txt"
     status="$(
+      # Host-side checks must ignore container-only CA env vars like SSL_CERT_FILE=/certs/ca.crt.
+      env -u SSL_CERT_FILE -u CURL_CA_BUNDLE -u REQUESTS_CA_BUNDLE \
       curl --silent --show-error --output "${out_file}" --write-out '%{http_code}' \
         --request "${method}" \
         --max-time 15 \
