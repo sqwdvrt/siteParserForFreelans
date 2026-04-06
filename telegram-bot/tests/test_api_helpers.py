@@ -120,6 +120,19 @@ def test_get_user_stats_returns_none_on_failure(bot, monkeypatch):
     assert bot.get_user_stats("https://api.example.com", 1, 123, "tok", "hmac") is None
 
 
+def test_put_user_preferences_status_returns_status_code(bot, monkeypatch):
+    monkeypatch.setattr(bot, "_http_put", lambda *args, **kwargs: 204)
+    status = bot.put_user_preferences_status(
+        "https://api.example.com",
+        1,
+        123,
+        {"preferred_sources": ["kwork"]},
+        "tok",
+        "hmac",
+    )
+    assert status == 204
+
+
 def test_set_my_commands_registers_public_command_surface(bot, monkeypatch):
     captured = {}
 
@@ -136,6 +149,82 @@ def test_set_my_commands_registers_public_command_surface(bot, monkeypatch):
     command_names = [item["command"] for item in commands]
     assert command_names == ["start", "profile", "filters", "status", "help", "pro"]
     assert "notify_hour" not in command_names
+
+
+def test_filters_source_toggle_updates_preferences_and_rerenders(bot, monkeypatch):
+    edits = []
+    monkeypatch.setattr(
+        bot,
+        "get_user_preferences",
+        lambda *args, **kwargs: {
+            "preferred_sources": ["kwork"],
+            "min_budget": 5000,
+            "include_keywords": [],
+            "exclude_keywords": [],
+        },
+    )
+    put_calls = []
+    monkeypatch.setattr(
+        bot,
+        "put_user_preferences_status",
+        lambda *args, **kwargs: put_calls.append(args[3]) or 204,
+    )
+    monkeypatch.setattr(bot, "edit_message_text", lambda *args, **kwargs: edits.append((args, kwargs)))
+    monkeypatch.setattr(bot, "_resolve_user_id", lambda *args, **kwargs: 42)
+    monkeypatch.setattr(bot, "answer_callback_query", lambda *args, **kwargs: None)
+
+    callback = {
+        "id": "cb-filter-src",
+        "data": "flt:src:toggle:flru",
+        "from": {"id": 987654},
+        "message": {"chat": {"id": 123}, "message_id": 99},
+    }
+    bot.handle_callback(callback, "token", "https://api.example.com", "tok", "h" * 32)
+
+    assert put_calls
+    assert put_calls[0]["preferred_sources"] == ["kwork", "flru"]
+    assert edits
+    assert "Источники" in edits[0][0][3]
+
+
+def test_filters_reset_clears_preferences_and_rerenders(bot, monkeypatch):
+    edits = []
+    monkeypatch.setattr(bot, "_resolve_user_id", lambda *args, **kwargs: 42)
+    monkeypatch.setattr(bot, "answer_callback_query", lambda *args, **kwargs: None)
+    put_calls = []
+    monkeypatch.setattr(
+        bot,
+        "put_user_preferences_status",
+        lambda *args, **kwargs: put_calls.append(args[3]) or 204,
+    )
+    monkeypatch.setattr(
+        bot,
+        "get_user_preferences",
+        lambda *args, **kwargs: {
+            "preferred_sources": [],
+            "include_keywords": [],
+            "exclude_keywords": [],
+        },
+    )
+    monkeypatch.setattr(bot, "edit_message_text", lambda *args, **kwargs: edits.append((args, kwargs)))
+
+    callback = {
+        "id": "cb-filter-reset",
+        "data": "flt:reset",
+        "from": {"id": 987654},
+        "message": {"chat": {"id": 123}, "message_id": 99},
+    }
+    bot.handle_callback(callback, "token", "https://api.example.com", "tok", "h" * 32)
+
+    assert put_calls
+    assert put_calls[0] == {
+        "preferred_sources": [],
+        "include_keywords": [],
+        "exclude_keywords": [],
+        "min_budget": None,
+        "max_budget": None,
+    }
+    assert edits
 
 
 def test_get_updates_returns_next_offset(bot, monkeypatch):

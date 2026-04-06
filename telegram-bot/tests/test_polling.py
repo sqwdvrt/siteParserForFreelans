@@ -601,16 +601,23 @@ def test_run_polling_handles_filters_command(bot, monkeypatch):
             },
         ),
     )
-    send_with_reply_keyboard = MagicMock(return_value=None)
-    monkeypatch.setattr(bot, "send_with_reply_keyboard", send_with_reply_keyboard)
+    send_keyboard = MagicMock(return_value=77)
+    monkeypatch.setattr(bot, "send_keyboard", send_keyboard)
 
     with pytest.raises(KeyboardInterrupt):
         bot.run_polling("token", "https://api.example.com", "tok", "hmac")
 
-    text = send_with_reply_keyboard.call_args.args[2]
+    text = send_keyboard.call_args.args[2]
     assert "Твои фильтры" in text
     assert "Kwork, FL.ru" in text
     assert "5 000" in text
+    keyboard = send_keyboard.call_args.args[3]
+    callback_data = [button["callback_data"] for row in keyboard for button in row]
+    assert "flt:src" in callback_data
+    assert "flt:budget" in callback_data
+    assert "flt:include" in callback_data
+    assert "flt:exclude" in callback_data
+    assert "flt:reset" in callback_data
 
 
 def test_run_polling_handles_pro_command(bot, monkeypatch):
@@ -636,6 +643,55 @@ def test_run_polling_handles_pro_command(bot, monkeypatch):
     text = send_with_reply_keyboard.call_args.args[2]
     assert "Pro-доступ" in text
     assert "Сейчас у тебя Free" in text
+
+
+def test_run_polling_filter_budget_two_step_state_flow(bot, monkeypatch):
+    updates = [
+        (
+            [
+                {"update_id": 1, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "/filters"}},
+                {
+                    "update_id": 2,
+                    "callback_query": {
+                        "id": "cb1",
+                        "data": "flt:budget",
+                        "from": {"id": 200},
+                        "message": {"chat": {"id": 100}, "message_id": 88},
+                    },
+                },
+                {"update_id": 3, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "7000"}},
+            ],
+            4,
+            True,
+        )
+    ]
+
+    monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
+    monkeypatch.setattr(bot, "post_users", MagicMock(return_value=123))
+    prefs = {
+        "preferred_sources": ["kwork"],
+        "min_budget": 5000,
+        "include_keywords": [],
+        "exclude_keywords": [],
+        "is_pro": False,
+    }
+    monkeypatch.setattr(bot, "get_user_preferences", MagicMock(return_value=prefs))
+    put_user_preferences_status = MagicMock(return_value=204)
+    monkeypatch.setattr(bot, "put_user_preferences_status", put_user_preferences_status)
+    monkeypatch.setattr(bot, "send_keyboard", MagicMock(return_value=88))
+    send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(bot, "send_message", send_message)
+    monkeypatch.setattr(bot, "answer_callback_query", lambda *args, **kwargs: None)
+    monkeypatch.setattr(bot, "edit_message_text", lambda *args, **kwargs: None)
+
+    with pytest.raises(KeyboardInterrupt):
+        bot.run_polling("token", "https://api.example.com", "tok", "hmac")
+
+    assert "минимальный бюджет" in send_message.call_args_list[0].args[2].lower()
+    put_user_preferences_status.assert_called_once()
+    payload = put_user_preferences_status.call_args.args[3]
+    assert payload["min_budget"] == 7000
+    assert bot._get_conversation_state(200) is None
 
 
 def test_run_polling_stats_requires_start(bot, monkeypatch):

@@ -1137,6 +1137,30 @@ def get_user_preferences(
     )
 
 
+def put_user_preferences_status(
+    api_url: str,
+    user_id: int,
+    telegram_id: int,
+    prefs: dict,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> int:
+    """PUT /users/:id/preferences. Returns status code (204 on success)."""
+    url = f"{api_url.rstrip('/')}/users/{user_id}/preferences"
+    return _http_put(
+        url,
+        prefs,
+        make_headers=lambda: _signed_user_headers(
+            api_auth_token,
+            api_user_hmac_secret,
+            "PUT",
+            url,
+            telegram_id,
+            _json_body(prefs),
+        ),
+    )
+
+
 def get_user_is_pro(
     api_url: str,
     user_id: int,
@@ -2320,9 +2344,250 @@ def _format_filters_overview_text(prefs: dict | None) -> str:
         f"Источники: {sources_line}\n"
         f"Бюджет: {budget_line}\n"
         f"Ключевые слова: {include_line}\n"
-        f"Исключить слова: {exclude_line}\n\n"
-        "Редактирование фильтров из бота будет следующим шагом. Пока это экран обзора."
+        f"Исключить слова: {exclude_line}"
     )
+
+
+def _build_filters_overview_keyboard() -> list[list[dict]]:
+    return [
+        [
+            {"text": "🌐 Источники", "callback_data": "flt:src"},
+            {"text": "💰 Бюджет", "callback_data": "flt:budget"},
+        ],
+        [
+            {"text": "🚫 Исключить", "callback_data": "flt:exclude"},
+            {"text": "🔑 Ключевые слова", "callback_data": "flt:include"},
+        ],
+        [
+            {"text": "✅ Сбросить фильтры", "callback_data": "flt:reset"},
+        ],
+    ]
+
+
+def _build_filter_sources_keyboard(selected_sources: list[str]) -> list[list[dict]]:
+    ordered_sources = ["kwork", "flru", "freelancehunt", "telegram"]
+    selected = set(selected_sources)
+    rows: list[list[dict]] = []
+    for i in range(0, len(ordered_sources), 2):
+        chunk = ordered_sources[i:i + 2]
+        row = []
+        for source in chunk:
+            prefix = "✅ " if source in selected else "◻️ "
+            row.append({"text": prefix + _source_label(source), "callback_data": f"flt:src:toggle:{source}"})
+        rows.append(row)
+    rows.append([{"text": "⬅️ Назад", "callback_data": "flt:back"}])
+    return rows
+
+
+def _format_sources_editor_text(prefs: dict | None) -> str:
+    data = prefs if isinstance(prefs, dict) else {}
+    sources = data.get("preferred_sources") if isinstance(data.get("preferred_sources"), list) else []
+    selected = ", ".join(_source_label(item) for item in sources if str(item or "").strip()) or "—"
+    return (
+        "🌐 Источники\n\n"
+        "Выбери источники, которые хочешь оставлять в подборе.\n"
+        f"Сейчас: {selected}"
+    )
+
+
+def _normalize_filter_keywords(raw_text: str) -> list[str]:
+    parts = [part.strip() for part in raw_text.replace("\n", ",").split(",")]
+    result: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        if not part:
+            continue
+        lowered = part.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        result.append(part)
+    return result
+
+
+def _merge_preferences_payload(current_prefs: dict | None, **changes: object) -> dict:
+    data = current_prefs if isinstance(current_prefs, dict) else {}
+    payload = {
+        "preferred_sources": list(data.get("preferred_sources") or []),
+        "include_keywords": list(data.get("include_keywords") or []),
+        "exclude_keywords": list(data.get("exclude_keywords") or []),
+        "min_budget": data.get("min_budget"),
+        "max_budget": data.get("max_budget"),
+    }
+    payload.update(changes)
+    return payload
+
+
+def _put_preferences_or_warn(
+    token: str,
+    chat_id: int,
+    telegram_id: int,
+    user_id: int,
+    payload: dict,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+    *,
+    callback_id: str | None = None,
+) -> bool:
+    status = put_user_preferences_status(
+        api_url,
+        user_id,
+        telegram_id,
+        payload,
+        api_auth_token,
+        api_user_hmac_secret,
+    )
+    if status == 204:
+        return True
+    message = "Не удалось обновить фильтры. Попробуйте позже."
+    if callback_id:
+        answer_callback_query(token, callback_id, text=message, show_alert=True)
+    else:
+        send_message(token, chat_id, message)
+    return False
+
+
+def _show_filters_message(
+    token: str,
+    chat_id: int,
+    prefs: dict | None,
+    *,
+    edit_message_id: int | None = None,
+) -> bool:
+    text = _format_filters_overview_text(prefs)
+    keyboard = _build_filters_overview_keyboard()
+    if edit_message_id is not None:
+        edit_message_text(token, chat_id, edit_message_id, text, keyboard)
+        return True
+    return send_keyboard(token, chat_id, text, keyboard) is not None
+
+
+def _show_filter_sources_editor(
+    token: str,
+    chat_id: int,
+    message_id: int,
+    prefs: dict | None,
+) -> None:
+    data = prefs if isinstance(prefs, dict) else {}
+    selected_sources = [
+        str(item).strip().lower()
+        for item in (data.get("preferred_sources") or [])
+        if str(item or "").strip()
+    ]
+    edit_message_text(
+        token,
+        chat_id,
+        message_id,
+        _format_sources_editor_text(data),
+        _build_filter_sources_keyboard(selected_sources),
+    )
+
+
+def _prompt_filter_budget(token: str, chat_id: int) -> None:
+    send_message(
+        token,
+        chat_id,
+        "💰 Отправьте следующим сообщением минимальный бюджет в ₽. Например: 7000.\n"
+        "Чтобы сбросить бюджетный фильтр, отправьте: сброс",
+    )
+
+
+def _prompt_filter_keywords(token: str, chat_id: int, *, include: bool) -> None:
+    label = "ключевые слова" if include else "слова для исключения"
+    send_message(
+        token,
+        chat_id,
+        f"{'🔑' if include else '🚫'} Отправьте следующим сообщением {label} через запятую.\n"
+        "Например: python, django, fastapi\n"
+        "Чтобы очистить это поле, отправьте: сброс",
+    )
+
+
+def _apply_filters_budget_submission(
+    token: str,
+    chat_id: int,
+    telegram_id: int,
+    raw_text: str,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> bool:
+    user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+    if user_id is None:
+        send_message(token, chat_id, "Сначала отправьте /start")
+        return True
+    normalized = raw_text.strip().lower()
+    if normalized in {"сброс", "reset", "clear", "нет"}:
+        min_budget = None
+    else:
+        digits = re.sub(r"[^\d]", "", raw_text)
+        if not digits:
+            send_message(token, chat_id, "Укажите число, например 7000. Или отправьте: сброс")
+            return True
+        try:
+            min_budget = int(digits)
+        except ValueError:
+            send_message(token, chat_id, "Укажите число, например 7000. Или отправьте: сброс")
+            return True
+        if min_budget <= 0:
+            send_message(token, chat_id, "Минимальный бюджет должен быть больше нуля. Или отправьте: сброс")
+            return True
+    prefs = get_user_preferences(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
+    payload = _merge_preferences_payload(prefs, min_budget=min_budget)
+    if not _put_preferences_or_warn(
+        token,
+        chat_id,
+        telegram_id,
+        user_id,
+        payload,
+        api_url,
+        api_auth_token,
+        api_user_hmac_secret,
+    ):
+        return True
+    _clear_conversation_state(telegram_id)
+    _show_filters_message(token, chat_id, payload)
+    return True
+
+
+def _apply_filters_keywords_submission(
+    token: str,
+    chat_id: int,
+    telegram_id: int,
+    raw_text: str,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+    *,
+    include: bool,
+) -> bool:
+    user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+    if user_id is None:
+        send_message(token, chat_id, "Сначала отправьте /start")
+        return True
+    normalized = raw_text.strip().lower()
+    keywords = [] if normalized in {"сброс", "reset", "clear", "нет"} else _normalize_filter_keywords(raw_text)
+    if not keywords and normalized not in {"сброс", "reset", "clear", "нет"}:
+        send_message(token, chat_id, "Не удалось разобрать список слов. Отправьте их через запятую или: сброс")
+        return True
+    prefs = get_user_preferences(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
+    field_name = "include_keywords" if include else "exclude_keywords"
+    payload = _merge_preferences_payload(prefs, **{field_name: keywords})
+    if not _put_preferences_or_warn(
+        token,
+        chat_id,
+        telegram_id,
+        user_id,
+        payload,
+        api_url,
+        api_auth_token,
+        api_user_hmac_secret,
+    ):
+        return True
+    _clear_conversation_state(telegram_id)
+    _show_filters_message(token, chat_id, payload)
+    return True
 
 
 def _format_status_text(stats: dict) -> str:
@@ -2437,8 +2702,7 @@ def _send_filters_overview(
     if prefs is None:
         send_message(token, chat_id, "Не удалось загрузить фильтры. Попробуйте позже.")
         return True
-    send_with_reply_keyboard(token, chat_id, _format_filters_overview_text(prefs))
-    return True
+    return _show_filters_message(token, chat_id, prefs)
 
 
 def _send_status_overview(
@@ -2593,6 +2857,97 @@ def _handle_batch_feedback_callback(
     return True
 
 
+def _handle_filters_callback(
+    data: str,
+    token: str,
+    chat_id: int,
+    message_id: int,
+    telegram_id: int,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+    callback_id: str,
+) -> None:
+    user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+    if user_id is None:
+        answer_callback_query(token, callback_id, text="Сначала отправьте /start", show_alert=True)
+        return
+    prefs = get_user_preferences(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
+    if prefs is None:
+        answer_callback_query(token, callback_id, text="Не удалось загрузить фильтры", show_alert=True)
+        return
+
+    if data == "flt:src":
+        _show_filter_sources_editor(token, chat_id, message_id, prefs)
+        return
+    if data.startswith("flt:src:toggle:"):
+        source = data[len("flt:src:toggle:"):].strip().lower()
+        allowed_sources = {"kwork", "flru", "freelancehunt", "telegram"}
+        if source not in allowed_sources:
+            return
+        current_sources = [
+            str(item).strip().lower()
+            for item in (prefs.get("preferred_sources") or [])
+            if str(item or "").strip()
+        ]
+        if source in current_sources:
+            next_sources = [item for item in current_sources if item != source]
+        else:
+            next_sources = current_sources + [source]
+        payload = _merge_preferences_payload(prefs, preferred_sources=next_sources)
+        if not _put_preferences_or_warn(
+            token,
+            chat_id,
+            telegram_id,
+            user_id,
+            payload,
+            api_url,
+            api_auth_token,
+            api_user_hmac_secret,
+            callback_id=callback_id,
+        ):
+            return
+        _show_filter_sources_editor(token, chat_id, message_id, payload)
+        return
+    if data == "flt:budget":
+        _set_conversation_state(telegram_id, "await_filter_budget")
+        _prompt_filter_budget(token, chat_id)
+        return
+    if data == "flt:include":
+        _set_conversation_state(telegram_id, "await_filter_include_keywords")
+        _prompt_filter_keywords(token, chat_id, include=True)
+        return
+    if data == "flt:exclude":
+        _set_conversation_state(telegram_id, "await_filter_exclude_keywords")
+        _prompt_filter_keywords(token, chat_id, include=False)
+        return
+    if data == "flt:reset":
+        payload = {
+            "preferred_sources": [],
+            "include_keywords": [],
+            "exclude_keywords": [],
+            "min_budget": None,
+            "max_budget": None,
+        }
+        if not _put_preferences_or_warn(
+            token,
+            chat_id,
+            telegram_id,
+            user_id,
+            payload,
+            api_url,
+            api_auth_token,
+            api_user_hmac_secret,
+            callback_id=callback_id,
+        ):
+            return
+        _show_filters_message(token, chat_id, payload, edit_message_id=message_id)
+        return
+    if data == "flt:back":
+        _show_filters_message(token, chat_id, prefs, edit_message_id=message_id)
+        return
+
+
 def handle_callback(
     callback: dict,
     token: str,
@@ -2666,6 +3021,22 @@ def handle_callback(
                 _menu_handle_callback(
                     data, token, cb_chat_id, telegram_id,
                     api_url, api_auth_token, api_user_hmac_secret,
+                )
+        elif data.startswith("flt:") and telegram_id is not None:
+            msg = callback.get("message") or {}
+            cb_chat_id = msg.get("chat", {}).get("id") or from_user.get("id")
+            message_id = msg.get("message_id")
+            if cb_chat_id and message_id:
+                _handle_filters_callback(
+                    data,
+                    token,
+                    cb_chat_id,
+                    message_id,
+                    telegram_id,
+                    api_url,
+                    api_auth_token,
+                    api_user_hmac_secret,
+                    callback_id,
                 )
     except Exception as e:
         logger.error("callback handling failed: %s", _exception_name(e))
@@ -3071,6 +3442,38 @@ def _handle_update(
             api_url,
             api_auth_token,
             api_user_hmac_secret,
+        )
+    if text and not text.startswith("/") and pending_state == "await_filter_budget":
+        return _apply_filters_budget_submission(
+            token,
+            chat_id,
+            telegram_id,
+            text,
+            api_url,
+            api_auth_token,
+            api_user_hmac_secret,
+        )
+    if text and not text.startswith("/") and pending_state == "await_filter_include_keywords":
+        return _apply_filters_keywords_submission(
+            token,
+            chat_id,
+            telegram_id,
+            text,
+            api_url,
+            api_auth_token,
+            api_user_hmac_secret,
+            include=True,
+        )
+    if text and not text.startswith("/") and pending_state == "await_filter_exclude_keywords":
+        return _apply_filters_keywords_submission(
+            token,
+            chat_id,
+            telegram_id,
+            text,
+            api_url,
+            api_auth_token,
+            api_user_hmac_secret,
+            include=False,
         )
 
     return False
