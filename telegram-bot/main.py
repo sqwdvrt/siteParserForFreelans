@@ -1856,6 +1856,63 @@ def _build_rate_keyboard() -> list[list[dict]]:
     ]
 
 
+def _build_onboarding_sources_keyboard(selected_sources: list[str]) -> list[list[dict]]:
+    ordered_sources = ["kwork", "flru", "freelancehunt", "telegram"]
+    selected = set(selected_sources)
+    rows: list[list[dict]] = []
+    for i in range(0, len(ordered_sources), 2):
+        chunk = ordered_sources[i:i + 2]
+        row: list[dict] = []
+        for source in chunk:
+            prefix = "✅ " if source in selected else "◻️ "
+            row.append({"text": prefix + _source_label(source), "callback_data": f"ob:src:toggle:{source}"})
+        rows.append(row)
+    rows.append([{"text": "✓ Готово", "callback_data": "ob:srcdone"}])
+    return rows
+
+
+def _build_onboarding_budget_keyboard() -> list[list[dict]]:
+    return [
+        [
+            {"text": "Без фильтра", "callback_data": "ob:budget:skip"},
+            {"text": "от 1 000 ₽", "callback_data": "ob:budget:1000"},
+        ],
+        [
+            {"text": "от 5 000 ₽", "callback_data": "ob:budget:5000"},
+            {"text": "от 10 000 ₽", "callback_data": "ob:budget:10000"},
+        ],
+        [
+            {"text": "от 25 000 ₽", "callback_data": "ob:budget:25000"},
+        ],
+    ]
+
+
+def _format_onboarding_sources_text(selected_sources: list[str]) -> str:
+    selected = ", ".join(_source_label(item) for item in selected_sources if str(item or "").strip()) or "Все источники"
+    return (
+        "<b>Шаг 5 из 6.</b> Выберите источники, которые для вас приоритетны:\n\n"
+        f"Сейчас: {selected}"
+    )
+
+
+def _format_onboarding_budget_text() -> str:
+    return "<b>Шаг 6 из 6.</b> Укажите минимальный бюджет проекта:"
+
+
+def _format_onboarding_confirm_text(state: dict) -> str:
+    profile_text = _build_onboarding_profile_text(state)
+    sources = ", ".join(
+        _source_label(item) for item in (state.get("preferred_sources") or []) if str(item or "").strip()
+    ) or "Все источники"
+    min_budget = _format_rub_amount(state.get("min_budget")) or "Не задан"
+    return (
+        f"Ваш профиль:\n\n<i>{html.escape(profile_text)}</i>\n\n"
+        f"Источники: {sources}\n"
+        f"Мин. бюджет: {min_budget}\n\n"
+        "Сохранить или написать профиль вручную?"
+    )
+
+
 def _parse_onboarding_state(raw: str | None) -> dict | None:
     """Return decoded onboarding state dict, or None if raw is not onboarding JSON."""
     if not raw:
@@ -1901,10 +1958,10 @@ def _onboarding_start(token: str, chat_id: int, telegram_id: int) -> None:
         token, chat_id,
         "Добро пожаловать! Я подбираю фриланс-заказы под ваш профиль.\n\n"
         "Как это работает:\n"
-        "1. Вы отвечаете на 4 коротких вопроса.\n"
+        "1. Вы отвечаете на несколько коротких вопросов.\n"
         "2. Я собираю профиль и начинаю искать подходящие проекты.\n"
         "3. Вы ставите 👍/👎 под заказами, и подбор становится точнее.\n\n"
-        "<b>Шаг 1 из 4.</b> Выберите специализацию:",
+        "<b>Шаг 1 из 6.</b> Выберите специализацию:",
         _build_category_keyboard(),
     )
 
@@ -1999,7 +2056,7 @@ def _onboarding_handle_callback(
             _set_conversation_state(telegram_id, json.dumps(new_ob))
             edit_message_text(
                 token, chat_id, message_id,
-                "<b>Шаг 2 из 4.</b> Выберите навыки (можно несколько):",
+                "<b>Шаг 2 из 6.</b> Выберите навыки (можно несколько):",
                 _build_skills_keyboard(cat, []),
             )
         else:
@@ -2007,7 +2064,7 @@ def _onboarding_handle_callback(
             _set_conversation_state(telegram_id, json.dumps(new_ob))
             edit_message_text(
                 token, chat_id, message_id,
-                "<b>Шаг 3 из 4.</b> Выберите уровень опыта:",
+                "<b>Шаг 3 из 6.</b> Выберите уровень опыта:",
                 _build_experience_keyboard(),
             )
 
@@ -2024,7 +2081,7 @@ def _onboarding_handle_callback(
         _set_conversation_state(telegram_id, json.dumps(ob))
         edit_message_text(
             token, chat_id, message_id,
-            "<b>Шаг 2 из 4.</b> Выберите навыки (можно несколько):",
+            "<b>Шаг 2 из 6.</b> Выберите навыки (можно несколько):",
             _build_skills_keyboard(ob.get("cat", ""), skills),
         )
 
@@ -2035,7 +2092,7 @@ def _onboarding_handle_callback(
         _set_conversation_state(telegram_id, json.dumps(ob))
         edit_message_text(
             token, chat_id, message_id,
-            "<b>Шаг 3 из 4.</b> Выберите уровень опыта:",
+            "<b>Шаг 3 из 6.</b> Выберите уровень опыта:",
             _build_experience_keyboard(),
         )
 
@@ -2048,7 +2105,7 @@ def _onboarding_handle_callback(
         _set_conversation_state(telegram_id, json.dumps(ob))
         edit_message_text(
             token, chat_id, message_id,
-            "<b>Шаг 4 из 4.</b> Укажите желаемую ставку:",
+            "<b>Шаг 4 из 6.</b> Укажите желаемую ставку:",
             _build_rate_keyboard(),
         )
 
@@ -2056,13 +2113,72 @@ def _onboarding_handle_callback(
         rate = data[len("ob:rate:"):]
         if rate not in ONBOARDING_RATE:
             return
-        ob["step"] = "confirm"
+        ob["step"] = "sources"
         ob["rate"] = rate
+        ob["preferred_sources"] = list(ob.get("preferred_sources") or [])
         _set_conversation_state(telegram_id, json.dumps(ob))
-        profile_text = _build_onboarding_profile_text(ob)
         edit_message_text(
             token, chat_id, message_id,
-            f"Ваш профиль:\n\n<i>{html.escape(profile_text)}</i>\n\nСохранить или написать свой текст?",
+            _format_onboarding_sources_text(list(ob.get("preferred_sources") or [])),
+            _build_onboarding_sources_keyboard(list(ob.get("preferred_sources") or [])),
+        )
+
+    elif data.startswith("ob:src:toggle:"):
+        source = data[len("ob:src:toggle:"):].strip().lower()
+        if ob.get("step") != "sources":
+            return
+        allowed_sources = {"kwork", "flru", "freelancehunt", "telegram"}
+        if source not in allowed_sources:
+            return
+        sources = [str(item).strip().lower() for item in (ob.get("preferred_sources") or []) if str(item or "").strip()]
+        if source in sources:
+            sources = [item for item in sources if item != source]
+        else:
+            sources.append(source)
+        ob["preferred_sources"] = sources
+        _set_conversation_state(telegram_id, json.dumps(ob))
+        edit_message_text(
+            token,
+            chat_id,
+            message_id,
+            _format_onboarding_sources_text(sources),
+            _build_onboarding_sources_keyboard(sources),
+        )
+
+    elif data == "ob:srcdone":
+        if ob.get("step") != "sources":
+            return
+        ob["step"] = "budget"
+        _set_conversation_state(telegram_id, json.dumps(ob))
+        edit_message_text(
+            token,
+            chat_id,
+            message_id,
+            _format_onboarding_budget_text(),
+            _build_onboarding_budget_keyboard(),
+        )
+
+    elif data.startswith("ob:budget:"):
+        if ob.get("step") != "budget":
+            return
+        raw_budget = data[len("ob:budget:"):].strip().lower()
+        if raw_budget == "skip":
+            min_budget = None
+        else:
+            try:
+                min_budget = int(raw_budget)
+            except ValueError:
+                return
+            if min_budget <= 0:
+                return
+        ob["step"] = "confirm"
+        ob["min_budget"] = min_budget
+        _set_conversation_state(telegram_id, json.dumps(ob))
+        edit_message_text(
+            token,
+            chat_id,
+            message_id,
+            _format_onboarding_confirm_text(ob),
             [
                 [{"text": "✅ Сохранить", "callback_data": "ob:confirm"}],
                 [{"text": "✏️ Написать вручную", "callback_data": "ob:edit"}],
@@ -2086,6 +2202,26 @@ def _onboarding_handle_callback(
             api_user_hmac_secret,
         )
         if status == 204:
+            prefs_payload = _merge_preferences_payload(
+                None,
+                preferred_sources=list(ob.get("preferred_sources") or []),
+                min_budget=ob.get("min_budget"),
+            )
+            pref_status = put_user_preferences_status(
+                api_url,
+                user_id,
+                telegram_id,
+                prefs_payload,
+                api_auth_token,
+                api_user_hmac_secret,
+            )
+            if pref_status != 204:
+                _record_command("onboarding", "preferences_error")
+                send_message(
+                    token,
+                    chat_id,
+                    "Профиль сохранён, но фильтры первого запуска пока не применились. Открой /filters позже.",
+                )
             _clear_conversation_state(telegram_id)
             _record_command("onboarding", "ok")
             edit_message_text(token, chat_id, message_id, f"✅ Профиль сохранён:\n\n<i>{html.escape(profile_text)}</i>")

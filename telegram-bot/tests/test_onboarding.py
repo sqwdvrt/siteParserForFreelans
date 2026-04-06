@@ -348,7 +348,7 @@ def test_ob_exp_unknown_level_is_ignored(bot, monkeypatch):
 # ob:rate: callback — rate selection
 # ---------------------------------------------------------------------------
 
-def test_ob_rate_transitions_to_confirm_step(bot, monkeypatch):
+def test_ob_rate_transitions_to_sources_step(bot, monkeypatch):
     initial = json.dumps({"step": "rate", "cat": "backend", "skills": [], "exp": "middle"})
     states: list[str] = []
 
@@ -360,7 +360,7 @@ def test_ob_rate_transitions_to_confirm_step(bot, monkeypatch):
 
     assert len(states) == 1
     state = json.loads(states[0])
-    assert state["step"] == "confirm"
+    assert state["step"] == "sources"
     assert state["rate"] == "mid"
 
 
@@ -378,6 +378,77 @@ def test_ob_rate_unknown_rate_is_ignored(bot, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# ob:src: callback — preferred sources selection
+# ---------------------------------------------------------------------------
+
+def test_ob_src_toggle_adds_preferred_source(bot, monkeypatch):
+    initial = json.dumps(
+        {"step": "sources", "cat": "backend", "skills": [], "exp": "middle", "rate": "mid", "preferred_sources": []}
+    )
+    states: list[str] = []
+
+    monkeypatch.setattr(bot, "_get_conversation_state", lambda tid: initial)
+    monkeypatch.setattr(bot, "_set_conversation_state", lambda tid, s: states.append(s))
+    monkeypatch.setattr(bot, "edit_message_text", lambda *a, **kw: None)
+
+    _call_onboarding_handle_callback(bot, data="ob:src:toggle:kwork")
+
+    state = json.loads(states[0])
+    assert state["preferred_sources"] == ["kwork"]
+
+
+def test_ob_srcdone_transitions_to_budget_step(bot, monkeypatch):
+    initial = json.dumps(
+        {
+            "step": "sources",
+            "cat": "backend",
+            "skills": [],
+            "exp": "middle",
+            "rate": "mid",
+            "preferred_sources": ["kwork"],
+        }
+    )
+    states: list[str] = []
+
+    monkeypatch.setattr(bot, "_get_conversation_state", lambda tid: initial)
+    monkeypatch.setattr(bot, "_set_conversation_state", lambda tid, s: states.append(s))
+    monkeypatch.setattr(bot, "edit_message_text", lambda *a, **kw: None)
+
+    _call_onboarding_handle_callback(bot, data="ob:srcdone")
+
+    state = json.loads(states[0])
+    assert state["step"] == "budget"
+
+
+# ---------------------------------------------------------------------------
+# ob:budget: callback — min budget selection
+# ---------------------------------------------------------------------------
+
+def test_ob_budget_transitions_to_confirm_step(bot, monkeypatch):
+    initial = json.dumps(
+        {
+            "step": "budget",
+            "cat": "backend",
+            "skills": [],
+            "exp": "middle",
+            "rate": "mid",
+            "preferred_sources": ["kwork"],
+        }
+    )
+    states: list[str] = []
+
+    monkeypatch.setattr(bot, "_get_conversation_state", lambda tid: initial)
+    monkeypatch.setattr(bot, "_set_conversation_state", lambda tid, s: states.append(s))
+    monkeypatch.setattr(bot, "edit_message_text", lambda *a, **kw: None)
+
+    _call_onboarding_handle_callback(bot, data="ob:budget:5000")
+
+    state = json.loads(states[0])
+    assert state["step"] == "confirm"
+    assert state["min_budget"] == 5000
+
+
+# ---------------------------------------------------------------------------
 # ob:confirm callback — save profile
 # ---------------------------------------------------------------------------
 
@@ -388,16 +459,24 @@ def test_ob_confirm_saves_profile_and_clears_state_on_204(bot, monkeypatch):
         "skills": ["Python"],
         "exp": "senior",
         "rate": "high",
+        "preferred_sources": ["kwork", "flru"],
+        "min_budget": 5000,
     })
     cleared: list[int] = []
     edit_calls: list[dict] = []
     send_calls: list[str] = []
+    pref_calls: list[dict] = []
 
     monkeypatch.setattr(bot, "_get_conversation_state", lambda tid: initial)
     monkeypatch.setattr(bot, "_set_conversation_state", lambda tid, s: None)
     monkeypatch.setattr(bot, "_clear_conversation_state", lambda tid: cleared.append(tid))
     monkeypatch.setattr(bot, "_resolve_user_id", lambda *a, **kw: 7)
     monkeypatch.setattr(bot, "put_user_profile_status", lambda *a, **kw: 204)
+    monkeypatch.setattr(
+        bot,
+        "put_user_preferences_status",
+        lambda *args, **kwargs: pref_calls.append(args[3]) or 204,
+    )
     monkeypatch.setattr(
         bot,
         "edit_message_text",
@@ -415,6 +494,15 @@ def test_ob_confirm_saves_profile_and_clears_state_on_204(bot, monkeypatch):
     _call_onboarding_handle_callback(bot, data="ob:confirm")
 
     assert 42 in cleared
+    assert pref_calls == [
+        {
+            "preferred_sources": ["kwork", "flru"],
+            "include_keywords": [],
+            "exclude_keywords": [],
+            "min_budget": 5000,
+            "max_budget": None,
+        }
+    ]
     assert any("Профиль сохранён" in c["text"] for c in edit_calls)
 
 
