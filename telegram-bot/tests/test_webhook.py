@@ -12,12 +12,13 @@ def _make_handler(
     path: str,
     payload: dict | bytes,
     secret: str | None,
+    content_length: int | None = None,
 ):
     handler = object.__new__(bot._WebhookHandler)
     body = payload if isinstance(payload, bytes) else json.dumps(payload).encode("utf-8")
     handler.path = path
     handler.headers = {
-        "Content-Length": str(len(body)),
+        "Content-Length": str(len(body) if content_length is None else content_length),
         "X-Telegram-Bot-Api-Secret-Token": "" if secret is None else secret,
     }
     handler.rfile = io.BytesIO(body)
@@ -32,6 +33,11 @@ def _make_handler(
     handler.send_response = lambda code: statuses.append(code)
     handler.end_headers = lambda: None
     return handler, statuses
+
+
+class _GuardedBody:
+    def read(self, _size: int = -1):
+        raise AssertionError("webhook handler must not read oversized request bodies")
 
 
 def test_webhook_rejects_wrong_path(bot):
@@ -58,6 +64,21 @@ def test_webhook_rejects_bad_secret(bot):
     handler.do_POST()
 
     assert statuses == [403]
+
+
+def test_webhook_rejects_oversized_payload_before_reading_body(bot):
+    handler, statuses = _make_handler(
+        bot,
+        path="/webhook",
+        payload=b"{}",
+        secret="a" * 32,
+        content_length=bot.WEBHOOK_MAX_BODY_BYTES + 1,
+    )
+    handler.rfile = _GuardedBody()
+
+    handler.do_POST()
+
+    assert statuses == [413]
 
 
 def test_webhook_returns_200_after_durable_enqueue_without_inline_processing(bot, monkeypatch):

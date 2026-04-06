@@ -29,6 +29,16 @@ BACKEND_API_METRICS_TLS_INSECURE_SKIP_VERIFY="${BACKEND_API_METRICS_TLS_INSECURE
   "${ROOT_DIR}/monitoring/prometheus/prometheus.yml.tmpl" \
   "${TMP_DIR}/prometheus.yml"
 
+echo "[monitoring] verify telegram-bot scrape job"
+grep -Fq -- "- job_name: telegram-bot" "${TMP_DIR}/prometheus.yml" || {
+  echo "ERROR: telegram-bot scrape job missing from Prometheus config" >&2
+  exit 1
+}
+grep -Fq -- "- telegram-bot:9107" "${TMP_DIR}/prometheus.yml" || {
+  echo "ERROR: telegram-bot metrics target missing from Prometheus config" >&2
+  exit 1
+}
+
 docker run --rm \
   --entrypoint promtool \
   -v "${ROOT_DIR}/monitoring/prometheus/recording_rules.yml:/etc/prometheus/recording_rules.yml:ro" \

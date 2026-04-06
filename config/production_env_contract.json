@@ -47,11 +47,11 @@
       "documentation": "active"
     },
     "API_TLS_CERT_HOST_PATH": {
-      "type": "nonempty",
+      "type": "existing_file",
       "documentation": "active"
     },
     "API_TLS_KEY_HOST_PATH": {
-      "type": "nonempty",
+      "type": "existing_file",
       "documentation": "active"
     },
     "TELEGRAM_BOT_TOKEN": {
@@ -201,6 +201,8 @@
         "ADMIN_AUTH_TOKEN not set",
         "ValidatePostgresTLSForProduction(\"DATABASE_URL\"",
         "ValidateRedisTLSForProduction(\"REDIS_URL\"",
+        "validateExistingFile(\"API_TLS_CERT_FILE\"",
+        "validateExistingFile(\"API_TLS_KEY_FILE\"",
         "APP_ENV=production requires API TLS"
       ]
     },

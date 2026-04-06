@@ -131,6 +131,10 @@ def validate_value(name: str, value: str, spec: dict, errors: list[str]) -> None
             errors.append(f"{name}: must be a digest-pinned OCI image ref (expected ...@sha256:<64 hex>)")
     elif kind == "nonempty":
         return
+    elif kind == "existing_file":
+        file_path = Path(value)
+        if not file_path.exists() or not file_path.is_file():
+            errors.append(f"{name}: must point to an existing file")
     else:
         errors.append(f"{name}: unsupported validation type '{kind}'")
 

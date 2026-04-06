@@ -82,6 +82,7 @@ POLLING_ACTIVE_WEBHOOK_POLICY_ENV = "POLLING_ACTIVE_WEBHOOK_POLICY"
 DEFAULT_POLLING_ACTIVE_WEBHOOK_POLICY = "standby"
 POLLING_STANDBY_SLEEP_SEC = 30.0
 WEBHOOK_PATH = "/webhook"
+WEBHOOK_MAX_BODY_BYTES = 1_048_576
 DEFAULT_METRICS_BIND = "0.0.0.0"
 DEFAULT_METRICS_PORT = 9107
 
@@ -2098,6 +2099,20 @@ class _WebhookHandler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError:
             self.send_response(400)
+            self.end_headers()
+            return
+        if length < 0:
+            self.send_response(400)
+            self.end_headers()
+            return
+        if length > WEBHOOK_MAX_BODY_BYTES:
+            logger.warning(
+                "webhook: rejecting oversized request body from %s: content_length=%d limit=%d",
+                self.client_address[0],
+                length,
+                WEBHOOK_MAX_BODY_BYTES,
+            )
+            self.send_response(413)
             self.end_headers()
             return
         body = self.rfile.read(length)

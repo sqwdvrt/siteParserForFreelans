@@ -283,6 +283,7 @@ test-bot: ## Python тесты telegram-bot
 
 .PHONY: test-monitoring
 test-monitoring: ## Проверка monitoring-конфигов
+	python3 scripts/test_monitoring_config.py
 	./scripts/monitoring_config_check.sh
 	$(call ok,Monitoring config прошел)
 

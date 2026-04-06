@@ -240,6 +240,14 @@ func main() {
 	if isProd && !useTLS {
 		fatal("APP_ENV=production requires API TLS: set API_TLS_CERT_FILE and API_TLS_KEY_FILE")
 	}
+	if useTLS {
+		if validateErr := validateExistingFile("API_TLS_CERT_FILE", tlsCertFile); validateErr != nil {
+			fatal("invalid API_TLS_CERT_FILE path", "err", validateErr)
+		}
+		if validateErr := validateExistingFile("API_TLS_KEY_FILE", tlsKeyFile); validateErr != nil {
+			fatal("invalid API_TLS_KEY_FILE path", "err", validateErr)
+		}
+	}
 
 	srv := &http.Server{
 		Addr:              addr,
@@ -300,6 +308,25 @@ func parseTrustedProxyCIDRs(raw string) ([]*net.IPNet, error) {
 		out = append(out, n)
 	}
 	return out, nil
+}
+
+func validateExistingFile(name, path string) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return fmt.Errorf("%s must point to an existing file", name)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%s must point to an existing file", name)
+		}
+		return fmt.Errorf("%s must point to an existing file: %w", name, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s must point to an existing file", name)
+	}
+	return nil
 }
 
 type redisPinger interface {

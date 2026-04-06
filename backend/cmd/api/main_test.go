@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -113,6 +115,27 @@ func TestValidateRuntimeSecurityPolicy_AllowsSafeCombinations(t *testing.T) {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})
+	}
+}
+
+func TestValidateExistingFile_AllowsPresentFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "api_tls_cert.pem")
+	if err := os.WriteFile(path, []byte("dummy"), 0o600); err != nil {
+		t.Fatalf("write temp file: %v", err)
+	}
+
+	if err := validateExistingFile("API_TLS_CERT_FILE", path); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestValidateExistingFile_RejectsMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "missing.pem")
+
+	if err := validateExistingFile("API_TLS_CERT_FILE", path); err == nil {
+		t.Fatal("expected error for missing file")
 	}
 }
 
