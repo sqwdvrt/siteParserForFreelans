@@ -237,7 +237,7 @@ def test_find_jobs_for_user_excludes_expired_jobs(repo: PostgresMatchRepository)
     assert jid not in result_job_ids
 
 
-def test_find_users_for_job_includes_stale_active_job_by_default(repo: PostgresMatchRepository) -> None:
+def test_find_jobs_for_user_excludes_stale_kwork_jobs_by_default(repo: PostgresMatchRepository) -> None:
     import psycopg2
     from pgvector.psycopg2 import register_vector
 
@@ -247,11 +247,42 @@ def test_find_users_for_job_includes_stale_active_job_by_default(repo: PostgresM
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO jobs (source, url, title, raw_html, status, created_at)
-                VALUES ('kwork', %s, 'Stale Active', '<p>x</p>', 'active', NOW() - INTERVAL '3 days')
+                INSERT INTO jobs (source, url, title, raw_html, status, last_seen_at)
+                VALUES ('kwork', %s, 'Stale Kwork', '<p>x</p>', 'active', NOW() - INTERVAL '7 hours')
                 RETURNING id
                 """,
-                (f"https://kwork.ru/stale-active-{time.time_ns()}",),
+                (f"https://kwork.ru/stale-match-{time.time_ns()}",),
+            )
+            (jid,) = cur.fetchone()
+            cur.execute(
+                """
+                INSERT INTO job_embeddings (job_id, embedding)
+                VALUES (%s, %s)
+                ON CONFLICT (job_id) DO UPDATE SET embedding = EXCLUDED.embedding
+                """,
+                (jid, [0.45] * 384),
+            )
+            conn.commit()
+
+    result = repo.find_jobs_for_user([0.45] * 384, user_id=42, threshold=0.5)
+    assert jid not in [candidate.job_id for candidate in result]
+
+
+def test_find_users_for_job_includes_stale_non_kwork_job_by_default(repo: PostgresMatchRepository) -> None:
+    import psycopg2
+    from pgvector.psycopg2 import register_vector
+
+    dsn = os.environ["DATABASE_URL"]
+    with psycopg2.connect(dsn) as conn:
+        register_vector(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO jobs (source, url, title, raw_html, status, created_at, last_seen_at)
+                VALUES ('flru', %s, 'Stale Active', '<p>x</p>', 'active', NOW() - INTERVAL '3 days', NOW() - INTERVAL '7 hours')
+                RETURNING id
+                """,
+                (f"https://fl.ru/stale-active-{time.time_ns()}",),
             )
             (jid,) = cur.fetchone()
             cur.execute(
@@ -268,6 +299,39 @@ def test_find_users_for_job_includes_stale_active_job_by_default(repo: PostgresM
 
     result = repo.find_users_for_job([0.5] * 384, jid, threshold=0.5)
     assert any(candidate.user_id == uid for candidate in result)
+
+
+def test_find_users_for_job_excludes_stale_kwork_job_by_default(repo: PostgresMatchRepository) -> None:
+    import psycopg2
+    from pgvector.psycopg2 import register_vector
+
+    dsn = os.environ["DATABASE_URL"]
+    with psycopg2.connect(dsn) as conn:
+        register_vector(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO jobs (source, url, title, raw_html, status, last_seen_at)
+                VALUES ('kwork', %s, 'Stale Kwork', '<p>x</p>', 'active', NOW() - INTERVAL '7 hours')
+                RETURNING id
+                """,
+                (f"https://kwork.ru/stale-kwork-age-gate-{time.time_ns()}",),
+            )
+            (jid,) = cur.fetchone()
+            cur.execute(
+                """
+                INSERT INTO users (telegram_id, embedding)
+                VALUES (888780, %s)
+                ON CONFLICT (telegram_id) DO UPDATE SET embedding = EXCLUDED.embedding
+                RETURNING id
+                """,
+                ([0.65] * 384,),
+            )
+            (uid,) = cur.fetchone()
+            conn.commit()
+
+    result = repo.find_users_for_job([0.65] * 384, jid, threshold=0.5)
+    assert uid not in [candidate.user_id for candidate in result]
 
 
 def test_find_users_for_job_excludes_stale_active_job_when_age_gate_enabled(

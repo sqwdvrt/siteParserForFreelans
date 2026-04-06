@@ -9,6 +9,8 @@ from ai_service.adapter.postgres._pooled_repository import PooledPostgresReposit
 from ai_service.domain.embedding import EMBEDDING_DIM
 from ai_service.port.match_repository import MatchCandidate, MatchRepository
 
+KWORK_MAX_LAST_SEEN_AGE_SQL = "INTERVAL '6 hours'"
+
 
 class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
     """MatchRepository через PostgreSQL + pgvector."""
@@ -71,6 +73,7 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
                     FROM scored_users s
                     JOIN jobs j ON j.id = %s
                     WHERE j.status = 'active'
+                      AND (j.source <> 'kwork' OR j.last_seen_at >= NOW() - {KWORK_MAX_LAST_SEEN_AGE_SQL})
                       AND s.similarity >= %s
                       {job_age_sql}
                       AND NOT EXISTS (
@@ -113,7 +116,7 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 vec = Vector(embedding)
                 cur.execute(
-                    """
+                    f"""
                     WITH scored_jobs AS (
                       SELECT
                         j.id AS job_id,
@@ -121,6 +124,7 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
                       FROM jobs j
                       JOIN job_embeddings je ON je.job_id = j.id
                       WHERE j.status = 'active'
+                        AND (j.source <> 'kwork' OR j.last_seen_at >= NOW() - {KWORK_MAX_LAST_SEEN_AGE_SQL})
                         AND COALESCE(j.posted_at, j.created_at) >= NOW() - make_interval(days => %s)
                     )
                     SELECT s.job_id, s.similarity

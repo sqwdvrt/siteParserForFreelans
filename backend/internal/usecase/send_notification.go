@@ -113,6 +113,13 @@ func (u *SendNotification) Execute(
 		slog.Debug("send notification: already sent, skip", "user_id", userID, "job_id", jobID)
 		return nil
 	}
+	if !notificationJobIsFresh(job, time.Now()) {
+		slog.Info("send notification: stale job skipped", "user_id", userID, "job_id", jobID, "source", job.Source)
+		if delErr := u.notifRepo.Delete(ctx, userID, jobID); delErr != nil {
+			slog.Error("send notification: delete stale notification failed", "user_id", userID, "job_id", jobID, "err", delErr)
+		}
+		return nil
+	}
 
 	// Pro-пользователи получают уведомления только через дайджест (hourly cron).
 	if user.IsPro {
@@ -254,6 +261,13 @@ func (u *SendNotification) ExecuteBatch(
 			return ensureErr
 		}
 		if !shouldSend {
+			continue
+		}
+		if !notificationJobIsFresh(job, time.Now()) {
+			slog.Info("send batch notification: stale job skipped", "user_id", userID, "job_id", jobID, "source", job.Source)
+			if delErr := u.notifRepo.Delete(ctx, userID, jobID); delErr != nil {
+				slog.Error("send batch notification: delete stale notification failed", "user_id", userID, "job_id", jobID, "err", delErr)
+			}
 			continue
 		}
 

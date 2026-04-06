@@ -66,6 +66,7 @@ type digestNotifRepo struct {
 	markSentFunc        func(ctx context.Context, userID, jobID int64) error
 	markDispatchedCalls []int64
 	markSentCalls       []int64
+	deleteCalls         []int64
 	releasedJobIDs      []int64
 	reclaimCalled       bool
 }
@@ -97,7 +98,10 @@ func (m *digestNotifRepo) MarkFailed(ctx context.Context, userID, jobID int64) e
 	return nil
 }
 
-func (m *digestNotifRepo) Delete(ctx context.Context, userID, jobID int64) error { return nil }
+func (m *digestNotifRepo) Delete(ctx context.Context, userID, jobID int64) error {
+	m.deleteCalls = append(m.deleteCalls, jobID)
+	return nil
+}
 func (m *digestNotifRepo) SentRecently(ctx context.Context, userID int64, within time.Duration) (bool, error) {
 	return false, nil
 }
@@ -275,6 +279,48 @@ func TestDailyDigestSendDigestForUser_SkipsExpiredJobs(t *testing.T) {
 	}
 	if len(notifRepo.markSentCalls) != 1 || notifRepo.markSentCalls[0] != 1 {
 		t.Fatalf("markSentCalls=%v, want [1]", notifRepo.markSentCalls)
+	}
+}
+
+func TestDailyDigestSendDigestForUser_DeletesStaleKworkJobs(t *testing.T) {
+	notifRepo := &digestNotifRepo{
+		countTodayFunc: func(context.Context, int64) (int, error) { return 0, nil },
+		claimPendingFunc: func(context.Context, int64, int) ([]port.PendingNotification, error) {
+			return []port.PendingNotification{
+				{JobID: 1, MatchScore: 8.1, WhyItFits: "fresh"},
+				{JobID: 2, MatchScore: 7.5, WhyItFits: "stale"},
+			}, nil
+		},
+	}
+	jobRepo := &digestJobRepo{
+		getByIDsFunc: func(ctx context.Context, ids []int64) (map[int64]*domain.Job, error) {
+			return map[int64]*domain.Job{
+				1: {
+					ID:         1,
+					Source:     "kwork",
+					Title:      "Fresh",
+					LastSeenAt: time.Now().Add(-2 * time.Hour),
+				},
+				2: {
+					ID:         2,
+					Source:     "kwork",
+					Title:      "Stale",
+					LastSeenAt: time.Now().Add(-7 * time.Hour),
+				},
+			}, nil
+		},
+	}
+	notifier := &digestNotifier{}
+	uc := NewDailyDigest(&digestUserRepo{}, notifRepo, jobRepo, notifier, 3)
+
+	if err := uc.sendDigestForUser(context.Background(), 42); err != nil {
+		t.Fatalf("sendDigestForUser: %v", err)
+	}
+	if len(notifier.payload.Batch) != 1 || notifier.payload.Batch[0].Job == nil || notifier.payload.Batch[0].Job.ID != 1 {
+		t.Fatalf("batch=%+v, want only fresh job", notifier.payload.Batch)
+	}
+	if len(notifRepo.deleteCalls) != 1 || notifRepo.deleteCalls[0] != 2 {
+		t.Fatalf("deleteCalls=%v, want [2]", notifRepo.deleteCalls)
 	}
 }
 

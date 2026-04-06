@@ -95,6 +95,7 @@ def test_find_jobs_for_user_maps_rows() -> None:
     sql, params = cur.execute.call_args.args
     assert "FROM jobs j" in sql
     assert "j.status = 'active'" in sql
+    assert "j.source <> 'kwork' OR j.last_seen_at >= NOW() - INTERVAL '6 hours'" in sql
     assert params[1] == 14
     assert params[2] == 0.7
     assert params[3] == 5
@@ -121,6 +122,7 @@ def test_find_users_for_job_joins_active_job() -> None:
     sql, params = cur.execute.call_args.args
     assert "JOIN jobs j ON j.id = %s" in sql
     assert "j.status = 'active'" in sql
+    assert "j.source <> 'kwork' OR j.last_seen_at >= NOW() - INTERVAL '6 hours'" in sql
     assert "COALESCE(j.posted_at, j.created_at) >= NOW() - make_interval(days => %s)" not in sql
     assert "WHERE n.job_id = j.id" in sql
     assert params[1] == 7

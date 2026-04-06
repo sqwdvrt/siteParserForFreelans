@@ -53,12 +53,12 @@ func (r *JobRepository) GetByID(ctx context.Context, id int64) (*domain.Job, err
 	var j domain.Job
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, source, url, COALESCE(external_id, ''), title, COALESCE(description, ''),
-			COALESCE(budget, ''), skills, posted_at, raw_html, created_at
+			COALESCE(budget, ''), skills, posted_at, last_seen_at, raw_html, created_at
 		FROM jobs
 		WHERE id = $1
 		  AND status = 'active'
 	`, id).Scan(&j.ID, &j.Source, &j.URL, &j.ExternalID, &j.Title, &j.Description,
-		&j.Budget, &j.Skills, &j.PostedAt, &j.RawHTML, &j.CreatedAt)
+		&j.Budget, &j.Skills, &j.PostedAt, &j.LastSeenAt, &j.RawHTML, &j.CreatedAt)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -75,7 +75,7 @@ func (r *JobRepository) GetByIDs(ctx context.Context, ids []int64) (map[int64]*d
 	}
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, source, url, COALESCE(external_id, ''), title, COALESCE(description, ''),
-			COALESCE(budget, ''), skills, posted_at, raw_html, created_at
+			COALESCE(budget, ''), skills, posted_at, last_seen_at, raw_html, created_at
 		FROM jobs
 		WHERE id = ANY($1)
 		  AND status = 'active'
@@ -88,7 +88,7 @@ func (r *JobRepository) GetByIDs(ctx context.Context, ids []int64) (map[int64]*d
 	for rows.Next() {
 		var j domain.Job
 		if err := rows.Scan(&j.ID, &j.Source, &j.URL, &j.ExternalID, &j.Title, &j.Description,
-			&j.Budget, &j.Skills, &j.PostedAt, &j.RawHTML, &j.CreatedAt); err != nil {
+			&j.Budget, &j.Skills, &j.PostedAt, &j.LastSeenAt, &j.RawHTML, &j.CreatedAt); err != nil {
 			return nil, err
 		}
 		result[j.ID] = &j

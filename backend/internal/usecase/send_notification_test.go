@@ -20,6 +20,7 @@ type mockNotifRepo struct {
 	deleteFunc         func(ctx context.Context, userID, jobID int64) error
 	sentRecentlyFunc   func(ctx context.Context, userID int64, within time.Duration) (bool, error)
 	countTodayFunc     func(ctx context.Context, userID int64) (int, error)
+	deleteCalls        [][2]int64
 }
 
 func (m *mockNotifRepo) EnsurePending(ctx context.Context, userID, jobID int64, score float64, finalScore float64, rankerVersion string, reasonCodes []string, whyItFits string) (bool, bool, error) {
@@ -64,6 +65,7 @@ func (m *mockNotifRepo) MarkFailed(ctx context.Context, userID, jobID int64) err
 }
 
 func (m *mockNotifRepo) Delete(ctx context.Context, userID, jobID int64) error {
+	m.deleteCalls = append(m.deleteCalls, [2]int64{userID, jobID})
 	if m.deleteFunc != nil {
 		return m.deleteFunc(ctx, userID, jobID)
 	}
@@ -147,7 +149,7 @@ func (m *mockJobRepo) GetByID(ctx context.Context, id int64) (*domain.Job, error
 	if m.getByIDFunc != nil {
 		return m.getByIDFunc(ctx, id)
 	}
-	return &domain.Job{ID: id, Title: "Job", URL: "https://kwork.ru/p/1"}, nil
+	return &domain.Job{ID: id, Source: "kwork", Title: "Job", URL: "https://kwork.ru/p/1", LastSeenAt: time.Now()}, nil
 }
 
 func (m *mockJobRepo) GetByIDs(ctx context.Context, ids []int64) (map[int64]*domain.Job, error) {
@@ -156,7 +158,7 @@ func (m *mockJobRepo) GetByIDs(ctx context.Context, ids []int64) (map[int64]*dom
 	}
 	result := make(map[int64]*domain.Job, len(ids))
 	for _, id := range ids {
-		result[id] = &domain.Job{ID: id, Title: "Job", URL: "https://kwork.ru/p/1"}
+		result[id] = &domain.Job{ID: id, Source: "kwork", Title: "Job", URL: "https://kwork.ru/p/1", LastSeenAt: time.Now()}
 	}
 	return result, nil
 }
@@ -341,7 +343,7 @@ func TestSendNotification_Execute_Success(t *testing.T) {
 			return &domain.User{ID: 1, TelegramID: 888}, nil
 		}},
 		&mockJobRepo{getByIDFunc: func(context.Context, int64) (*domain.Job, error) {
-			return &domain.Job{ID: 1, Title: "T", URL: "https://kwork.ru/p/1"}, nil
+			return &domain.Job{ID: 1, Source: "kwork", Title: "T", URL: "https://kwork.ru/p/1", LastSeenAt: time.Now()}, nil
 		}},
 		&mockNotifier{sendFunc: func(ctx context.Context, telegramID int64, p port.NotifyPayload) error {
 			order = append(order, "send")
@@ -382,7 +384,7 @@ func TestSendNotification_Execute_RecordsProductEvent(t *testing.T) {
 			return &domain.User{ID: 1, TelegramID: 888}, nil
 		}},
 		&mockJobRepo{getByIDFunc: func(context.Context, int64) (*domain.Job, error) {
-			return &domain.Job{ID: 1, Source: "kwork", Title: "T", URL: "https://kwork.ru/p/1"}, nil
+			return &domain.Job{ID: 1, Source: "kwork", Title: "T", URL: "https://kwork.ru/p/1", LastSeenAt: time.Now()}, nil
 		}},
 		&mockNotifier{},
 		5*time.Minute,
@@ -542,6 +544,43 @@ func TestSendNotification_Execute_ExpiredJobSkipped(t *testing.T) {
 	}
 }
 
+func TestSendNotification_Execute_StaleKworkJobDeletesPendingAndSkipsSend(t *testing.T) {
+	notifRepo := &mockNotifRepo{
+		ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
+			return false, true, nil
+		},
+	}
+	uc := NewSendNotification(
+		notifRepo,
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 888}, nil
+		}},
+		&mockJobRepo{getByIDFunc: func(context.Context, int64) (*domain.Job, error) {
+			return &domain.Job{
+				ID:         999,
+				Source:     "kwork",
+				Title:      "Stale Kwork",
+				URL:        "https://kwork.ru/projects/999",
+				LastSeenAt: time.Now().Add(-7 * time.Hour),
+			}, nil
+		}},
+		&mockNotifier{sendFunc: func(context.Context, int64, port.NotifyPayload) error {
+			t.Fatal("must not call Send for stale kwork job")
+			return nil
+		}},
+		5*time.Minute,
+		5,
+	)
+
+	err := uc.Execute(context.Background(), 1, 999, 0.9, 0.9, "v2", nil, "")
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if len(notifRepo.deleteCalls) != 1 || notifRepo.deleteCalls[0] != [2]int64{1, 999} {
+		t.Fatalf("deleteCalls=%v, want [[1 999]]", notifRepo.deleteCalls)
+	}
+}
+
 func TestSendNotification_Execute_JobLookupError(t *testing.T) {
 	uc := NewSendNotification(
 		&mockNotifRepo{},
@@ -589,7 +628,7 @@ func TestSendNotification_Execute_SendFailed_LeavesDispatched(t *testing.T) {
 			return &domain.User{ID: 1, TelegramID: 888}, nil
 		}},
 		&mockJobRepo{getByIDFunc: func(context.Context, int64) (*domain.Job, error) {
-			return &domain.Job{ID: 1, Title: "T", URL: "https://kwork.ru/p/1"}, nil
+			return &domain.Job{ID: 1, Source: "kwork", Title: "T", URL: "https://kwork.ru/p/1", LastSeenAt: time.Now()}, nil
 		}},
 		&mockNotifier{sendFunc: func(context.Context, int64, port.NotifyPayload) error {
 			order = append(order, "send")
@@ -630,7 +669,7 @@ func TestSendNotification_Execute_PermanentSendFailed_LeavesDispatched(t *testin
 			return &domain.User{ID: 1, TelegramID: 888}, nil
 		}},
 		&mockJobRepo{getByIDFunc: func(context.Context, int64) (*domain.Job, error) {
-			return &domain.Job{ID: 1, Title: "T", URL: "https://kwork.ru/p/1"}, nil
+			return &domain.Job{ID: 1, Source: "kwork", Title: "T", URL: "https://kwork.ru/p/1", LastSeenAt: time.Now()}, nil
 		}},
 		&mockNotifier{sendFunc: func(context.Context, int64, port.NotifyPayload) error {
 			order = append(order, "send")
@@ -665,7 +704,7 @@ func TestSendNotification_Execute_MarkDispatchedFails_DoesNotSend(t *testing.T) 
 			return &domain.User{ID: 1, TelegramID: 888}, nil
 		}},
 		&mockJobRepo{getByIDFunc: func(context.Context, int64) (*domain.Job, error) {
-			return &domain.Job{ID: 1, Title: "T", URL: "https://kwork.ru/p/1"}, nil
+			return &domain.Job{ID: 1, Source: "kwork", Title: "T", URL: "https://kwork.ru/p/1", LastSeenAt: time.Now()}, nil
 		}},
 		&mockNotifier{sendFunc: func(context.Context, int64, port.NotifyPayload) error {
 			sendCalled = true
@@ -906,7 +945,7 @@ func TestSendNotification_ExecuteBatch_SingleJobsQuery(t *testing.T) {
 				getByIDsCalls++
 				result := make(map[int64]*domain.Job, len(ids))
 				for _, id := range ids {
-					result[id] = &domain.Job{ID: id, Title: "J", URL: "https://kwork.ru/p/1"}
+					result[id] = &domain.Job{ID: id, Source: "kwork", Title: "J", URL: "https://kwork.ru/p/1", LastSeenAt: time.Now()}
 				}
 				return result, nil
 			},
@@ -949,7 +988,7 @@ func TestSendNotification_ExecuteBatch_SkipsExpiredJobs(t *testing.T) {
 		&mockJobRepo{
 			getByIDsFunc: func(_ context.Context, ids []int64) (map[int64]*domain.Job, error) {
 				return map[int64]*domain.Job{
-					10: {ID: 10, Title: "Active", URL: "https://kwork.ru/p/10"},
+					10: {ID: 10, Source: "kwork", Title: "Active", URL: "https://kwork.ru/p/10", LastSeenAt: time.Now()},
 					// Job 20 is expired and filtered by postgres GetByIDs.
 				}, nil
 			},
@@ -977,6 +1016,60 @@ func TestSendNotification_ExecuteBatch_SkipsExpiredJobs(t *testing.T) {
 	}
 	if len(markedJobIDs) != 1 || markedJobIDs[0] != 10 {
 		t.Fatalf("marked jobs=%v, want [10]", markedJobIDs)
+	}
+}
+
+func TestSendNotification_ExecuteBatch_DeletesStaleKworkJobs(t *testing.T) {
+	markedJobIDs := make([]int64, 0, 1)
+	notifRepo := &mockNotifRepo{
+		ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
+			return true, true, nil
+		},
+		sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
+		countTodayFunc:   func(context.Context, int64) (int, error) { return 0, nil },
+		markSentFunc: func(_ context.Context, _ int64, jobID int64) error {
+			markedJobIDs = append(markedJobIDs, jobID)
+			return nil
+		},
+	}
+	var gotPayload port.NotifyPayload
+
+	uc := NewSendNotification(
+		notifRepo,
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 777}, nil
+		}},
+		&mockJobRepo{
+			getByIDsFunc: func(_ context.Context, ids []int64) (map[int64]*domain.Job, error) {
+				return map[int64]*domain.Job{
+					10: {ID: 10, Source: "kwork", Title: "Fresh", URL: "https://kwork.ru/p/10", LastSeenAt: time.Now().Add(-2 * time.Hour)},
+					20: {ID: 20, Source: "kwork", Title: "Stale", URL: "https://kwork.ru/p/20", LastSeenAt: time.Now().Add(-7 * time.Hour)},
+				}, nil
+			},
+		},
+		&mockNotifier{sendFunc: func(_ context.Context, _ int64, p port.NotifyPayload) error {
+			gotPayload = p
+			return nil
+		}},
+		5*time.Minute,
+		5,
+	)
+
+	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{
+		{JobID: 10, Rank: 1, FinalScore: 0.91},
+		{JobID: 20, Rank: 2, FinalScore: 0.82},
+	}, 8.4)
+	if err != nil {
+		t.Fatalf("ExecuteBatch: %v", err)
+	}
+	if len(gotPayload.Batch) != 1 || gotPayload.Batch[0].Job == nil || gotPayload.Batch[0].Job.ID != 10 {
+		t.Fatalf("batch=%+v, want only fresh job", gotPayload.Batch)
+	}
+	if len(markedJobIDs) != 1 || markedJobIDs[0] != 10 {
+		t.Fatalf("marked jobs=%v, want [10]", markedJobIDs)
+	}
+	if len(notifRepo.deleteCalls) != 1 || notifRepo.deleteCalls[0] != [2]int64{1, 20} {
+		t.Fatalf("deleteCalls=%v, want [[1 20]]", notifRepo.deleteCalls)
 	}
 }
 
@@ -1046,7 +1139,7 @@ func TestSendNotification_ExecuteBatch_PermanentSendFailed_LeavesDispatched(t *t
 			getByIDsFunc: func(_ context.Context, ids []int64) (map[int64]*domain.Job, error) {
 				result := make(map[int64]*domain.Job, len(ids))
 				for _, id := range ids {
-					result[id] = &domain.Job{ID: id, Title: "Job", URL: "https://kwork.ru/p/1"}
+					result[id] = &domain.Job{ID: id, Source: "kwork", Title: "Job", URL: "https://kwork.ru/p/1", LastSeenAt: time.Now()}
 				}
 				return result, nil
 			},
@@ -1094,7 +1187,7 @@ func TestSendNotification_ExecuteBatch_MarkDispatchedFails_DoesNotSend(t *testin
 			getByIDsFunc: func(_ context.Context, ids []int64) (map[int64]*domain.Job, error) {
 				result := make(map[int64]*domain.Job, len(ids))
 				for _, id := range ids {
-					result[id] = &domain.Job{ID: id, Title: "Job", URL: "https://kwork.ru/p/1"}
+					result[id] = &domain.Job{ID: id, Source: "kwork", Title: "Job", URL: "https://kwork.ru/p/1", LastSeenAt: time.Now()}
 				}
 				return result, nil
 			},
@@ -1144,7 +1237,7 @@ func TestSendNotification_ExecuteBatch_SendFailed_LeavesDispatched(t *testing.T)
 			getByIDsFunc: func(_ context.Context, ids []int64) (map[int64]*domain.Job, error) {
 				result := make(map[int64]*domain.Job, len(ids))
 				for _, id := range ids {
-					result[id] = &domain.Job{ID: id, Title: "Job", URL: "https://kwork.ru/p/1"}
+					result[id] = &domain.Job{ID: id, Source: "kwork", Title: "Job", URL: "https://kwork.ru/p/1", LastSeenAt: time.Now()}
 				}
 				return result, nil
 			},

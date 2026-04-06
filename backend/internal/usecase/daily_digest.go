@@ -132,6 +132,12 @@ func (d *DailyDigest) sendDigestForUser(ctx context.Context, userID int64) error
 			}
 			continue
 		}
+		if !notificationJobIsFresh(job, time.Now()) {
+			if err := d.notifRepo.Delete(ctx, userID, p.JobID); err != nil {
+				slog.Warn("daily digest: delete stale job notification failed", "user_id", userID, "job_id", p.JobID, "err", err)
+			}
+			continue
+		}
 		items = append(items, port.BatchNotifyItem{
 			Job:        job,
 			WhyItFits:  p.WhyItFits,

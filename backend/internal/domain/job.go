@@ -12,6 +12,7 @@ type Job struct {
 	Budget      string
 	Skills      []string
 	PostedAt    *time.Time
+	LastSeenAt  time.Time
 	RawHTML     string
 	CreatedAt   time.Time
 }
