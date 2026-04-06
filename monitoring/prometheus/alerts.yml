@@ -199,6 +199,94 @@ groups:
           summary: "Feedback positive ratio is low"
           description: "feedback_positive_ratio stayed below 0.40 for 6 hours; recommendation quality may be degraded."
 
+      # -----------------------------------------------------------------------
+      # Crawler quality — sudden drop in scraped jobs volume
+      # -----------------------------------------------------------------------
+      - alert: SiteParserCrawlerJobsVolumeDrop
+        expr: |
+          (
+            increase(siteparser_crawler_jobs_scraped_total{job="backend-crawler"}[24h])
+            <
+            (
+              avg_over_time(increase(siteparser_crawler_jobs_scraped_total{job="backend-crawler"}[24h])[7d:1d])
+              * 0.3
+            )
+          )
+          and
+          (
+            increase(siteparser_crawler_jobs_scraped_total{job="backend-crawler"}[24h]) > 0
+          )
+        for: 1h
+        labels:
+          severity: warning
+          service: backend-crawler
+        annotations:
+          summary: "Crawler jobs volume dropped significantly"
+          description: "Jobs scraped in last 24h is less than 30% of the 7-day average. Possible HTML changes or blocking."
+
+  - name: siteparser-ai-quality
+    # -----------------------------------------------------------------------
+    # AI/LLM quality alerts — LLM success rate, fallback rate, rerank filtering
+    # -----------------------------------------------------------------------
+    rules:
+      - alert: SiteParserGeminiClassifierFallbackRateHigh
+        expr: |
+          (
+            sum(rate(ai_llm_fallback_total{job="ai-service", pipeline="classifier"}[1h]))
+            /
+            clamp_max(
+              sum(rate(ai_llm_primary_total{job="ai-service", pipeline="classifier"}[1h]))
+              +
+              sum(rate(ai_llm_fallback_total{job="ai-service", pipeline="classifier"}[1h])),
+              0.001
+            )
+          ) > 0.30
+        for: 30m
+        labels:
+          severity: warning
+          service: ai-classifier
+        annotations:
+          summary: "Gemini classifier fallback rate is high"
+          description: "Classifier fallback rate exceeded 30% over the last hour. LLM quality may be degrading."
+
+      - alert: SiteParserGeminiActorFailureRateHigh
+        expr: |
+          (
+            sum(rate(ai_llm_primary_total{job="ai-ac-consumer", pipeline="actor", outcome="failure"}[1h]))
+            /
+            clamp_max(
+              sum(rate(ai_llm_primary_total{job="ai-ac-consumer", pipeline="actor"}[1h])),
+              0.001
+            )
+          ) > 0.20
+        for: 30m
+        labels:
+          severity: warning
+          service: ai-actor
+        annotations:
+          summary: "Gemini actor failure rate is high"
+          description: "Actor LLM failure rate exceeded 20% over the last hour."
+
+      - alert: SiteParserRerankAllFilteredRateHigh
+        expr: |
+          (
+            sum(rate(siteparser_rerank_all_filtered_total{job="ai-service"}[1h]))
+            /
+            clamp_max(
+              sum(rate(ai_llm_primary_total{job="ai-service", pipeline="classifier"}[1h]))
+              +
+              sum(rate(ai_llm_fallback_total{job="ai-service", pipeline="classifier"}[1h])),
+              0.001
+            )
+          ) > 0.10
+        for: 30m
+        labels:
+          severity: warning
+          service: ai-reranker
+        annotations:
+          summary: "Rerank all-filtered rate is high"
+          description: "More than 10% of jobs had all rerank candidates filtered. Embedding or rerank threshold may need adjustment."
+
   - name: siteparser-infra
     rules:
       - alert: SiteParserRedisExporterDown

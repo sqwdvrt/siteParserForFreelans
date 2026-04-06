@@ -10,6 +10,7 @@ from typing import Any
 
 from ai_service.port.classifier import ClassificationResult, Classifier
 from ai_service.util.circuit_breaker import CircuitBreaker
+from ai_service.util.llm_cache import LLMCache
 from ai_service.util.sanitize import sanitize_for_classifier
 
 logger = logging.getLogger(__name__)
@@ -38,6 +39,7 @@ class GeminiClassifier(Classifier):
         breaker_failure_threshold: int = 3,
         breaker_open_interval_sec: float = 30.0,
         breaker: CircuitBreaker | None = None,
+        cache: LLMCache | None = None,
     ) -> None:
         self._api_key = api_key
         self._model = model
@@ -46,6 +48,7 @@ class GeminiClassifier(Classifier):
             failure_threshold=breaker_failure_threshold,
             open_interval_sec=breaker_open_interval_sec,
         )
+        self._cache = cache
 
     def classify(self, text: str) -> ClassificationResult:
         text = sanitize_for_classifier(text or "")
@@ -54,6 +57,17 @@ class GeminiClassifier(Classifier):
         if not self._breaker.allow_request():
             logger.warning("Gemini classify skipped: circuit breaker open")
             return {}
+
+        # Cache check
+        if self._cache is not None:
+            cached = self._cache.get("classifier", text[:200])
+            if cached is not None:
+                try:
+                    data = json.loads(cached)
+                    logger.info("Gemini classify cache HIT")
+                    return self._parse_response(data)
+                except (json.JSONDecodeError, AttributeError):
+                    pass  # corrupted, fall through
 
         try:
             url = f"{GEMINI_API_BASE}/{self._model}:generateContent"
@@ -82,6 +96,11 @@ class GeminiClassifier(Classifier):
             parts = candidates[0].get("content", {}).get("parts", [])
             raw = parts[0].get("text", "") if parts else ""
             result = self._parse_response(raw)
+
+            # Cache store
+            if self._cache is not None:
+                self._cache.set("classifier", text[:200], value=raw)
+
             self._breaker.record_success()
             return result
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
@@ -93,11 +112,16 @@ class GeminiClassifier(Classifier):
             logger.warning("Gemini classify parse error: %s", e)
             return {}
 
-    def _parse_response(self, raw: str) -> ClassificationResult:
-        try:
-            data: dict[str, Any] = json.loads(raw)
-        except json.JSONDecodeError:
-            return {}
+    def _parse_response(self, raw: str | dict) -> ClassificationResult:
+        """Parse Gemini JSON response or raw cached string."""
+        # If raw is already a dict (from cache re-parse), use directly
+        if isinstance(raw, dict):
+            data = raw
+        else:
+            try:
+                data: dict[str, Any] = json.loads(raw)
+            except json.JSONDecodeError:
+                return {}
 
         result: ClassificationResult = {}
         if "project_type" in data and isinstance(data["project_type"], str):

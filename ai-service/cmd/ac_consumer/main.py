@@ -173,6 +173,16 @@ def _read_bool_env(name: str, default: bool) -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _create_llm_cache(redis_url: str):
+    """Create a lightweight Redis client for LLM caching."""
+    try:
+        import redis as redis_lib
+        return redis_lib.from_url(redis_url)
+    except Exception as exc:
+        logging.getLogger(__name__).debug("LLM cache redis client unavailable: %s", exc)
+        return None
+
+
 def _supports_constructor_kwarg(factory: object, name: str) -> bool:
     try:
         signature = inspect.signature(factory)
@@ -290,8 +300,17 @@ def main() -> None:
         sys.exit(1)
     actor_model = os.getenv("GEMINI_ACTOR_MODEL", os.getenv("GEMINI_MODEL", "gemini-2.0-flash"))
     actor_timeout = int(os.getenv("ACTOR_GEMINI_TIMEOUT_SEC", "30"))
-    actor_primary = GeminiActorAgent(api_key=gemini_api_key, model=actor_model, timeout_sec=actor_timeout)
-    logger.info("actor provider=gemini model_actor=%s", actor_model)
+
+    # LLM cache for actor
+    from ai_service.util.llm_cache import LLMCache
+    llm_cache = _create_llm_cache(redis_url)
+    actor_primary = GeminiActorAgent(
+        api_key=gemini_api_key,
+        model=actor_model,
+        timeout_sec=actor_timeout,
+        cache=llm_cache,
+    )
+    logger.info("actor provider=gemini model_actor=%s cache=%s", actor_model, "enabled" if llm_cache else "disabled")
 
     init_tracer("site-parser-ac")
 

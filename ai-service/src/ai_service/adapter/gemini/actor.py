@@ -13,6 +13,7 @@ from ai_service.domain.ranked_job import RankedJob
 from ai_service.domain.user import User
 from ai_service.port.actor import ActorAgent
 from ai_service.util.circuit_breaker import CircuitBreaker
+from ai_service.util.llm_cache import LLMCache
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,7 @@ class GeminiActorAgent(ActorAgent):
         breaker: CircuitBreaker | None = None,
         max_retries: int = 2,
         base_delay_sec: float = 5.0,
+        cache: LLMCache | None = None,
     ) -> None:
         self._api_key = api_key
         self._model = model
@@ -95,6 +97,7 @@ class GeminiActorAgent(ActorAgent):
         )
         self._max_retries = max_retries
         self._base_delay_sec = base_delay_sec
+        self._cache = cache
 
     def select(
         self,
@@ -148,12 +151,32 @@ class GeminiActorAgent(ActorAgent):
         if not self._breaker.allow_request():
             logger.warning("actor: Gemini explain_batch skipped, circuit breaker open")
             return []
+
+        # Cache check
+        cache_key_parts = [str(user.id), str(sorted(j.id for j in candidates))]
+        if self._cache is not None:
+            cached = self._cache.get("actor_explain", *cache_key_parts)
+            if cached is not None:
+                try:
+                    data = json.loads(cached)
+                    explanations = data.get("explanations", [])
+                    if isinstance(explanations, list) and len(explanations) == len(candidates):
+                        logger.info("actor: explain_batch cache HIT for %d jobs", len(candidates))
+                        return [str(item).strip()[:500] for item in explanations]
+                except (json.JSONDecodeError, AttributeError):
+                    pass  # corrupted cache entry, fall through to API call
+
         try:
             raw = self._call_gemini(EXPLAIN_SYSTEM_PROMPT, prompt)
         except Exception:
             self._breaker.record_failure()
             raise
         self._breaker.record_success()
+
+        # Cache store
+        if self._cache is not None:
+            self._cache.set("actor_explain", *cache_key_parts, value=raw)
+
         return self._parse_explanations(raw, len(candidates))
 
     def _call_gemini(self, system_prompt: str, user_prompt: str) -> str:

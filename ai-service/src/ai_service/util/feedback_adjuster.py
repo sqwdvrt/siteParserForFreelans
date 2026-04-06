@@ -24,29 +24,41 @@ _MIN_MULTIPLIER = 0.50
 _SIGNAL_THRESHOLD = 0.20
 
 
-def apply_signal(score: float, signal: FeedbackSignal) -> float:
-    """Apply *signal* to *score* and return the adjusted score.
+def adjust_score(base_score: float, net: float) -> float:
+    """Unified feedback adjustment for both job and AC pipelines.
 
     Rules:
-      - No feedback (total == 0)           → score unchanged
+      - net == 0                               → score unchanged
       - net > +SIGNAL_THRESHOLD (likes)    → boost  ×(1 + net × 0.15), max ×1.15
       - net < -SIGNAL_THRESHOLD (dislikes) → reduce ×(1 + net × 0.50), min ×0.50
       - |net| ≤ SIGNAL_THRESHOLD           → score unchanged (noise)
-    """
-    if signal.total == 0:
-        return score
 
-    net = signal.net  # good_ratio - bad_ratio, range -1..+1
+    Previously the AC pipeline used ``clamp(net * 0.3, -0.3, +0.3)`` as an
+    additive bonus while the job pipeline used this multiplicative formula.
+    Both pipelines now call *adjust_score* so the behaviour is consistent.
+    """
+    if net == 0.0:
+        return base_score
 
     if net > _SIGNAL_THRESHOLD:
         multiplier = 1.0 + net * 0.15
     elif net < -_SIGNAL_THRESHOLD:
         multiplier = 1.0 + net * 0.50
     else:
-        return score
+        return base_score
 
     multiplier = max(_MIN_MULTIPLIER, min(_MAX_MULTIPLIER, multiplier))
-    return score * multiplier
+    return base_score * multiplier
+
+
+def apply_signal(score: float, signal: FeedbackSignal) -> float:
+    """Apply *signal* to *score* and return the adjusted score.
+
+    Delegates to :func:`adjust_score` for unified behaviour.
+    """
+    if signal.total == 0:
+        return score
+    return adjust_score(score, signal.net)
 
 
 def adjust_candidates(

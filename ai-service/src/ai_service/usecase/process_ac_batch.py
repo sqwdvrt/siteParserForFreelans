@@ -14,18 +14,18 @@ from ai_service.domain.ranked_job import RankedJob
 from ai_service.domain.user import User
 from ai_service.port.pending_jobs_repository import PendingJobsRepository
 from ai_service.usecase.rerank_policy import apply_rerank_policy
+from ai_service.util.feedback_adjuster import adjust_score
 from ai_service.util.trace_context import get_trace_id
 
 logger = logging.getLogger(__name__)
 MAX_SAME_SOURCE_PER_BATCH = 2
 MAX_SAME_TAG_PER_BATCH = 2
-FEEDBACK_BONUS_SCALE = 0.3
-FEEDBACK_BONUS_MIN = -0.3
-FEEDBACK_BONUS_MAX = 0.3
 PREFERRED_SOURCE_MULTIPLIER = 1.2
 NON_PREFERRED_SOURCE_MULTIPLIER = 0.8
 TIME_DECAY_HOURS = 48.0
 COMPETITION_SCALE = 50.0
+TAG_AFFINITY_WEIGHT_PER_TAG = 0.05  # +5% per affinity point, capped at +15%
+TAG_AFFINITY_MAX_BONUS = 0.15
 _COMPETITION_PATTERNS = (
     re.compile(r"(?:отклик(?:ов|а)?|предложени(?:й|я)|bids?|respond(?:s|ed)?)\D{0,20}(\d{1,4})", re.IGNORECASE),
     re.compile(r"(?:offersCount|responsesCount|bidsCount)\D{0,10}(\d{1,4})", re.IGNORECASE),
@@ -140,32 +140,37 @@ class ProcessACBatchUseCase:
                 continue
             if decision.used_fallback and "rerank_all_filtered_fallback" not in (job.reason_codes or []):
                 job.reason_codes = list(job.reason_codes or []) + ["rerank_all_filtered_fallback"]
-            feedback_signal = self._feedback_signal(user.id, job, feedback_cache)
-            feedback_bonus = self._feedback_bonus(feedback_signal)
+            feedback_net = self._feedback_signal(user.id, job, feedback_cache)
             preference_multiplier = self._preference_multiplier(user, job.source)
             time_decay_multiplier = self._time_decay_multiplier(job)
             competition_multiplier = self._competition_multiplier(job)
-            job.feedback_bonus = feedback_bonus
-            job.preference_multiplier = preference_multiplier
+            tag_affinity_bonus = self._tag_affinity_bonus(user, job)
+
+            # Unified feedback adjustment (shared with job pipeline)
+            adjusted_rerank = adjust_score(rerank_score, feedback_net)
+            feedback_bonus_for_log = adjusted_rerank - rerank_score  # delta for logging
+            job.feedback_bonus = feedback_bonus_for_log  # persist for scoring components
+
             job.final_score = self._final_score(
-                rerank_score=rerank_score,
-                feedback_bonus=feedback_bonus,
+                adjusted_rerank_score=adjusted_rerank,
                 preference_multiplier=preference_multiplier,
                 time_decay_multiplier=time_decay_multiplier,
                 competition_multiplier=competition_multiplier,
+                tag_affinity_bonus=tag_affinity_bonus,
             )
             logger.info(
                 "ac_score user_id=%d job_id=%d rerank=%.3f "
-                "feedback_signal=%.3f feedback_bonus=%.3f pref_mult=%.3f "
-                "time_decay=%.3f competition=%.3f final=%.3f",
+                "feedback_net=%.3f feedback_delta=%.3f pref_mult=%.3f "
+                "time_decay=%.3f competition=%.3f tag_affinity=%.3f final=%.3f",
                 user.id,
                 job.id,
                 rerank_score,
-                feedback_signal,
-                feedback_bonus,
+                feedback_net,
+                feedback_bonus_for_log,
                 preference_multiplier,
                 time_decay_multiplier,
                 competition_multiplier,
+                tag_affinity_bonus,
                 job.final_score,
             )
             eligible.append(job)
@@ -254,8 +259,21 @@ class ProcessACBatchUseCase:
         return "Подходит по итоговому скору рекомендаций."
 
     @staticmethod
-    def _feedback_bonus(feedback_signal: float) -> float:
-        return max(FEEDBACK_BONUS_MIN, min(FEEDBACK_BONUS_MAX, feedback_signal * FEEDBACK_BONUS_SCALE))
+    def _tag_affinity_bonus(user: User, job: Job) -> float:
+        """Calculate tag affinity bonus based on user's historical feedback.
+
+        Each matching tag adds TAG_AFFINITY_WEIGHT_PER_TAG (5%), capped at
+        TAG_AFFINITY_MAX_BONUS (15%).
+        """
+        if not user.tag_affinity or not job.technologies:
+            return 0.0
+        bonus = 0.0
+        for tech in job.technologies:
+            tag = str(tech).strip().lower()
+            if tag in user.tag_affinity:
+                affinity = user.tag_affinity[tag]
+                bonus += affinity * TAG_AFFINITY_WEIGHT_PER_TAG
+        return min(bonus, TAG_AFFINITY_MAX_BONUS)
 
     @staticmethod
     def _preference_multiplier(user: User, source: str) -> float:
@@ -274,15 +292,16 @@ class ProcessACBatchUseCase:
     @staticmethod
     def _final_score(
         *,
-        rerank_score: float,
-        feedback_bonus: float,
+        adjusted_rerank_score: float,
         preference_multiplier: float,
         time_decay_multiplier: float,
         competition_multiplier: float,
+        tag_affinity_bonus: float = 0.0,
     ) -> float:
+        """Compute final score with unified feedback adjustment and tag affinity."""
+        base = float(adjusted_rerank_score) * (1.0 + float(tag_affinity_bonus))
         return (
-            float(rerank_score)
-            * (1.0 + float(feedback_bonus))
+            base
             * float(preference_multiplier)
             * float(time_decay_multiplier)
             * float(competition_multiplier)

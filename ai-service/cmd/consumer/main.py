@@ -93,6 +93,19 @@ def _warmup_enabled() -> bool:
     return raw in {"1", "true", "yes", "on"}
 
 
+def _create_llm_cache_redis(redis_url: str):
+    """Create a lightweight Redis client for LLM caching.
+
+    Returns None if redis is unavailable so the cache gracefully degrades.
+    """
+    try:
+        import redis as redis_lib
+        return redis_lib.from_url(redis_url)
+    except Exception as exc:
+        logging.getLogger(__name__).debug("LLM cache redis client unavailable: %s", exc)
+        return None
+
+
 def _classifier_enabled() -> bool:
     raw = os.getenv(CLASSIFIER_ENABLED_ENV, "0").strip().lower()
     return raw in {"1", "true", "yes", "on"}
@@ -250,8 +263,12 @@ def main() -> None:
     classifier = None
     if classifier_enabled and gemini_api_key:
         from ai_service.adapter.gemini import GeminiClassifier
+        from ai_service.util.llm_cache import LLMCache
 
-        classifier = GeminiClassifier(api_key=gemini_api_key)
+        # Shared Redis client for LLM cache
+        llm_cache_redis = _create_llm_cache_redis(redis_url)
+        llm_cache = LLMCache(redis_client=llm_cache_redis) if llm_cache_redis else None
+        classifier = GeminiClassifier(api_key=gemini_api_key, cache=llm_cache)
     if _warmup_enabled():
         _warmup_embedding(embedding)
     else:
