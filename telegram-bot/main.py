@@ -2948,6 +2948,47 @@ def _handle_filters_callback(
         return
 
 
+def _handle_profile_callback(
+    data: str,
+    token: str,
+    chat_id: int,
+    message_id: int,
+    telegram_id: int,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> None:
+    if data == "prf:edit":
+        _set_conversation_state(telegram_id, "await_profile")
+        _record_command("profile", "prompt")
+        send_message(
+            token,
+            chat_id,
+            "Отправьте следующим сообщением текст профиля или используйте /profile <ваш текст профиля>",
+        )
+        return
+    if data == "prf:tips":
+        edit_message_text(
+            token,
+            chat_id,
+            message_id,
+            _format_profile_tips_text(),
+            _build_profile_tips_keyboard(),
+        )
+        return
+    if data == "prf:back":
+        _send_profile_overview(
+            token,
+            chat_id,
+            telegram_id,
+            api_url,
+            api_auth_token,
+            api_user_hmac_secret,
+            edit_message_id=message_id,
+        )
+        return
+
+
 def handle_callback(
     callback: dict,
     token: str,
@@ -3038,6 +3079,21 @@ def handle_callback(
                     api_user_hmac_secret,
                     callback_id,
                 )
+        elif data.startswith("prf:") and telegram_id is not None:
+            msg = callback.get("message") or {}
+            cb_chat_id = msg.get("chat", {}).get("id") or from_user.get("id")
+            message_id = msg.get("message_id")
+            if cb_chat_id and message_id:
+                _handle_profile_callback(
+                    data,
+                    token,
+                    cb_chat_id,
+                    message_id,
+                    telegram_id,
+                    api_url,
+                    api_auth_token,
+                    api_user_hmac_secret,
+                )
     except Exception as e:
         logger.error("callback handling failed: %s", _exception_name(e))
     finally:
@@ -3103,6 +3159,73 @@ def _profile_empty_message() -> str:
         "Пустой профиль не сохраню. Отправьте текст профиля одним сообщением "
         "или используйте /profile <текст профиля>."
     )
+
+
+def _format_profile_overview_text(profile_text: str | None) -> str:
+    normalized = (profile_text or "").strip()
+    if not normalized:
+        profile_body = "Профиль пока не заполнен."
+    else:
+        profile_body = f"<i>{html.escape(normalized)}</i>"
+    return (
+        "👤 Твой профиль:\n\n"
+        f"{profile_body}\n\n"
+        "Если стек, опыт или интересующие проекты изменились, обнови профиль для более точного матчинга."
+    )
+
+
+def _format_profile_tips_text() -> str:
+    return (
+        "💡 Как улучшить профиль\n\n"
+        "Что лучше указать:\n"
+        "• стек и ключевые технологии\n"
+        "• опыт и уровень задач\n"
+        "• какие проекты тебе интересны\n\n"
+        "Пример:\n"
+        "<i>Python-разработчик, Django и FastAPI, 3 года опыта. "
+        "Интересуют backend-проекты, интеграции, боты и AI automation.</i>"
+    )
+
+
+def _build_profile_overview_keyboard() -> list[list[dict]]:
+    return [
+        [
+            {"text": "✏️ Изменить профиль", "callback_data": "prf:edit"},
+        ],
+        [
+            {"text": "💡 Советы как улучшить профиль", "callback_data": "prf:tips"},
+        ],
+    ]
+
+
+def _build_profile_tips_keyboard() -> list[list[dict]]:
+    return [[{"text": "⬅️ Назад к профилю", "callback_data": "prf:back"}]]
+
+
+def _send_profile_overview(
+    token: str,
+    chat_id: int,
+    telegram_id: int,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+    *,
+    edit_message_id: int | None = None,
+) -> bool:
+    user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+    if user_id is None:
+        send_message(token, chat_id, "Сначала отправьте /start")
+        return True
+    profile_text = get_user_profile_text(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
+    if profile_text is None:
+        send_message(token, chat_id, "Не удалось загрузить профиль. Попробуйте позже.")
+        return True
+    text = _format_profile_overview_text(profile_text)
+    keyboard = _build_profile_overview_keyboard()
+    if edit_message_id is not None:
+        edit_message_text(token, chat_id, edit_message_id, text, keyboard)
+        return True
+    return send_keyboard(token, chat_id, text, keyboard) is not None
 
 
 def _handle_profile_submission(
@@ -3244,14 +3367,16 @@ def _handle_update(
     if text == "/profile" or text.startswith("/profile "):
         rest = text[len("/profile"):].strip()
         if not rest:
-            _set_conversation_state(telegram_id, "await_profile")
-            _record_command("profile", "prompt")
-            send_message(
+            _clear_conversation_state(telegram_id)
+            _record_command("profile", "overview")
+            return _send_profile_overview(
                 token,
                 chat_id,
-                "Отправьте следующим сообщением текст профиля или используйте /profile <ваш текст профиля>",
+                telegram_id,
+                api_url,
+                api_auth_token,
+                api_user_hmac_secret,
             )
-            return True
         return _handle_profile_submission(
             token,
             chat_id,
@@ -3366,18 +3491,15 @@ def _handle_update(
 
     if text == "👤 Мой профиль":
         _clear_conversation_state(telegram_id)
-        user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
-        if user_id is None:
-            send_message(token, chat_id, "Сначала отправьте /start")
-            return True
-        profile_text = get_user_profile_text(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
-        if profile_text is None:
-            send_message(token, chat_id, "Не удалось загрузить профиль. Попробуйте позже.")
-        elif profile_text == "":
-            send_message(token, chat_id, "Профиль не заполнен. Нажмите ✏️ Обновить профиль.")
-        else:
-            send_message(token, chat_id, f"👤 Ваш профиль:\n\n{profile_text}")
-        return True
+        _record_command("profile", "overview")
+        return _send_profile_overview(
+            token,
+            chat_id,
+            telegram_id,
+            api_url,
+            api_auth_token,
+            api_user_hmac_secret,
+        )
 
     if text == "✏️ Обновить профиль":
         _set_conversation_state(telegram_id, "await_profile")

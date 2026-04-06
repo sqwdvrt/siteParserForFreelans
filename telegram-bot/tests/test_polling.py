@@ -265,7 +265,7 @@ def test_run_polling_start_registration_error(bot, monkeypatch):
     assert "Ошибка регистрации" in send_message.call_args.args[2]
 
 
-def test_run_polling_profile_without_text(bot, monkeypatch):
+def test_run_polling_profile_without_text_shows_profile_overview(bot, monkeypatch):
     updates = [
         (
             [{"update_id": 1, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "/profile   "}}],
@@ -273,14 +273,26 @@ def test_run_polling_profile_without_text(bot, monkeypatch):
         )
     ]
 
-    send_message = MagicMock(return_value=True)
+    send_keyboard = MagicMock(return_value=51)
     monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
-    monkeypatch.setattr(bot, "send_message", send_message)
+    monkeypatch.setattr(bot, "post_users", MagicMock(return_value=123))
+    monkeypatch.setattr(
+        bot,
+        "get_user_profile_text",
+        MagicMock(return_value="Python-разработчик, Django, FastAPI, 3 года опыта"),
+    )
+    monkeypatch.setattr(bot, "send_keyboard", send_keyboard)
 
     with pytest.raises(KeyboardInterrupt):
         bot.run_polling("token", "https://api.example.com", "tok", "hmac")
 
-    assert "Отправьте следующим сообщением текст профиля" in send_message.call_args.args[2]
+    text = send_keyboard.call_args.args[2]
+    keyboard = send_keyboard.call_args.args[3]
+    assert "Твой профиль" in text
+    assert "Python-разработчик" in text
+    callback_data = [button["callback_data"] for row in keyboard for button in row]
+    assert "prf:edit" in callback_data
+    assert "prf:tips" in callback_data
 
 
 def test_run_polling_profile_requires_start(bot, monkeypatch):
@@ -327,16 +339,29 @@ def test_run_polling_profile_empty_followup_text(bot, monkeypatch):
         (
             [
                 {"update_id": 1, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "/profile"}},
-                {"update_id": 2, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "   "}},
+                {
+                    "update_id": 2,
+                    "callback_query": {
+                        "id": "cb-profile-edit-empty",
+                        "data": "prf:edit",
+                        "from": {"id": 200},
+                        "message": {"chat": {"id": 100}, "message_id": 55},
+                    },
+                },
+                {"update_id": 3, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "   "}},
             ],
-            3,
+            4,
             True,
         )
     ]
 
     send_message = MagicMock(return_value=True)
     monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
+    monkeypatch.setattr(bot, "post_users", MagicMock(return_value=123))
+    monkeypatch.setattr(bot, "get_user_profile_text", MagicMock(return_value="старый профиль"))
+    monkeypatch.setattr(bot, "send_keyboard", MagicMock(return_value=55))
     monkeypatch.setattr(bot, "send_message", send_message)
+    monkeypatch.setattr(bot, "answer_callback_query", lambda *args, **kwargs: None)
 
     with pytest.raises(KeyboardInterrupt):
         bot.run_polling("token", "https://api.example.com", "tok", "hmac")
@@ -371,9 +396,18 @@ def test_run_polling_profile_two_step_state_flow(bot, monkeypatch):
         (
             [
                 {"update_id": 1, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "/profile"}},
-                {"update_id": 2, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "python backend"}},
+                {
+                    "update_id": 2,
+                    "callback_query": {
+                        "id": "cb-profile-edit",
+                        "data": "prf:edit",
+                        "from": {"id": 200},
+                        "message": {"chat": {"id": 100}, "message_id": 55},
+                    },
+                },
+                {"update_id": 3, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "python backend"}},
             ],
-            3,
+            4,
             True,
         )
     ]
@@ -382,8 +416,11 @@ def test_run_polling_profile_two_step_state_flow(bot, monkeypatch):
     put_user_profile_status = MagicMock(return_value=204)
     monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
     monkeypatch.setattr(bot, "post_users", MagicMock(return_value=123))
+    monkeypatch.setattr(bot, "get_user_profile_text", MagicMock(return_value="старый профиль"))
     monkeypatch.setattr(bot, "put_user_profile_status", put_user_profile_status)
+    monkeypatch.setattr(bot, "send_keyboard", MagicMock(return_value=55))
     monkeypatch.setattr(bot, "send_message", send_message)
+    monkeypatch.setattr(bot, "answer_callback_query", lambda *args, **kwargs: None)
 
     with pytest.raises(KeyboardInterrupt):
         bot.run_polling("token", "https://api.example.com", "tok", "hmac")

@@ -227,6 +227,41 @@ def test_filters_reset_clears_preferences_and_rerenders(bot, monkeypatch):
     assert edits
 
 
+def test_profile_edit_callback_sets_state_and_prompts(bot, monkeypatch):
+    messages = []
+    monkeypatch.setattr(bot, "answer_callback_query", lambda *args, **kwargs: None)
+    monkeypatch.setattr(bot, "send_message", lambda *args, **kwargs: messages.append((args, kwargs)) or True)
+
+    callback = {
+        "id": "cb-profile-edit",
+        "data": "prf:edit",
+        "from": {"id": 987654},
+        "message": {"chat": {"id": 123}, "message_id": 77},
+    }
+    bot.handle_callback(callback, "token", "https://api.example.com", "tok", "h" * 32)
+
+    assert bot._get_conversation_state(987654) == "await_profile"
+    assert messages
+    assert "Отправьте следующим сообщением текст профиля" in messages[0][0][2]
+
+
+def test_profile_tips_callback_rerenders_message(bot, monkeypatch):
+    edits = []
+    monkeypatch.setattr(bot, "answer_callback_query", lambda *args, **kwargs: None)
+    monkeypatch.setattr(bot, "edit_message_text", lambda *args, **kwargs: edits.append((args, kwargs)))
+
+    callback = {
+        "id": "cb-profile-tips",
+        "data": "prf:tips",
+        "from": {"id": 987654},
+        "message": {"chat": {"id": 123}, "message_id": 77},
+    }
+    bot.handle_callback(callback, "token", "https://api.example.com", "tok", "h" * 32)
+
+    assert edits
+    assert "Как улучшить профиль" in edits[0][0][3]
+
+
 def test_get_updates_returns_next_offset(bot, monkeypatch):
     monkeypatch.setattr(
         bot,
