@@ -379,7 +379,7 @@ def test_batch_nav_missing_session_prompts_existing_profile_command(bot, monkeyp
     bot.handle_callback(callback, "token", "https://api.example.com", "tok", "hmac")
 
     assert len(answers) >= 1
-    args, kwargs = answers[0]
+    _args, kwargs = answers[0]
     assert kwargs["text"] == "Подборка устарела. Обновите профиль: /profile"
     assert "/jobs" not in kwargs["text"]
     assert kwargs["show_alert"] is True
@@ -565,7 +565,7 @@ def test_batch_feedback_missing_session_prompts_existing_profile_command(bot, mo
     bot.handle_callback(callback, "token", "https://api.example.com", "tok", "hmac")
 
     assert len(answers) >= 1
-    args, kwargs = answers[0]
+    _args, kwargs = answers[0]
     assert kwargs["text"] == "Подборка устарела. Обновите профиль: /profile"
     assert "/jobs" not in kwargs["text"]
     assert kwargs["show_alert"] is True
