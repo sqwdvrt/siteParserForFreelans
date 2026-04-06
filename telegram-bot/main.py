@@ -1392,8 +1392,13 @@ def _render_batch_card(session_id: str, session: dict, index: int | None = None)
         return None
     if job_id <= 0:
         return None
+    _TELEGRAM_MAX_MSG_LEN = 4096
+    _DESC_MAX_LEN = 3200
     title = html.escape(_clean_job_text(str(item.get("title") or "Без названия")))
-    description = html.escape(_clean_job_text(str(item.get("description") or "")))
+    raw_desc = _clean_job_text(str(item.get("description") or ""))
+    if len(raw_desc) > _DESC_MAX_LEN:
+        raw_desc = raw_desc[:_DESC_MAX_LEN] + "…"
+    description = html.escape(raw_desc)
     budget = html.escape(_clean_job_text(str(item.get("budget") or "")))
     why_it_fits = html.escape(_clean_job_text(str(item.get("why_it_fits") or "")))
     score_percent = _to_int_or_default(item.get("score_percent"), 0)
