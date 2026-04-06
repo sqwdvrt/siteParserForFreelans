@@ -9,6 +9,7 @@ POST_DEPLOY_GATE=""
 COMPOSE_FILES=("docker-compose.prod.yml" "docker-compose.ssl.yml" "docker-compose.monitoring.yml")
 COMPOSE_PROFILES=("monitoring")
 RUNTIME_IMAGE_VARS=("BACKEND_IMAGE" "BROWSER_SERVICE_IMAGE" "TELEGRAM_BOT_IMAGE" "AI_IMAGE")
+MONITORING_SERVICES=("prometheus" "alertmanager" "redis-exporter" "postgres-exporter" "grafana")
 
 usage() {
   cat <<'EOF'
@@ -301,6 +302,10 @@ compose_release() {
   local compose_args=()
   local compose_file
   local compose_profile
+  local available_services=()
+  local monitoring_services_to_recreate=()
+  local monitoring_service
+  local available_service
 
   for compose_file in "${COMPOSE_FILES[@]}"; do
     compose_args+=(-f "$compose_file")
@@ -317,6 +322,22 @@ compose_release() {
       docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" pull
     run_with_heartbeat "docker compose up" \
       docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" up -d --no-build
+    mapfile -t available_services < <(
+      docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" config --services
+    )
+    for monitoring_service in "${MONITORING_SERVICES[@]}"; do
+      for available_service in "${available_services[@]}"; do
+        if [[ "$available_service" = "$monitoring_service" ]]; then
+          monitoring_services_to_recreate+=("$monitoring_service")
+          break
+        fi
+      done
+    done
+    if [[ "${#monitoring_services_to_recreate[@]}" -gt 0 ]]; then
+      run_with_heartbeat "docker compose monitoring recreate" \
+        docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" \
+        up -d --no-build --force-recreate "${monitoring_services_to_recreate[@]}"
+    fi
     docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" ps
   )
 }

@@ -17,6 +17,10 @@ class DeployReleaseScriptTest(unittest.TestCase):
             script_text,
         )
         self.assertIn('COMPOSE_PROFILES=("monitoring")', script_text)
+        self.assertIn(
+            'MONITORING_SERVICES=("prometheus" "alertmanager" "redis-exporter" "postgres-exporter" "grafana")',
+            script_text,
+        )
 
     def test_compose_commands_use_stable_project_name(self) -> None:
         script_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
@@ -48,6 +52,14 @@ class DeployReleaseScriptTest(unittest.TestCase):
         self.assertIn('log "${label}: still running"', script_text)
         self.assertIn('run_with_heartbeat "docker compose pull"', script_text)
         self.assertIn('run_with_heartbeat "docker compose up"', script_text)
+        self.assertIn('run_with_heartbeat "docker compose monitoring recreate"', script_text)
+
+    def test_monitoring_services_are_force_recreated_when_present(self) -> None:
+        script_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('mapfile -t available_services < <(', script_text)
+        self.assertIn('if [[ "${#monitoring_services_to_recreate[@]}" -gt 0 ]]; then', script_text)
+        self.assertIn('up -d --no-build --force-recreate "${monitoring_services_to_recreate[@]}"', script_text)
 
 
 if __name__ == "__main__":
