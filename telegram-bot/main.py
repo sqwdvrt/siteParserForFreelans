@@ -402,6 +402,9 @@ def _record_command(command: str, result: str) -> None:
     _METRICS.inc("telegram_bot_commands_total", command=command, result=result)
 
 
+BATCH_SESSION_TTL_SEC = _read_positive_int_env("BATCH_SESSION_TTL_SEC", 24 * 60 * 60)
+
+
 class _RedisStateStore:
     def __init__(
         self,
@@ -411,12 +414,14 @@ class _RedisStateStore:
         user_id_ttl_sec: int,
         conversation_state_ttl_sec: int,
         processed_update_ttl_sec: int,
+        batch_session_ttl_sec: int,
     ) -> None:
         self._client = client
         self._prefix = prefix.strip() or "telegram-bot"
         self._user_id_ttl_sec = max(1, int(user_id_ttl_sec))
         self._conversation_state_ttl_sec = max(1, int(conversation_state_ttl_sec))
         self._processed_update_ttl_sec = max(1, int(processed_update_ttl_sec))
+        self._batch_session_ttl_sec = max(1, int(batch_session_ttl_sec))
 
     def cache_user_id(self, telegram_id: int, user_id: int) -> None:
         self._client.set(self._key("user-id", telegram_id), str(user_id), ex=self._user_id_ttl_sec)
@@ -467,10 +472,18 @@ class _RedisStateStore:
 
     def set_batch_session(self, session_id: str, session: dict) -> None:
         key = self._key_text("batch-session", session_id)
+        ttl_sec = self._batch_session_ttl_sec
+        existing_ttl = self._client.ttl(key)
+        try:
+            existing_ttl = int(existing_ttl)
+        except (TypeError, ValueError):
+            existing_ttl = -2
+        if existing_ttl > 0:
+            ttl_sec = existing_ttl
         self._client.set(
             key,
             json.dumps(session, separators=(",", ":"), ensure_ascii=False),
-            ex=self._conversation_state_ttl_sec,
+            ex=ttl_sec,
         )
         _METRICS.inc("telegram_bot_state_store_operations_total", operation="set_batch_session", result="ok")
 
@@ -687,6 +700,7 @@ def _build_state_store(app_env: str | None) -> _RedisStateStore | None:
         user_id_ttl_sec=USER_ID_CACHE_TTL_SEC,
         conversation_state_ttl_sec=CONVERSATION_STATE_TTL_SEC,
         processed_update_ttl_sec=PROCESSED_UPDATE_TTL_SEC,
+        batch_session_ttl_sec=BATCH_SESSION_TTL_SEC,
     )
 
 

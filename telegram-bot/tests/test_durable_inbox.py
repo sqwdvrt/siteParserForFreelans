@@ -7,12 +7,16 @@ class FakeRedis:
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
         self.lists: dict[str, list[str]] = {}
+        self.ttls: dict[str, int] = {}
 
     def set(self, key: str, value: str, ex: int | None = None, nx: bool = False):
-        _ = ex
         if nx and key in self.values:
             return False
         self.values[key] = value
+        if ex is None:
+            self.ttls.pop(key, None)
+        else:
+            self.ttls[key] = int(ex)
         return True
 
     def get(self, key: str):
@@ -22,10 +26,16 @@ class FakeRedis:
         removed = 0
         for key in keys:
             removed += 1 if self.values.pop(key, None) is not None else 0
+            self.ttls.pop(key, None)
             if key in self.lists:
                 self.lists.pop(key, None)
                 removed += 1
         return removed
+
+    def ttl(self, key: str):
+        if key not in self.values:
+            return -2
+        return self.ttls.get(key, -1)
 
     def rpush(self, key: str, *values: str):
         bucket = self.lists.setdefault(key, [])
@@ -73,7 +83,37 @@ def _build_store(bot):
         user_id_ttl_sec=60,
         conversation_state_ttl_sec=60,
         processed_update_ttl_sec=60,
+        batch_session_ttl_sec=24 * 60 * 60,
     )
+
+
+def test_batch_session_update_preserves_existing_key_ttl(bot):
+    store = _build_store(bot)
+    key = "telegram-bot-test:batch-session:session-1"
+    store._client.set(
+        key,
+        json.dumps({"version": 1, "telegram_id": 101, "current_index": 0, "items": [{"job_id": 7}]}),
+        ex=24 * 60 * 60,
+    )
+    store._client.ttls[key] = 23 * 60 * 60
+
+    store.set_batch_session(
+        "session-1",
+        {"version": 1, "telegram_id": 101, "current_index": 1, "items": [{"job_id": 7}]},
+    )
+
+    assert store._client.ttl(key) == 23 * 60 * 60
+
+
+def test_batch_session_without_existing_key_uses_day_scale_ttl(bot):
+    store = _build_store(bot)
+
+    store.set_batch_session(
+        "session-2",
+        {"version": 1, "telegram_id": 101, "current_index": 0, "items": [{"job_id": 8}]},
+    )
+
+    assert store._client.ttl("telegram-bot-test:batch-session:session-2") == 24 * 60 * 60
 
 
 def test_enqueue_webhook_update_deduplicates_by_update_id(bot):
