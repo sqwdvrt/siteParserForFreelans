@@ -279,7 +279,15 @@ def test_find_users_for_job_includes_stale_non_kwork_job_by_default(repo: Postgr
             cur.execute(
                 """
                 INSERT INTO jobs (source, url, title, raw_html, status, created_at, last_seen_at)
-                VALUES ('flru', %s, 'Stale Active', '<p>x</p>', 'active', NOW() - INTERVAL '3 days', NOW() - INTERVAL '7 hours')
+                VALUES (
+                    'flru',
+                    %s,
+                    'Stale Active',
+                    '<p>x</p>',
+                    'active',
+                    NOW() - INTERVAL '3 days',
+                    NOW() - INTERVAL '7 hours'
+                )
                 RETURNING id
                 """,
                 (f"https://fl.ru/stale-active-{time.time_ns()}",),
