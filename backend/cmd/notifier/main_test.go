@@ -219,6 +219,9 @@ func (s *stubUserRepo) UpdateProfileScoped(ctx context.Context, userID int64, te
 func (s *stubUserRepo) UpdateNotifyHourScoped(ctx context.Context, userID int64, hour int) error {
 	return nil
 }
+func (s *stubUserRepo) UpdatePauseScoped(ctx context.Context, userID int64, until *time.Time) error {
+	return nil
+}
 func (s *stubUserRepo) GetPreferencesScoped(ctx context.Context, userID int64) (*domain.UserPreferences, error) {
 	return &domain.UserPreferences{}, nil
 }
