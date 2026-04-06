@@ -365,6 +365,26 @@ def test_batch_nav_callback_edits_message_in_place(bot, monkeypatch):
     assert bot._STATE_STORE.sessions["session-1"]["current_index"] == 1
 
 
+def test_batch_nav_missing_session_prompts_existing_profile_command(bot, monkeypatch):
+    answers = []
+    monkeypatch.setattr(bot, "answer_callback_query", lambda *a, **kw: answers.append((a, kw)))
+    monkeypatch.setattr(bot, "_STATE_STORE", _FakeBatchStateStore({}))
+
+    callback = {
+        "id": "cb-nav-missing",
+        "data": "nav:n:missing-session:1",
+        "from": {"id": 987654},
+        "message": {"chat": {"id": 123}, "message_id": 55},
+    }
+    bot.handle_callback(callback, "token", "https://api.example.com", "tok", "hmac")
+
+    assert len(answers) >= 1
+    args, kwargs = answers[0]
+    assert kwargs["text"] == "Подборка устарела. Обновите профиль: /profile"
+    assert "/jobs" not in kwargs["text"]
+    assert kwargs["show_alert"] is True
+
+
 def test_batch_feedback_auto_advances_to_next_card(bot, monkeypatch):
     edits = []
     feedback_calls = []
@@ -529,6 +549,26 @@ def test_batch_stale_callback_is_ignored_gracefully(bot, monkeypatch):
     assert not edits
     assert not feedback_calls
     assert bot._STATE_STORE.sessions["session-4"]["current_index"] == 1
+
+
+def test_batch_feedback_missing_session_prompts_existing_profile_command(bot, monkeypatch):
+    answers = []
+    monkeypatch.setattr(bot, "answer_callback_query", lambda *a, **kw: answers.append((a, kw)))
+    monkeypatch.setattr(bot, "_STATE_STORE", _FakeBatchStateStore({}))
+
+    callback = {
+        "id": "cb-fb-missing",
+        "data": "fb:g:missing-session:0:41",
+        "from": {"id": 987654},
+        "message": {"chat": {"id": 123}, "message_id": 58},
+    }
+    bot.handle_callback(callback, "token", "https://api.example.com", "tok", "hmac")
+
+    assert len(answers) >= 1
+    args, kwargs = answers[0]
+    assert kwargs["text"] == "Подборка устарела. Обновите профиль: /profile"
+    assert "/jobs" not in kwargs["text"]
+    assert kwargs["show_alert"] is True
 
 
 def test_render_metrics_contains_counters_and_ready_gauge(bot):

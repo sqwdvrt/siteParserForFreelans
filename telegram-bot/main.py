@@ -2230,6 +2230,11 @@ def _parse_batch_feedback_callback(data: str) -> tuple[str, str, int, int] | Non
     return parts[1], session_id, current_index, job_id
 
 
+def _stale_batch_session_text() -> str:
+    """User-facing guidance when an interactive batch session has expired."""
+    return "Подборка устарела. Обновите профиль: /profile"
+
+
 def _handle_batch_nav_callback(
     data: str,
     token: str,
@@ -2246,7 +2251,7 @@ def _handle_batch_nav_callback(
     if session is None:
         answer_callback_query(
             token, callback_id,
-            text="Подборка устарела. Запросите новую: /jobs",
+            text=_stale_batch_session_text(),
             show_alert=True,
         )
         return
@@ -2288,7 +2293,7 @@ def _handle_batch_feedback_callback(
         if callback_id:
             answer_callback_query(
                 token, callback_id,
-                text="Подборка устарела. Запросите новую: /jobs",
+                text=_stale_batch_session_text(),
                 show_alert=True,
             )
         return True
