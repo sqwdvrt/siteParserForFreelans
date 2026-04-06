@@ -66,7 +66,12 @@ run_step "Migration filename validation" \
   ./scripts/check_migration_filenames.sh
 
 run_step "Production docker compose validation" \
-  docker compose --env-file .env.production.example -f docker-compose.prod.yml config -q
+  docker compose --env-file .env.production.example \
+    -f docker-compose.prod.yml \
+    -f docker-compose.ssl.yml \
+    -f docker-compose.monitoring.yml \
+    --profile monitoring \
+    config -q
 
 run_step "Production config contract consistency" \
   "${PY_BIN}" ./scripts/production_config_contract.py check-consistency

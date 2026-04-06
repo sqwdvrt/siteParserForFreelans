@@ -6,7 +6,8 @@ DEPLOY_SHA=""
 ENV_FILE=".env.production"
 ORIGIN_URL=""
 POST_DEPLOY_GATE=""
-COMPOSE_FILES=("docker-compose.prod.yml" "docker-compose.ssl.yml")
+COMPOSE_FILES=("docker-compose.prod.yml" "docker-compose.ssl.yml" "docker-compose.monitoring.yml")
+COMPOSE_PROFILES=("monitoring")
 RUNTIME_IMAGE_VARS=("BACKEND_IMAGE" "BROWSER_SERVICE_IMAGE" "TELEGRAM_BOT_IMAGE" "AI_IMAGE")
 
 usage() {
@@ -18,6 +19,7 @@ Options:
   --sha SHA                Commit SHA to deploy (required).
   --env-file NAME          Shared env file name inside releases (default: .env.production).
   --compose-file FILE      Compose file to pass to docker compose. Repeatable.
+  --compose-profile NAME   Compose profile to enable. Repeatable.
   --origin-url URL         Optional git origin for first-time repo cache bootstrap.
   --post-deploy-gate PATH  Optional post-deploy gate script to run from the live symlink path.
   --help                   Show this help text.
@@ -113,6 +115,7 @@ run_with_heartbeat() {
 
 parse_args() {
   local compose_files_set=0
+  local compose_profiles_set=0
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -138,6 +141,15 @@ parse_args() {
           compose_files_set=1
         fi
         COMPOSE_FILES+=("$2")
+        shift 2
+        ;;
+      --compose-profile)
+        [[ $# -ge 2 ]] || die "--compose-profile requires a value"
+        if [[ "$compose_profiles_set" -eq 0 ]]; then
+          COMPOSE_PROFILES=()
+          compose_profiles_set=1
+        fi
+        COMPOSE_PROFILES+=("$2")
         shift 2
         ;;
       --origin-url)
@@ -281,15 +293,20 @@ link_shared_state() {
 
   cat > "${RELEASE_DIR}/.env" <<EOF
 COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
+COMPOSE_PROFILES=$(IFS=,; printf '%s' "${COMPOSE_PROFILES[*]}")
 EOF
 }
 
 compose_release() {
   local compose_args=()
   local compose_file
+  local compose_profile
 
   for compose_file in "${COMPOSE_FILES[@]}"; do
     compose_args+=(-f "$compose_file")
+  done
+  for compose_profile in "${COMPOSE_PROFILES[@]}"; do
+    compose_args+=(--profile "$compose_profile")
   done
 
   log "validating env and starting compose for ${DEPLOY_SHA}"

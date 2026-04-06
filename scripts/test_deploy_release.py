@@ -9,6 +9,15 @@ DEPLOY_SCRIPT = ROOT_DIR / "scripts" / "deploy_release.sh"
 
 
 class DeployReleaseScriptTest(unittest.TestCase):
+    def test_release_defaults_include_monitoring_compose_and_profile(self) -> None:
+        script_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn(
+            'COMPOSE_FILES=("docker-compose.prod.yml" "docker-compose.ssl.yml" "docker-compose.monitoring.yml")',
+            script_text,
+        )
+        self.assertIn('COMPOSE_PROFILES=("monitoring")', script_text)
+
     def test_compose_commands_use_stable_project_name(self) -> None:
         script_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
 
@@ -16,6 +25,16 @@ class DeployReleaseScriptTest(unittest.TestCase):
             'docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE"',
             script_text,
         )
+
+    def test_release_env_persists_compose_profiles(self) -> None:
+        script_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('COMPOSE_PROFILES=$(IFS=,; printf \'%s\' "${COMPOSE_PROFILES[*]}")', script_text)
+
+    def test_compose_commands_enable_profiles(self) -> None:
+        script_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('compose_args+=(--profile "$compose_profile")', script_text)
 
     def test_project_name_is_normalized_to_lowercase(self) -> None:
         script_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
