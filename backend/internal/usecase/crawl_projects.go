@@ -11,15 +11,16 @@ import (
 
 // CrawlProjects — use case: fetch list → details → save → stage deferred enqueue.
 type CrawlProjects struct {
-	fetcher   port.Fetcher
-	extractor port.Extractor
-	repo      port.JobRepository
-	stager    port.JobEmbedDispatchRepository
+	fetcher        port.Fetcher
+	extractor      port.Extractor
+	repo           port.JobRepository
+	stager         port.JobEmbedDispatchRepository
+	findSimilarJob FindSimilarJob // optional: cross-platform dedup
 }
 
-type existingDetailFetchPolicy interface {
-	FetchExistingDetails() bool
-}
+// FindSimilarJob checks for a cross-platform duplicate of the given job.
+// Returns (canonicalJobID, similarity) if found, or (0, 0) if unique.
+type FindSimilarJob func(ctx context.Context, title, description, budget, excludeSource string) (int64, float64, error)
 
 // NewCrawlProjects создаёт use case.
 func NewCrawlProjects(
@@ -35,6 +36,16 @@ func NewCrawlProjects(
 		repo:      repo,
 		stager:    stager,
 	}
+}
+
+// WithCrossPlatformDedup sets a function to detect duplicate jobs across sources.
+func (u *CrawlProjects) WithCrossPlatformDedup(fn FindSimilarJob) *CrawlProjects {
+	u.findSimilarJob = fn
+	return u
+}
+
+type existingDetailFetchPolicy interface {
+	FetchExistingDetails() bool
 }
 
 // Execute выполняет обход: загружает список, для каждого URL — детали, сохраняет.
@@ -109,6 +120,33 @@ func (u *CrawlProjects) Execute(ctx context.Context, listURL string) (saved int,
 			slog.Warn("crawl: extract detail failed", "url", detailURL, "err", err)
 			continue
 		}
+
+		// Schema validation: reject invalid jobs before they hit the database
+		if validationErr := ValidateJob(job); len(validationErr) > 0 {
+			slog.Warn("crawl: job validation failed", "url", detailURL, "errors", validationErr)
+			continue
+		}
+
+		// Cross-platform deduplication: check if similar job exists from another source
+		if u.findSimilarJob != nil {
+			dupID, similarity, dupErr := u.findSimilarJob(ctx, job.Title, job.Description, job.Budget, job.Source)
+			if dupErr != nil {
+				slog.Warn("crawl: duplicate check failed", "url", detailURL, "err", dupErr)
+			} else if dupID > 0 {
+				slog.Info("crawl: cross-platform duplicate detected, skipping",
+					"url", detailURL,
+					"canonical_id", dupID,
+					"similarity", similarity,
+					"source", job.Source,
+				)
+				// Update last_seen_at on the canonical job
+				if touchErr := u.repo.TouchSeenAtByID(ctx, dupID); touchErr != nil {
+					slog.Warn("crawl: touch canonical seen_at failed", "id", dupID, "err", touchErr)
+				}
+				continue
+			}
+		}
+
 		if u.stager == nil {
 			slog.Error("crawl: job dispatch stager is not configured", "url", detailURL)
 			continue

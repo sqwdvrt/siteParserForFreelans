@@ -14,6 +14,9 @@ type JobRepository interface {
 	// TouchSeenAt обновляет last_seen_at = NOW() для job по URL.
 	// Вызывается краулером при каждом обходе, даже если job уже существует.
 	TouchSeenAt(ctx context.Context, url string) error
+	// TouchSeenAtByID обновляет last_seen_at = NOW() для job по ID.
+	// Используется при кросс-платформенной дедупликации.
+	TouchSeenAtByID(ctx context.Context, id int64) error
 	// ExpireStaleJobs помечает активные jobs как 'expired' если last_seen_at
 	// старше olderThanDays дней. Возвращает ID обновлённых jobs.
 	ExpireStaleJobs(ctx context.Context, olderThanDays int) ([]int64, error)

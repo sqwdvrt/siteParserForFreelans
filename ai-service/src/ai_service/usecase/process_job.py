@@ -217,6 +217,9 @@ class ProcessJobUseCase:
                     else:
                         logger.info("job_id=%s: no users passed preference pre-filter", job_id)
                     return True
+
+            # ANN-first approach: HNSW retrieves candidates, SQL filters the rest
+            # The match_repository now handles paused_until filtering internally
             candidates = self._match_repo.find_users_for_job(
                 embedding,
                 job_id,

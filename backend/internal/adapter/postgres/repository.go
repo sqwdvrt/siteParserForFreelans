@@ -104,6 +104,12 @@ func (r *JobRepository) TouchSeenAt(ctx context.Context, url string) error {
 	return err
 }
 
+func (r *JobRepository) TouchSeenAtByID(ctx context.Context, id int64) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE jobs SET last_seen_at = NOW() WHERE id = $1 AND status = 'active'`, id)
+	return err
+}
+
 // ExpireStaleJobs помечает активные jobs как 'expired' если last_seen_at старше olderThanDays дней.
 func (r *JobRepository) ExpireStaleJobs(ctx context.Context, olderThanDays int) ([]int64, error) {
 	rows, err := r.pool.Query(ctx, `

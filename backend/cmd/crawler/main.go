@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	stdhttp "net/http"
@@ -43,6 +42,7 @@ const (
 	crawlerRunLockReleaseTimeout  = 5 * time.Second
 	crawlerRunLockAcquireTimeout  = 5 * time.Second
 	crawlerRunLockTTLExtraPadding = time.Minute
+	cronEnvPrefix                 = "CRAWL_CRON_"
 )
 
 type crawlerRunLease interface {
@@ -306,6 +306,12 @@ func main() {
 	})
 	repo := postgres.NewJobRepository(pool)
 
+	// Cross-platform deduplication repository
+	dedupRepo := postgres.NewJobDedupRepository(pool)
+	findSimilar := func(ctx context.Context, title, description, budget, excludeSource string) (int64, float64, error) {
+		return dedupRepo.FindSimilarJob(ctx, title, description, budget, excludeSource)
+	}
+
 	// BROWSER_SERVICE_URL — адрес Browser Render Service (browser-service).
 	// Если задан, Kwork использует headless-браузер для рендера JS-страниц.
 	// Если не задан — используется обычный HTTP-фетчер (без JS-рендера).
@@ -337,28 +343,28 @@ func main() {
 		sources = append(sources, crawlSource{
 			name:    "kwork",
 			listURL: kworkListURL,
-			crawl:   usecase.NewCrawlProjects(kworkFetcher, kwork.NewExtractor(), repo, dispatchRepo),
+			crawl:   usecase.NewCrawlProjects(kworkFetcher, kwork.NewExtractor(), repo, dispatchRepo).WithCrossPlatformDedup(findSimilar),
 		})
 	}
 	if enabledSources["flru"] {
 		sources = append(sources, crawlSource{
 			name:    "flru",
 			listURL: flruListURL,
-			crawl:   usecase.NewCrawlProjects(fetcher, flru.NewExtractor(), repo, dispatchRepo),
+			crawl:   usecase.NewCrawlProjects(fetcher, flru.NewExtractor(), repo, dispatchRepo).WithCrossPlatformDedup(findSimilar),
 		})
 	}
 	if enabledSources["freelancehunt"] {
 		sources = append(sources, crawlSource{
 			name:    "freelancehunt",
 			listURL: freelancehuntListURL,
-			crawl:   usecase.NewCrawlProjects(fetcher, freelancehunt.NewExtractor(), repo, dispatchRepo),
+			crawl:   usecase.NewCrawlProjects(fetcher, freelancehunt.NewExtractor(), repo, dispatchRepo).WithCrossPlatformDedup(findSimilar),
 		})
 	}
 	if enabledSources["weblancer"] {
 		sources = append(sources, crawlSource{
 			name:    "weblancer",
 			listURL: weblancerListURL,
-			crawl:   usecase.NewCrawlProjects(fetcher, weblancer.NewExtractor(), repo, dispatchRepo),
+			crawl:   usecase.NewCrawlProjects(fetcher, weblancer.NewExtractor(), repo, dispatchRepo).WithCrossPlatformDedup(findSimilar),
 		})
 	}
 	if enabledSources["tgchannel"] {
@@ -370,7 +376,7 @@ func main() {
 			sources = append(sources, crawlSource{
 				name:    "tgchannel:" + username,
 				listURL: "https://t.me/s/" + username,
-				crawl:   usecase.NewCrawlProjects(fetcher, tgchannel.NewExtractor(username), repo, dispatchRepo),
+				crawl:   usecase.NewCrawlProjects(fetcher, tgchannel.NewExtractor(username), repo, dispatchRepo).WithCrossPlatformDedup(findSimilar),
 			})
 		}
 	}
@@ -415,87 +421,74 @@ func main() {
 		_ = healthSrv.Shutdown(shutdownCtx)
 	}()
 
-	runCrawl := func() {
-		startedAt := time.Now()
-		defer observeCrawlerQueueDepth(rdb, crawlerMetrics, queueName)
-		traceID := observability.NewTraceID()
-		crawlCtx := observability.WithTraceID(ctx, traceID)
-		crawlCtx, span := otel.Tracer("site-parser-crawler").Start(crawlCtx, "crawl.run")
-		defer span.End()
-		crawlCtx, cancelCrawl := context.WithTimeout(crawlCtx, crawlRunTimeout)
-		defer cancelCrawl()
-
-		totalSaved := 0
-		hadFailures := false
-		for _, src := range sources {
-			if crawlCtx.Err() != nil {
-				break
-			}
-			slog.Info("crawl run started", "source", src.name, "url", src.listURL, "trace_id", traceID)
-			saved, crawlErr := src.crawl.Execute(crawlCtx, src.listURL)
-			if crawlErr != nil {
-				if errors.Is(crawlCtx.Err(), context.Canceled) {
-					observeCrawlerRunOutcome(crawlerMetrics, crawlRunSummary{
-						totalSaved:     totalSaved,
-						wasInterrupted: true,
-					}, time.Since(startedAt))
-					slog.Info("crawl interrupted by shutdown", "source", src.name)
-					return
-				}
-				if errors.Is(crawlCtx.Err(), context.DeadlineExceeded) {
-					observeCrawlerRunOutcome(crawlerMetrics, crawlRunSummary{
-						totalSaved:  totalSaved,
-						hadFailures: true,
-					}, time.Since(startedAt))
-					slog.Error("crawl timed out", "source", src.name, "timeout", crawlRunTimeout, "trace_id", traceID)
-					return
-				}
-				hadFailures = true
-				slog.Error("crawl failed", "source", src.name, "err", crawlErr, "trace_id", traceID)
-				continue
-			}
-			slog.Info("crawl source done", "source", src.name, "saved", saved, "trace_id", traceID)
-			totalSaved += saved
-		}
-		observeCrawlerRunOutcome(crawlerMetrics, crawlRunSummary{
-			totalSaved:  totalSaved,
-			hadFailures: hadFailures,
-		}, time.Since(startedAt))
-		slog.Info("CrawlOnce done", "total_saved", totalSaved, "sources", len(sources), "trace_id", traceID)
-
-		// Re-enqueue any jobs that were saved but never reached the ai-process queue
-		// (e.g. due to a Redis blip during a previous crawl run).
-		if requeued, requeueErr := sources[0].crawl.RequeueOrphaned(crawlCtx, 50); requeueErr != nil {
-			slog.Warn("crawl: orphan requeue scan failed", "err", requeueErr)
-		} else if requeued > 0 {
-			slog.Info("crawl: orphaned jobs requeued", "count", requeued, "trace_id", traceID)
-		}
-		if flushed, flushErr := jobEmbedDispatcher.Flush(crawlCtx, 500); flushErr != nil {
-			slog.Warn("crawl: pending job dispatch flush failed", "err", flushErr, "trace_id", traceID)
-		} else if flushed > 0 {
-			slog.Info("crawl: pending jobs dispatched", "count", flushed, "trace_id", traceID)
-		}
-	}
-
-	serializedRunCrawl := newCrawlerRunJob(
-		crawlRunLock,
-		defaultCrawlerRunLockKey,
-		crawlRunTimeout+crawlerRunLockTTLExtraPadding,
-		runCrawl,
-	)
-
+	// Build per-source cron schedules.
+	// Each source gets its own cron expression via CRAWL_CRON_<SOURCE> env var.
+	// Falls back to the global CRAWL_CRON if not set.
 	c := cron.New()
-	_, err = c.AddFunc(cronSpec, serializedRunCrawl)
-	if err != nil {
-		slog.Error("cron add func", "spec", cronSpec, "err", err)
-		os.Exit(1)
+	for _, src := range sources {
+		src := src // capture for closure
+		lockKey := "crawler:run:leader:" + src.name
+
+		// Per-source cron env: CRAWL_CRON_KWORK, CRAWL_CRON_FLRU, etc.
+		srcCronSpec := os.Getenv(cronEnvPrefix + strings.ToUpper(strings.ReplaceAll(src.name, ":", "_")))
+		if srcCronSpec == "" {
+			srcCronSpec = cronSpec // fallback to global cron
+		}
+
+		// Single-source crawl function
+		runSingleSource := func() {
+			startedAt := time.Now()
+			defer observeCrawlerQueueDepth(rdb, crawlerMetrics, queueName)
+			traceID := observability.NewTraceID()
+			srcCtx := observability.WithTraceID(ctx, traceID)
+			srcCtx, span := otel.Tracer("site-parser-crawler").Start(srcCtx, "crawl.run")
+			defer span.End()
+			srcCtx, cancelCrawl := context.WithTimeout(srcCtx, crawlRunTimeout)
+			defer cancelCrawl()
+
+			slog.Info("crawl run started", "source", src.name, "url", src.listURL, "trace_id", traceID)
+			saved, crawlErr := src.crawl.Execute(srcCtx, src.listURL)
+			hadFailures := crawlErr != nil
+
+			observeCrawlerRunOutcome(crawlerMetrics, crawlRunSummary{
+				totalSaved:  saved,
+				hadFailures: hadFailures,
+			}, time.Since(startedAt))
+			slog.Info("crawl source done", "source", src.name, "saved", saved, "trace_id", traceID)
+
+			// Re-enqueue orphans and flush pending embeds
+			if requeued, requeueErr := src.crawl.RequeueOrphaned(srcCtx, 50); requeueErr != nil {
+				slog.Warn("crawl: orphan requeue scan failed", "source", src.name, "err", requeueErr)
+			} else if requeued > 0 {
+				slog.Info("crawl: orphaned jobs requeued", "source", src.name, "count", requeued, "trace_id", traceID)
+			}
+			if flushed, flushErr := jobEmbedDispatcher.Flush(srcCtx, 500); flushErr != nil {
+				slog.Warn("crawl: pending job dispatch flush failed", "source", src.name, "err", flushErr, "trace_id", traceID)
+			} else if flushed > 0 {
+				slog.Info("crawl: pending jobs dispatched", "source", src.name, "count", flushed, "trace_id", traceID)
+			}
+		}
+
+		serializedRun := newCrawlerRunJob(
+			crawlRunLock,
+			lockKey,
+			crawlRunTimeout+crawlerRunLockTTLExtraPadding,
+			runSingleSource,
+		)
+
+		_, err = c.AddFunc(srcCronSpec, serializedRun)
+		if err != nil {
+			slog.Error("cron add func failed", "source", src.name, "spec", srcCronSpec, "err", err)
+			os.Exit(1)
+		}
+		slog.Info("per-source cron registered", "source", src.name, "cron", srcCronSpec, "lock_key", lockKey)
+
+		// First run for each source immediately
+		serializedRun()
 	}
 	c.Start()
 
-	// Первый запуск сразу
-	serializedRunCrawl()
-
-	slog.Info("crawler started", "cron", cronSpec)
+	slog.Info("crawler started with per-source cron schedules")
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	<-sigCh

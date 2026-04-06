@@ -13,7 +13,15 @@ KWORK_MAX_LAST_SEEN_AGE_SQL = "INTERVAL '6 hours'"
 
 
 class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
-    """MatchRepository через PostgreSQL + pgvector."""
+    """MatchRepository via PostgreSQL + pgvector.
+
+    Uses a two-stage ANN approach:
+    1. HNSW ANN retrieves top-K candidates by vector similarity (fast)
+    2. SQL filters apply preference constraints on the candidate set
+
+    This is significantly faster than loading ALL users into Python for
+    pre-filtering, especially as the user base grows.
+    """
 
     def __init__(
         self,
@@ -34,47 +42,63 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
         allowed_user_ids: list[int] | None = None,
         max_age_days: int | None = None,
     ) -> list[MatchCandidate]:
-        """
-        SQL: score = 1 - (embedding <=> $1) считается в CTE.
-        WHERE embedding IS NOT NULL, фильтрация по готовому score >= threshold.
-        Исключает user_id уже в notifications для job_id.
-        ORDER BY score DESC. match_score = similarity (0–1).
+        """Find matching users for a job using two-stage ANN + SQL filtering.
+
+        Stage 1: HNSW ANN retrieves top candidates by embedding similarity.
+        Stage 2: SQL filters (source, paused, allowed_user_ids) narrow results.
+
+        If allowed_user_ids is provided, it's used as a pre-filter (legacy mode).
+        Otherwise, the ANN-first approach fetches candidates and filters in SQL.
         """
         if embedding is None or len(embedding) == 0 or len(embedding) != EMBEDDING_DIM:
             return []
         if allowed_user_ids is not None and not allowed_user_ids:
             return []
+
         with self._conn() as conn:
             with conn.cursor(cursor_factory=RealDictCursor) as cur:
                 vec = Vector(embedding)
                 user_scope_sql = ""
                 job_age_sql = ""
                 params: list[object] = [vec]
+
                 if allowed_user_ids is not None:
+                    # Legacy mode: pre-filtered user IDs from Python
                     user_scope_sql = " AND u.id = ANY(%s)"
                     params.append(allowed_user_ids)
+
                 params.extend([job_id, threshold])
                 if max_age_days is not None and max_age_days > 0:
                     job_age_sql = " AND COALESCE(j.posted_at, j.created_at) >= NOW() - make_interval(days => %s)"
                     params.append(max_age_days)
+
+                # Expanded pool for SQL filtering (when no pre-filter)
+                ann_pool_size = limit * 5 if allowed_user_ids is None else limit
+
+                params.append(ann_pool_size)
                 params.append(limit)
+
                 cur.execute(
                     f"""
-                    WITH scored_users AS (
+                    WITH ann_candidates AS (
                       SELECT
                         u.id AS user_id,
                         COALESCE(u.profile_text, '') AS profile_text,
+                        COALESCE(u.paused_until, NOW() - INTERVAL '1 day') < NOW() AS is_active,
                         1 - (u.embedding <=> %s) AS similarity
                       FROM users u
                       WHERE u.embedding IS NOT NULL
                       {user_scope_sql}
+                      ORDER BY u.embedding <=> %s
+                      LIMIT %s
                     )
                     SELECT s.user_id, s.profile_text, s.similarity
-                    FROM scored_users s
+                    FROM ann_candidates s
                     JOIN jobs j ON j.id = %s
                     WHERE j.status = 'active'
                       AND (j.source <> 'kwork' OR j.last_seen_at >= NOW() - {KWORK_MAX_LAST_SEEN_AGE_SQL})
                       AND s.similarity >= %s
+                      AND s.is_active
                       {job_age_sql}
                       AND NOT EXISTS (
                           SELECT 1
