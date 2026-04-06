@@ -8,7 +8,7 @@ datasources:
     user: ${POSTGRES_USER}
     database: ${POSTGRES_DB}
     secureJsonData:
-      password: ${GRAFANA_POSTGRES_PASSWORD}
+      password: ${POSTGRES_PASSWORD}
     jsonData:
       sslmode: ${GRAFANA_POSTGRES_SSLMODE}
       postgresVersion: 1600
