@@ -225,8 +225,8 @@ def test_post_feedback_signs_with_telegram_id_not_user_id(bot, monkeypatch):
     """post_feedback должен подписывать запрос с telegram_id, а не user_id."""
     captured = {}
 
-    def fake_http_post(url, data, headers=None):
-        captured["headers"] = headers or {}
+    def fake_http_post(url, data, headers=None, *, make_headers=None):
+        captured["headers"] = make_headers() if make_headers is not None else (headers or {})
         return (204, None)
 
     monkeypatch.setattr(bot, "_http_post", fake_http_post)
@@ -250,7 +250,7 @@ def test_post_feedback_url_contains_user_id(bot, monkeypatch):
     """URL запроса должен содержать user_id (database ID), не telegram_id."""
     captured = {}
 
-    def fake_http_post(url, data, headers=None):
+    def fake_http_post(url, data, headers=None, *, make_headers=None):
         captured["url"] = url
         return (204, None)
 

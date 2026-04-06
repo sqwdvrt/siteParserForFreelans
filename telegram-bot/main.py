@@ -860,15 +860,26 @@ def _json_body(data: dict) -> bytes:
     return json.dumps(data, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
 
 
-def _http_post(url: str, data: dict, headers: dict[str, str] | None = None) -> tuple[int, dict | None]:
-    """POST JSON. Возвращает (status_code, json_body или None)."""
-    body = _json_body(data)
-    req = urllib.request.Request(url, data=body, method="POST")
-    req.add_header("Content-Type", "application/json")
-    for k, v in (headers or {}).items():
-        req.add_header(k, v)
+def _http_post(
+    url: str,
+    data: dict,
+    headers: dict[str, str] | None = None,
+    *,
+    make_headers: Callable[[], dict[str, str]] | None = None,
+) -> tuple[int, dict | None]:
+    """POST JSON. Возвращает (status_code, json_body или None).
+
+    make_headers: если передан, вызывается на каждой попытке — нужно для
+    HMAC-подписанных запросов, чтобы генерировать свежий nonce при retry.
+    """
     _validate_outbound_url(url)
     for attempt in range(API_RETRY_ATTEMPTS):
+        effective_headers = make_headers() if make_headers is not None else headers
+        body = _json_body(data)
+        req = urllib.request.Request(url, data=body, method="POST")
+        req.add_header("Content-Type", "application/json")
+        for k, v in (effective_headers or {}).items():
+            req.add_header(k, v)
         try:
             with _safe_open(req, timeout=10) as r:
                 _observe_http_request("POST", url, r.status)
@@ -910,15 +921,22 @@ def _http_post(url: str, data: dict, headers: dict[str, str] | None = None) -> t
     return 0, None
 
 
-def _http_put(url: str, data: dict, headers: dict[str, str] | None = None) -> int:
+def _http_put(
+    url: str,
+    data: dict,
+    headers: dict[str, str] | None = None,
+    *,
+    make_headers: Callable[[], dict[str, str]] | None = None,
+) -> int:
     """PUT JSON. Возвращает status_code."""
-    body = _json_body(data)
-    req = urllib.request.Request(url, data=body, method="PUT")
-    req.add_header("Content-Type", "application/json")
-    for k, v in (headers or {}).items():
-        req.add_header(k, v)
     _validate_outbound_url(url)
     for attempt in range(API_RETRY_ATTEMPTS):
+        effective_headers = make_headers() if make_headers is not None else headers
+        body = _json_body(data)
+        req = urllib.request.Request(url, data=body, method="PUT")
+        req.add_header("Content-Type", "application/json")
+        for k, v in (effective_headers or {}).items():
+            req.add_header(k, v)
         try:
             with _safe_open(req, timeout=10) as r:
                 _observe_http_request("PUT", url, r.status)
@@ -1011,11 +1029,12 @@ def post_users(api_url: str, telegram_id: int, api_auth_token: str, api_user_hma
     """POST /users → user_id. None при ошибке."""
     url = f"{api_url.rstrip('/')}/users"
     payload = {"telegram_id": telegram_id}
-    body = _json_body(payload)
     status, data = _http_post(
         url,
         payload,
-        headers=_signed_user_headers(api_auth_token, api_user_hmac_secret, "POST", url, telegram_id, body),
+        make_headers=lambda: _signed_user_headers(
+            api_auth_token, api_user_hmac_secret, "POST", url, telegram_id, _json_body(payload)
+        ),
     )
     if status != 200 or data is None:
         err = "API не отвечает" if status == 0 else f"HTTP {status}"
@@ -1054,11 +1073,12 @@ def put_user_profile_status(
     """PUT /users/:id/profile. Returns status code (204 on success)."""
     url = f"{api_url.rstrip('/')}/users/{user_id}/profile"
     payload = {"profile_text": profile_text}
-    body = _json_body(payload)
     status = _http_put(
         url,
         payload,
-        headers=_signed_user_headers(api_auth_token, api_user_hmac_secret, "PUT", url, telegram_id, body),
+        make_headers=lambda: _signed_user_headers(
+            api_auth_token, api_user_hmac_secret, "PUT", url, telegram_id, _json_body(payload)
+        ),
     )
     if status != 204:
         logger.warning("PUT /users/:id/profile failed: status=%s", status)
@@ -1076,11 +1096,12 @@ def put_user_notify_hour(
     """PUT /users/:id/notify-hour. Возвращает status_code (204 — успех, 403 — не Pro)."""
     url = f"{api_url.rstrip('/')}/users/{user_id}/notify-hour"
     payload = {"hour": hour}
-    body = _json_body(payload)
     return _http_put(
         url,
         payload,
-        headers=_signed_user_headers(api_auth_token, api_user_hmac_secret, "PUT", url, telegram_id, body),
+        make_headers=lambda: _signed_user_headers(
+            api_auth_token, api_user_hmac_secret, "PUT", url, telegram_id, _json_body(payload)
+        ),
     )
 
 
@@ -1677,11 +1698,12 @@ def post_feedback(
     """POST /users/{user_id}/feedback — record 👍/👎 for a job."""
     url = f"{api_url.rstrip('/')}/users/{user_id}/feedback"
     payload = {"job_id": job_id, "feedback": feedback}
-    body = _json_body(payload)
     status, _ = _http_post(
         url,
         payload,
-        headers=_signed_user_headers(api_auth_token, api_user_hmac_secret, "POST", url, telegram_id, body),
+        make_headers=lambda: _signed_user_headers(
+            api_auth_token, api_user_hmac_secret, "POST", url, telegram_id, _json_body(payload)
+        ),
     )
     if status not in (200, 204):
         logger.warning("POST /users/:id/feedback failed: status=%s", status)
