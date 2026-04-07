@@ -629,3 +629,228 @@ groups:
           description: >
             {{ $value | humanizePercentage }} of requests exceeded 500ms (30-min window).
             Burning latency budget at monthly rate; ~10% consumed in ~3 days.
+
+  # ---------------------------------------------------------------------------
+  # SLO burn-rate alerts for Crawler/Notifier/AI services
+  #
+  # Crawler SLO: 99% success rate (error budget = 1%)
+  # Notifier SLO: 99% success rate (error budget = 1%)
+  # AI SLO: 95% success rate without fallback (error budget = 5%)
+  # ---------------------------------------------------------------------------
+  - name: siteparser-crawler-slo-burn-rate
+    rules:
+      # page: 14.4× burn — critical
+      - alert: SiteParserCrawlerBurnRateCritical
+        expr: |
+          siteparser:crawler_error_ratio:rate1m > (14.4 * 0.01)
+          and
+          siteparser:crawler_error_ratio:rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: critical
+          service: backend-crawler
+          slo: availability
+        annotations:
+          summary: "Crawler error SLO — critical burn rate (14.4×)"
+          description: >
+            Crawler error rate is burning through the monthly 1% budget at 14.4× speed
+            (short window: {{ $value | humanizePercentage }}).
+            At this rate ~2% of the 30-day budget will be exhausted in 1 hour.
+
+      # ticket: 6× burn — warning
+      - alert: SiteParserCrawlerBurnRateHigh
+        expr: |
+          siteparser:crawler_error_ratio:rate5m > (6 * 0.01)
+          and
+          siteparser:crawler_error_ratio:rate30m > (6 * 0.01)
+        for: 10m
+        labels:
+          severity: warning
+          service: backend-crawler
+          slo: availability
+        annotations:
+          summary: "Crawler error SLO — high burn rate (6×)"
+          description: >
+            Crawler error rate is burning through the monthly 1% budget at 6× speed
+            (5-min window: {{ $value | humanizePercentage }}).
+            At this rate ~5% of the 30-day budget will be exhausted in 6 hours.
+
+      # slow-burn: 1× burn — warning
+      - alert: SiteParserCrawlerBurnRateSlow
+        expr: |
+          siteparser:crawler_error_ratio:rate30m > (1 * 0.01)
+          and
+          siteparser:crawler_error_ratio:rate6h > (1 * 0.01)
+        for: 1h
+        labels:
+          severity: warning
+          service: backend-crawler
+          slo: availability
+        annotations:
+          summary: "Crawler error SLO — slow burn (1×)"
+          description: >
+            Crawler error rate equals the monthly SLO budget rate
+            (30-min window: {{ $value | humanizePercentage }}).
+            At this rate ~10% of the 30-day budget will be exhausted in 3 days.
+
+  - name: siteparser-notifier-slo-burn-rate
+    rules:
+      # page: 14.4× burn — critical
+      - alert: SiteParserNotifierBurnRateCritical
+        expr: |
+          siteparser:notifier_error_ratio:rate1m > (14.4 * 0.01)
+          and
+          siteparser:notifier_error_ratio:rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: critical
+          service: backend-notifier
+          slo: availability
+        annotations:
+          summary: "Notifier error SLO — critical burn rate (14.4×)"
+          description: >
+            Notifier error rate is burning through the monthly 1% budget at 14.4× speed
+            (short window: {{ $value | humanizePercentage }}).
+            At this rate ~2% of the 30-day budget will be exhausted in 1 hour.
+
+      # ticket: 6× burn — warning
+      - alert: SiteParserNotifierBurnRateHigh
+        expr: |
+          siteparser:notifier_error_ratio:rate5m > (6 * 0.01)
+          and
+          siteparser:notifier_error_ratio:rate30m > (6 * 0.01)
+        for: 10m
+        labels:
+          severity: warning
+          service: backend-notifier
+          slo: availability
+        annotations:
+          summary: "Notifier error SLO — high burn rate (6×)"
+          description: >
+            Notifier error rate is burning through the monthly 1% budget at 6× speed
+            (5-min window: {{ $value | humanizePercentage }}).
+            At this rate ~5% of the 30-day budget will be exhausted in 6 hours.
+
+      # slow-burn: 1× burn — warning
+      - alert: SiteParserNotifierBurnRateSlow
+        expr: |
+          siteparser:notifier_error_ratio:rate30m > (1 * 0.01)
+          and
+          siteparser:notifier_error_ratio:rate6h > (1 * 0.01)
+        for: 1h
+        labels:
+          severity: warning
+          service: backend-notifier
+          slo: availability
+        annotations:
+          summary: "Notifier error SLO — slow burn (1×)"
+          description: >
+            Notifier error rate equals the monthly SLO budget rate
+            (30-min window: {{ $value | humanizePercentage }}).
+            At this rate ~10% of the 30-day budget will be exhausted in 3 days.
+
+  - name: siteparser-ai-slo-burn-rate
+    rules:
+      # AI classifier fallback SLO: 95% success without fallback (budget = 5%)
+      # page: 14.4× burn → bad ratio > 72%
+      - alert: SiteParserAiClassifierBurnRateCritical
+        expr: |
+          siteparser:ai_classifier_fallback_ratio:rate1m > (14.4 * 0.05)
+          and
+          siteparser:ai_classifier_fallback_ratio:rate5m > (14.4 * 0.05)
+        for: 2m
+        labels:
+          severity: critical
+          service: ai-service
+          slo: classifier_quality
+        annotations:
+          summary: "AI classifier fallback SLO — critical burn rate (14.4×)"
+          description: >
+            {{ $value | humanizePercentage }} of classifier calls fell back to alternative (1-min window).
+            Burning fallback budget at 14.4×; ~2% of the 30-day budget consumed in ~1 hour.
+
+      # ticket: 6× burn → bad ratio > 30%
+      - alert: SiteParserAiClassifierBurnRateHigh
+        expr: |
+          siteparser:ai_classifier_fallback_ratio:rate5m > (6 * 0.05)
+          and
+          siteparser:ai_classifier_fallback_ratio:rate30m > (6 * 0.05)
+        for: 10m
+        labels:
+          severity: warning
+          service: ai-service
+          slo: classifier_quality
+        annotations:
+          summary: "AI classifier fallback SLO — high burn rate (6×)"
+          description: >
+            {{ $value | humanizePercentage }} of classifier calls fell back to alternative (5-min window).
+            Burning fallback budget at 6×; ~5% of the 30-day budget consumed in ~6 hours.
+
+      # slow-burn: 1× burn → bad ratio > 5%
+      - alert: SiteParserAiClassifierBurnRateSlow
+        expr: |
+          siteparser:ai_classifier_fallback_ratio:rate30m > (1 * 0.05)
+          and
+          siteparser:ai_classifier_fallback_ratio:rate6h > (1 * 0.05)
+        for: 1h
+        labels:
+          severity: warning
+          service: ai-service
+          slo: classifier_quality
+        annotations:
+          summary: "AI classifier fallback SLO — slow burn (1×)"
+          description: >
+            {{ $value | humanizePercentage }} of classifier calls fell back to alternative (30-min window).
+            Burning fallback budget at monthly rate; ~10% consumed in ~3 days.
+
+      # AI actor failure SLO: 95% success rate (budget = 5%)
+      # page: 14.4× burn — critical
+      - alert: SiteParserAiActorBurnRateCritical
+        expr: |
+          siteparser:ai_actor_failure_ratio:rate1m > (14.4 * 0.05)
+          and
+          siteparser:ai_actor_failure_ratio:rate5m > (14.4 * 0.05)
+        for: 2m
+        labels:
+          severity: critical
+          service: ai-ac-consumer
+          slo: actor_quality
+        annotations:
+          summary: "AI actor failure SLO — critical burn rate (14.4×)"
+          description: >
+            {{ $value | humanizePercentage }} of actor LLM calls failed (1-min window).
+            Burning failure budget at 14.4×; ~2% of the 30-day budget consumed in ~1 hour.
+
+      # ticket: 6× burn — warning
+      - alert: SiteParserAiActorBurnRateHigh
+        expr: |
+          siteparser:ai_actor_failure_ratio:rate5m > (6 * 0.05)
+          and
+          siteparser:ai_actor_failure_ratio:rate30m > (6 * 0.05)
+        for: 10m
+        labels:
+          severity: warning
+          service: ai-ac-consumer
+          slo: actor_quality
+        annotations:
+          summary: "AI actor failure SLO — high burn rate (6×)"
+          description: >
+            {{ $value | humanizePercentage }} of actor LLM calls failed (5-min window).
+            Burning failure budget at 6×; ~5% of the 30-day budget consumed in ~6 hours.
+
+      # slow-burn: 1× burn — warning
+      - alert: SiteParserAiActorBurnRateSlow
+        expr: |
+          siteparser:ai_actor_failure_ratio:rate30m > (1 * 0.05)
+          and
+          siteparser:ai_actor_failure_ratio:rate6h > (1 * 0.05)
+        for: 1h
+        labels:
+          severity: warning
+          service: ai-ac-consumer
+          slo: actor_quality
+        annotations:
+          summary: "AI actor failure SLO — slow burn (1×)"
+          description: >
+            {{ $value | humanizePercentage }} of actor LLM calls failed (30-min window).
+            Burning failure budget at monthly rate; ~10% consumed in ~3 days.

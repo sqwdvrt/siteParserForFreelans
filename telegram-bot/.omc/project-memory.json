@@ -70,6 +70,13 @@
       ]
     }
   },
-  "hotPaths": [],
+  "hotPaths": [
+    {
+      "path": "tests/test_api_helpers.py",
+      "accessCount": 4,
+      "lastAccessed": 1775482739248,
+      "type": "directory"
+    }
+  ],
   "userDirectives": []
 }

@@ -3,6 +3,7 @@ Browser Render Service — рендерит JS-страницы через Playw
 
 Эндпоинты:
   GET /healthz          — проверка живости
+  GET /metrics          — Prometheus метрики
   GET /render?url=<url> — возвращает {"html": "...", "url": "..."} с полностью
                           отрендеренным HTML (после networkidle)
 """
@@ -12,15 +13,53 @@ import ipaddress
 import logging
 import os
 import socket
+import time
 from typing import Any
 from urllib.parse import urlparse, urlunparse
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from playwright.async_api import async_playwright, Browser, Playwright, TimeoutError as PWTimeoutError
+from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 log = logging.getLogger(__name__)
+
+# Prometheus метрики
+RENDER_DURATION = Histogram(
+    "browser_service_render_duration_seconds",
+    "Duration of browser render operations",
+    ["status"],  # success, timeout, error
+    buckets=[0.5, 1, 2, 5, 10, 15, 20, 30, 60],
+)
+
+RENDER_REQUESTS = Counter(
+    "browser_service_render_requests_total",
+    "Total number of render requests",
+    ["status"],  # success, timeout, error
+)
+
+ACTIVE_CONNECTIONS = Gauge(
+    "browser_service_active_connections",
+    "Number of active browser connections"
+)
+
+RENDER_ERRORS = Counter(
+    "browser_service_render_errors_total",
+    "Total number of render errors",
+    ["error_type"],  # timeout, validation, internal
+)
+
+BROWSER_UP = Gauge(
+    "browser_service_up",
+    "Whether the browser service is up and ready"
+)
+
+PAGE_RENDERED = Counter(
+    "browser_service_pages_rendered_total",
+    "Total number of pages rendered by domain",
+    ["domain"]
+)
 
 _TIMEOUT_MS = int(os.getenv("BROWSER_TIMEOUT_MS", "60000"))
 # CSS-селектор, появление которого означает что страница готова.
@@ -395,9 +434,11 @@ async def lifespan(_: FastAPI):
         ],
     )
     log.info("browser ready")
+    BROWSER_UP.set(1)
     try:
         yield
     finally:
+        BROWSER_UP.set(0)
         if _browser:
             await _browser.close()
         if _proxy_server:
@@ -408,6 +449,12 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Browser Render Service", version="1.0.0", lifespan=lifespan)
+
+
+@app.get("/metrics")
+async def metrics() -> Response:
+    """Prometheus metrics endpoint"""
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/healthz")
@@ -427,6 +474,9 @@ async def render(url: str = Query(..., description="URL страницы для 
 
     context = None
     page = None
+    start_time = time.time()
+    ACTIVE_CONNECTIONS.inc()
+    
     try:
         with _pinned_host_registry.pin(parsed.hostname or "", resolved_origin_ips):
             context = await _browser.new_context(
@@ -457,17 +507,32 @@ async def render(url: str = Query(..., description="URL страницы для 
             html = await page.content()
             if len(html) > _MAX_BODY:
                 html = html[:_MAX_BODY]
-            log.info("render ok url=%s html_len=%d", url, len(html))
+            
+            duration = time.time() - start_time
+            RENDER_DURATION.labels(status="success").observe(duration)
+            RENDER_REQUESTS.labels(status="success").inc()
+            PAGE_RENDERED.labels(domain=parsed.hostname or "unknown").inc()
+            
+            log.info("render ok url=%s html_len=%d duration=%.2fs", url, len(html), duration)
             return JSONResponse({"html": html, "url": url})
     except HTTPException:
         raise
     except PWTimeoutError as exc:
+        duration = time.time() - start_time
+        RENDER_DURATION.labels(status="timeout").observe(duration)
+        RENDER_REQUESTS.labels(status="timeout").inc()
+        RENDER_ERRORS.labels(error_type="timeout").inc()
         log.warning("render timeout url=%s err=%s", url, exc)
         raise HTTPException(status_code=504, detail=f"render timeout: {exc}") from exc
     except Exception as exc:
+        duration = time.time() - start_time
+        RENDER_DURATION.labels(status="error").observe(duration)
+        RENDER_REQUESTS.labels(status="error").inc()
+        RENDER_ERRORS.labels(error_type="internal").inc()
         log.warning("render failed url=%s err=%s", url, exc)
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     finally:
+        ACTIVE_CONNECTIONS.dec()
         if page is not None:
             await page.close()
         if context is not None:

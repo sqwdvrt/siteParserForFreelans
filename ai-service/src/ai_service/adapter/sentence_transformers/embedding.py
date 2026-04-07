@@ -1,4 +1,7 @@
-"""Adapter: SentenceTransformer для encode(text) -> vector 384."""
+"""Adapter: SentenceTransformer для encode(text) -> vector 384.
+
+Поддерживает A/B тестирование через EMBEDDING_MODEL_PATH env variable.
+"""
 
 import logging
 import os
@@ -13,6 +16,7 @@ DEFAULT_MODEL = "all-MiniLM-L6-v2"
 DEFAULT_BUNDLED_MODELS_DIR = "/opt/models"
 MODELS_DIR_ENV = "EMBEDDING_MODELS_DIR"
 REQUIRE_LOCAL_ENV = "EMBEDDING_REQUIRE_LOCAL"
+MODEL_PATH_ENV = "EMBEDDING_MODEL_PATH"  # Прямой путь к fine-tuned модели
 
 logger = logging.getLogger(__name__)
 
@@ -53,18 +57,31 @@ class SentenceTransformerEmbedding(EmbeddingService):
 
 
 def _resolve_model_source(model_name: str) -> tuple[str, bool]:
-    require_local = os.getenv(REQUIRE_LOCAL_ENV, "0").lower() in {"1", "true", "yes", "on"}
+    # 1. Проверяем EMBEDDING_MODEL_PATH (для A/B теста fine-tuned модели)
+    model_path_override = os.getenv(MODEL_PATH_ENV)
+    if model_path_override:
+        override_path = Path(model_path_override)
+        if override_path.exists():
+            logger.info("Using EMBEDDING_MODEL_PATH override: %s", override_path)
+            return str(override_path), True
+        else:
+            logger.warning("EMBEDDING_MODEL_PATH not found: %s, falling back", model_path_override)
+
+    # 2. Проверяем model_name как прямой путь
     model_path = Path(model_name)
     if model_path.exists():
         logger.info("Using embedding model from path: %s", model_path)
         return str(model_path), True
 
+    # 3. Проверяем bundled models
     models_dir = Path(os.getenv(MODELS_DIR_ENV, DEFAULT_BUNDLED_MODELS_DIR))
     bundled_path = models_dir / model_name
     if bundled_path.exists():
         logger.info("Using bundled embedding model: %s", bundled_path)
         return str(bundled_path), True
 
+    # 4. Требую локальную модель или разрешаю remote download
+    require_local = os.getenv(REQUIRE_LOCAL_ENV, "0").lower() in {"1", "true", "yes", "on"}
     if require_local:
         raise ValueError(
             f"Embedding model '{model_name}' is not available locally. "

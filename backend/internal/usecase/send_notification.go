@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/telemetry"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 )
 
@@ -23,6 +24,7 @@ type SendNotification struct {
 	jobRepo          port.JobRepository
 	notifier         port.Notifier
 	productEventRepo port.ProductEventRepository
+	e2eMetrics       *telemetry.E2ELatencyMetrics
 	rateLimit        time.Duration
 	maxPerDay        int
 }
@@ -60,6 +62,11 @@ func NewSendNotification(
 
 func (u *SendNotification) WithProductEventRepo(repo port.ProductEventRepository) *SendNotification {
 	u.productEventRepo = repo
+	return u
+}
+
+func (u *SendNotification) WithE2ELatencyMetrics(metrics *telemetry.E2ELatencyMetrics) *SendNotification {
+	u.e2eMetrics = metrics
 	return u
 }
 
@@ -183,6 +190,7 @@ func (u *SendNotification) Execute(
 		return nil
 	}
 	u.recordNotificationSent(ctx, userID, job, effectiveFinalScore, rankerVersion, "single", reasonCodes)
+	u.recordE2ELatency(job)
 	slog.Info("notification sent", "user_id", userID, "job_id", jobID)
 	return nil
 }
@@ -363,6 +371,7 @@ func (u *SendNotification) ExecuteBatch(
 				"batch",
 				item.payload.ReasonCodes,
 			)
+			u.recordE2ELatency(item.payload.Job)
 		}
 	}
 	slog.Info("batch notification sent", "user_id", userID, "jobs", len(deliverable))
@@ -466,6 +475,19 @@ func (u *SendNotification) recordNotificationSent(
 	}); err != nil {
 		slog.Warn("send notification: record product event failed", "user_id", userID, "job_id", job.ID, "event_type", port.ProductEventNotificationSent, "err", err)
 	}
+}
+
+func (u *SendNotification) recordE2ELatency(job *domain.Job) {
+	if u.e2eMetrics == nil || job == nil {
+		return
+	}
+
+	// E2E latency: от создания job (crawl) до текущего момента (notification sent)
+	e2eLatency := time.Since(job.CreatedAt)
+	u.e2eMetrics.ObserveE2ELatency(job.Source, e2eLatency)
+
+	// Stage latency: match_to_notify — от создания job до отправки уведомления
+	u.e2eMetrics.ObserveStageLatency(telemetry.StageMatchToNotify, job.Source, e2eLatency)
 }
 
 func (u *SendNotification) applyBatchLimits(

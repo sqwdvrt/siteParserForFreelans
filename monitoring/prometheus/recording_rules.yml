@@ -53,6 +53,159 @@ groups:
           sum(rate(siteparser_notifier_notifications_total{job="backend-notifier",status="sent"}[15m]))
 
   # -------------------------------------------------------------------------
+  # SLO burn-rate recording rules for Crawler/Notifier/AI services
+  #
+  # Crawler SLO (30-day window):
+  #   Availability: 99% success rate (error budget = 1%)
+  # Notifier SLO (30-day window):
+  #   Availability: 99% success rate (error budget = 1%)
+  # AI Service SLO (30-day window):
+  #   Availability: 95% success rate without fallback (error budget = 5%)
+  #
+  # Three burn-rate levels per service:
+  #   page      (critical) : burn ≥ 14.4× — consumes 2% of budget in 1 h
+  #   ticket    (warning)  : burn ≥  6×   — consumes 5% of budget in 6 h
+  #   slow-burn (warning)  : burn ≥  1×   — consumes 10% of budget in 3 d
+  # -------------------------------------------------------------------------
+  - name: siteparser-crawler-slo-recording
+    rules:
+      # Crawler error ratio = failed runs / total runs
+      - record: siteparser:crawler_error_ratio:rate1m
+        expr: |
+          sum(rate(siteparser_crawler_runs_total{job="backend-crawler",status="failed"}[1m]))
+          /
+          clamp_min(sum(rate(siteparser_crawler_runs_total{job="backend-crawler"}[1m])), 0.001)
+
+      - record: siteparser:crawler_error_ratio:rate5m
+        expr: |
+          sum(rate(siteparser_crawler_runs_total{job="backend-crawler",status="failed"}[5m]))
+          /
+          clamp_min(sum(rate(siteparser_crawler_runs_total{job="backend-crawler"}[5m])), 0.001)
+
+      - record: siteparser:crawler_error_ratio:rate30m
+        expr: |
+          sum(rate(siteparser_crawler_runs_total{job="backend-crawler",status="failed"}[30m]))
+          /
+          clamp_min(sum(rate(siteparser_crawler_runs_total{job="backend-crawler"}[30m])), 0.001)
+
+      - record: siteparser:crawler_error_ratio:rate6h
+        expr: |
+          sum(rate(siteparser_crawler_runs_total{job="backend-crawler",status="failed"}[6h]))
+          /
+          clamp_min(sum(rate(siteparser_crawler_runs_total{job="backend-crawler"}[6h])), 0.001)
+
+  - name: siteparser-notifier-slo-recording
+    rules:
+      # Notifier error ratio = failed notifications / total notifications
+      - record: siteparser:notifier_error_ratio:rate1m
+        expr: |
+          sum(rate(siteparser_notifier_notifications_total{job="backend-notifier",status="failed"}[1m]))
+          /
+          clamp_min(sum(rate(siteparser_notifier_notifications_total{job="backend-notifier"}[1m])), 0.001)
+
+      - record: siteparser:notifier_error_ratio:rate5m
+        expr: |
+          sum(rate(siteparser_notifier_notifications_total{job="backend-notifier",status="failed"}[5m]))
+          /
+          clamp_min(sum(rate(siteparser_notifier_notifications_total{job="backend-notifier"}[5m])), 0.001)
+
+      - record: siteparser:notifier_error_ratio:rate30m
+        expr: |
+          sum(rate(siteparser_notifier_notifications_total{job="backend-notifier",status="failed"}[30m]))
+          /
+          clamp_min(sum(rate(siteparser_notifier_notifications_total{job="backend-notifier"}[30m])), 0.001)
+
+      - record: siteparser:notifier_error_ratio:rate6h
+        expr: |
+          sum(rate(siteparser_notifier_notifications_total{job="backend-notifier",status="failed"}[6h]))
+          /
+          clamp_min(sum(rate(siteparser_notifier_notifications_total{job="backend-notifier"}[6h])), 0.001)
+
+  - name: siteparser-ai-slo-recording
+    rules:
+      # AI classifier fallback ratio = fallback calls / total calls
+      - record: siteparser:ai_classifier_fallback_ratio:rate1m
+        expr: |
+          sum(rate(ai_llm_fallback_total{job="ai-service", pipeline="classifier"}[1m]))
+          /
+          clamp_min(
+            sum(rate(ai_llm_primary_total{job="ai-service", pipeline="classifier"}[1m]))
+            +
+            sum(rate(ai_llm_fallback_total{job="ai-service", pipeline="classifier"}[1m])),
+            0.001
+          )
+
+      - record: siteparser:ai_classifier_fallback_ratio:rate5m
+        expr: |
+          sum(rate(ai_llm_fallback_total{job="ai-service", pipeline="classifier"}[5m]))
+          /
+          clamp_min(
+            sum(rate(ai_llm_primary_total{job="ai-service", pipeline="classifier"}[5m]))
+            +
+            sum(rate(ai_llm_fallback_total{job="ai-service", pipeline="classifier"}[5m])),
+            0.001
+          )
+
+      - record: siteparser:ai_classifier_fallback_ratio:rate30m
+        expr: |
+          sum(rate(ai_llm_fallback_total{job="ai-service", pipeline="classifier"}[30m]))
+          /
+          clamp_min(
+            sum(rate(ai_llm_primary_total{job="ai-service", pipeline="classifier"}[30m]))
+            +
+            sum(rate(ai_llm_fallback_total{job="ai-service", pipeline="classifier"}[30m])),
+            0.001
+          )
+
+      - record: siteparser:ai_classifier_fallback_ratio:rate6h
+        expr: |
+          sum(rate(ai_llm_fallback_total{job="ai-service", pipeline="classifier"}[6h]))
+          /
+          clamp_min(
+            sum(rate(ai_llm_primary_total{job="ai-service", pipeline="classifier"}[6h]))
+            +
+            sum(rate(ai_llm_fallback_total{job="ai-service", pipeline="classifier"}[6h])),
+            0.001
+          )
+
+      # AI actor failure ratio = failure outcomes / total primary calls
+      - record: siteparser:ai_actor_failure_ratio:rate1m
+        expr: |
+          sum(rate(ai_llm_primary_total{job="ai-ac-consumer", pipeline="actor", outcome="failure"}[1m]))
+          /
+          clamp_min(
+            sum(rate(ai_llm_primary_total{job="ai-ac-consumer", pipeline="actor"}[1m])),
+            0.001
+          )
+
+      - record: siteparser:ai_actor_failure_ratio:rate5m
+        expr: |
+          sum(rate(ai_llm_primary_total{job="ai-ac-consumer", pipeline="actor", outcome="failure"}[5m]))
+          /
+          clamp_min(
+            sum(rate(ai_llm_primary_total{job="ai-ac-consumer", pipeline="actor"}[5m])),
+            0.001
+          )
+
+      - record: siteparser:ai_actor_failure_ratio:rate30m
+        expr: |
+          sum(rate(ai_llm_primary_total{job="ai-ac-consumer", pipeline="actor", outcome="failure"}[30m]))
+          /
+          clamp_min(
+            sum(rate(ai_llm_primary_total{job="ai-ac-consumer", pipeline="actor"}[30m])),
+            0.001
+          )
+
+      - record: siteparser:ai_actor_failure_ratio:rate6h
+        expr: |
+          sum(rate(ai_llm_primary_total{job="ai-ac-consumer", pipeline="actor", outcome="failure"}[6h]))
+          /
+          clamp_min(
+            sum(rate(ai_llm_primary_total{job="ai-ac-consumer", pipeline="actor"}[6h])),
+            0.001
+          )
+
+  # -------------------------------------------------------------------------
   # Error ratio  — fraction of 5xx responses out of all responses
   # -------------------------------------------------------------------------
   - name: siteparser-slo-error-recording

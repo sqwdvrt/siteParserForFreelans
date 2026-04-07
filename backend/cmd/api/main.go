@@ -171,6 +171,16 @@ func main() {
 		Logger:     slog.Default(),
 	}
 
+	r := chi.NewRouter()
+	registry := prometheus.NewRegistry()
+	registry.MustRegister(
+		collectors.NewGoCollector(),
+		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
+	)
+	registry.MustRegister(telemetry.NewFeedbackQualityCollector(feedbackRepo, 7*24*time.Hour, 3*time.Second, slog.Default()))
+	httpMetrics := telemetry.NewHTTPMetrics(registry)
+	productMetrics := telemetry.NewProductMetrics(registry)
+
 	handlers := &api.Handlers{
 		UserRepo:              userRepo,
 		UserStatsRepo:         userStatsRepo,
@@ -178,6 +188,7 @@ func main() {
 		UserEmbedDispatcher:   userEmbedDispatcher,
 		FeedbackRepo:          feedbackRepo,
 		ProductEventRepo:      productEventRepo,
+		ProductMetrics:        productMetrics,
 		AuthToken:             apiToken,
 		UserHMACSecret:        userHMACSecret,
 		Logger:                slog.Default(),
@@ -190,14 +201,6 @@ func main() {
 		TelegramRateLimit:     tgRPM,
 	}
 
-	r := chi.NewRouter()
-	registry := prometheus.NewRegistry()
-	registry.MustRegister(
-		collectors.NewGoCollector(),
-		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-	)
-	registry.MustRegister(telemetry.NewFeedbackQualityCollector(feedbackRepo, 7*24*time.Hour, 3*time.Second, slog.Default()))
-	httpMetrics := telemetry.NewHTTPMetrics(registry)
 	r.Use(otelhttp.NewMiddleware("site-parser-api"))
 	r.Use(httpMetrics.Middleware)
 	r.Use(api.RequestIDMiddleware())

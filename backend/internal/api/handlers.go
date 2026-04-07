@@ -23,6 +23,7 @@ import (
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/observability"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/telemetry"
 )
 
 const maxProfileTextLen = 5000
@@ -101,6 +102,7 @@ type Handlers struct {
 	UserEmbedDispatcher   UserEmbedDispatcher     // optional: best-effort low-latency flush after staging
 	FeedbackRepo          port.FeedbackRepository // nil — feedback не сохраняется
 	ProductEventRepo      port.ProductEventRepository
+	ProductMetrics        *telemetry.ProductMetrics // optional: prometheus metrics for product events
 	AuthToken             string             // обязательный bearer token для API
 	UserHMACSecret        string             // обязательный секрет подписи user-level запросов
 	Logger                *slog.Logger       // optional structured logger; defaults to slog.Default()
@@ -1056,6 +1058,10 @@ func (h *Handlers) recordProductEvent(ctx context.Context, event port.ProductEve
 	}
 	if err := h.ProductEventRepo.Record(ctx, event); err != nil {
 		h.logger().Warn("record product event failed", "event_type", event.Type, "user_id", event.UserID, "job_id", event.JobID, "err", err)
+	}
+	// Записываем в Prometheus metrics
+	if h.ProductMetrics != nil {
+		h.ProductMetrics.RecordEvent(string(event.Type), event.Source)
 	}
 }
 

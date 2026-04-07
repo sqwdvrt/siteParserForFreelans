@@ -112,6 +112,39 @@ services:
         max-size: "10m"
         max-file: "3"
 
+  browser-service-exporter:
+    image: alpine:3.20
+    profiles:
+      - monitoring
+    command:
+      - /bin/sh
+      - -c
+      - |
+        apk add --no-cache curl
+        while true; do
+          curl -sf http://browser-service:8090/metrics > /dev/null 2>&1 || sleep 5
+          sleep 15
+        done
+    deploy:
+      resources:
+        limits:
+          memory: 32m
+          cpus: '0.05'
+        reservations:
+          memory: 8m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "1m"
+        max-file: "2"
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -sf http://browser-service:8090/metrics > /dev/null 2>&1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
   grafana:
     image: grafana/grafana:11.4.0
     profiles:
@@ -120,7 +153,7 @@ services:
       GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD:?set_GRAFANA_ADMIN_PASSWORD}"
       GF_USERS_ALLOW_SIGN_UP: "false"
       GF_AUTH_ANONYMOUS_ENABLED: "false"
-      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/api-overview.json
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/grafana/provisioning/dashboards/monitoring-overview.json
       POSTGRES_DB: "${POSTGRES_DB:-site_parser}"
       POSTGRES_USER: "${POSTGRES_USER:-site_parser}"
       POSTGRES_PASSWORD: "${GRAFANA_POSTGRES_PASSWORD:-${POSTGRES_PASSWORD:-}}"

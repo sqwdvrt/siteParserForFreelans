@@ -112,6 +112,7 @@ func main() {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
 	notifierMetrics := telemetry.NewNotifierMetrics(registry, queueName)
+	e2eMetrics := telemetry.NewE2ELatencyMetrics(registry)
 
 	rateSec, err := config.ParsePositiveIntEnv("NOTIFY_RATE_LIMIT_SEC", 300)
 	if err != nil {
@@ -198,7 +199,8 @@ func main() {
 	})
 	notifier.ConfigureBatchSessionStore(telegram.NewRedisBatchSessionStore(rdb), os.Getenv("BOT_REDIS_PREFIX"))
 	sendNotif := usecase.NewSendNotification(notifRepo, userRepo, jobRepo, notifier, rateLimit, maxPerDay).
-		WithProductEventRepo(productEventRepo)
+		WithProductEventRepo(productEventRepo).
+		WithE2ELatencyMetrics(e2eMetrics)
 
 	dailyDigest := usecase.NewDailyDigest(userRepo, notifRepo, jobRepo, notifier, maxPerDay).
 		WithProductEventRepo(productEventRepo)
