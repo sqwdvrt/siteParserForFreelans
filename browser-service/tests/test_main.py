@@ -137,7 +137,7 @@ class FakeBrowserInstance:
         self.lock = _DummyLock()
 
     @property
-    def context(self) -> FakeBrowser:
+    def browser(self) -> FakeBrowser:
         return self._fake_browser
 
 

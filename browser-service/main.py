@@ -557,7 +557,7 @@ async def _render_with_pool(url: str) -> JSONResponse:
             try:
                 with _pinned_host_registry.pin(parsed.hostname or "", resolved_origin_ips):
                     async with browser.lock:
-                        context = await browser.context.new_context(
+                        context = await browser.browser.new_context(
                             proxy=_build_pinned_proxy_config(parsed.hostname or "", resolved_origin_ips),
                         )
                         page = await context.new_page()
