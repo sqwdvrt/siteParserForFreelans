@@ -1,0 +1,252 @@
+"""
+Browser Pool Manager — manages multiple Playwright browser instances.
+
+Provides a pool of BrowserInstance objects, each wrapping a Playwright Browser
+with a shared BrowserContext. Supports least-loaded acquisition, health checks,
+automatic recycling (TTL-based), and background recreation of unhealthy browsers.
+"""
+import asyncio
+import logging
+import time
+from typing import Any
+
+from playwright.async_api import Browser, BrowserContext, Playwright
+
+logger = logging.getLogger(__name__)
+
+
+DEFAULT_ARGS: list[str] = [
+    "--no-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--disable-setuid-sandbox",
+    "--single-process",
+]
+
+
+class PoolExhausted(Exception):
+    """Raised when the pool cannot serve requests."""
+    pass
+
+
+class BrowserInstance:
+    """Wraps a single Playwright Browser with a shared BrowserContext."""
+
+    def __init__(
+        self,
+        browser: Browser,
+        context: BrowserContext,
+        browser_id: int,
+        max_concurrent: int = 5,
+    ) -> None:
+        self.browser: Browser = browser
+        self.context: BrowserContext = context
+        self.browser_id: int = browser_id
+        self.active: int = 0
+        self.max_concurrent: int = max_concurrent
+        self.healthy: bool = True
+        self.created_at: float = time.time()
+        self.lock: asyncio.Lock = asyncio.Lock()
+
+    @property
+    def load_ratio(self) -> float:
+        """0.0 = idle, 1.0 = full."""
+        if self.max_concurrent <= 0:
+            return 1.0
+        return self.active / self.max_concurrent
+
+    def is_expired(self, ttl_seconds: int) -> bool:
+        """Check if browser should be recycled (memory leak prevention)."""
+        return (time.time() - self.created_at) > ttl_seconds
+
+    def __repr__(self) -> str:
+        return (
+            f"BrowserInstance(id={self.browser_id}, active={self.active}/"
+            f"{self.max_concurrent}, healthy={self.healthy})"
+        )
+
+
+class BrowserPool:
+    """Manages a pool of Playwright browser instances."""
+
+    def __init__(
+        self,
+        playwright_instance: Playwright,
+        pool_size: int = 2,
+        max_concurrent: int = 5,
+        browser_ttl_seconds: int = 14400,
+        launch_args: list[str] | None = None,
+    ) -> None:
+        self._playwright: Playwright = playwright_instance
+        self._pool_size: int = pool_size
+        self._max_concurrent: int = max_concurrent
+        self._browser_ttl: int = browser_ttl_seconds
+        self._launch_args: list[str] = launch_args or list(DEFAULT_ARGS)
+        self._instances: list[BrowserInstance] = []
+        self._lock: asyncio.Lock = asyncio.Lock()
+        self._health_check_task: asyncio.Task[None] | None = None
+
+    async def initialize(self) -> None:
+        """Create all browser instances."""
+        for i in range(self._pool_size):
+            await self._create_browser(i)
+        logger.info("browser pool initialized with %d instances", self._pool_size)
+
+    async def shutdown(self) -> None:
+        """Close all browsers and cancel the health check task."""
+        if self._health_check_task is not None:
+            self._health_check_task.cancel()
+            try:
+                await self._health_check_task
+            except asyncio.CancelledError:
+                pass
+            self._health_check_task = None
+
+        for instance in self._instances:
+            try:
+                await instance.browser.close()
+            except Exception:
+                logger.exception("failed to close browser %d during shutdown", instance.browser_id)
+        self._instances.clear()
+        logger.info("browser pool shut down")
+
+    async def acquire(self) -> BrowserInstance:
+        """
+        Get the least-loaded healthy browser.
+
+        Raises:
+            PoolExhausted: If all browsers are busy or unhealthy.
+        """
+        async with self._lock:
+            healthy = [
+                b for b in self._instances
+                if b.healthy and b.active < b.max_concurrent
+            ]
+            if not healthy:
+                raise PoolExhausted("all browsers busy or unhealthy")
+            # least-loaded
+            browser = min(healthy, key=lambda b: b.load_ratio)
+            browser.active += 1
+            return browser
+
+    async def release(self, browser: BrowserInstance) -> None:
+        """Release browser back to pool."""
+        async with self._lock:
+            browser.active = max(0, browser.active - 1)
+
+    async def mark_unhealthy(self, browser: BrowserInstance) -> None:
+        """Mark browser unhealthy and trigger background recreate."""
+        async with self._lock:
+            browser.healthy = False
+            browser.active = max(0, browser.active - 1)
+        # Recreate in background
+        asyncio.create_task(
+            self._recreate_browser(browser.browser_id),
+            name=f"recreate-browser-{browser.browser_id}",
+        )
+
+    async def health_check(self) -> None:
+        """Check all browsers, recreate unhealthy ones."""
+        for instance in list(self._instances):
+            if not instance.healthy:
+                continue
+            if not instance.browser.is_connected():
+                logger.warning("browser %d disconnected, marking unhealthy", instance.browser_id)
+                await self.mark_unhealthy(instance)
+                continue
+            # Test with blank page
+            try:
+                async with instance.lock:
+                    page = await instance.context.new_page()
+                    await page.goto("about:blank", timeout=5000)
+                    await page.close()
+            except Exception as exc:
+                logger.warning("browser %d health check failed: %s", instance.browser_id, exc)
+                await self.mark_unhealthy(instance)
+
+    def get_stats(self) -> dict[str, Any]:
+        """Return pool statistics."""
+        return {
+            "pool_size": len(self._instances),
+            "healthy_count": sum(1 for b in self._instances if b.healthy),
+            "total_active": sum(b.active for b in self._instances),
+            "instances": [
+                {
+                    "browser_id": b.browser_id,
+                    "active": b.active,
+                    "max_concurrent": b.max_concurrent,
+                    "load_ratio": round(b.load_ratio, 2),
+                    "healthy": b.healthy,
+                }
+                for b in self._instances
+            ],
+        }
+
+    async def start_health_check_loop(self, interval: float = 30.0) -> None:
+        """Start a periodic health check loop."""
+        async def _loop() -> None:
+            while True:
+                await asyncio.sleep(interval)
+                try:
+                    await self.health_check()
+                except Exception:
+                    logger.exception("health check loop error")
+
+                # Also recycle expired browsers
+                for instance in list(self._instances):
+                    if instance.healthy and instance.is_expired(self._browser_ttl):
+                        logger.info(
+                            "browser %d expired (TTL=%ds), recycling",
+                            instance.browser_id,
+                            self._browser_ttl,
+                        )
+                        await self.mark_unhealthy(instance)
+
+        self._health_check_task = asyncio.create_task(_loop(), name="browser-health-check-loop")
+
+    async def _create_browser(self, browser_id: int) -> None:
+        """Create a new browser instance."""
+        browser = await self._playwright.chromium.launch(
+            headless=True,
+            args=self._launch_args,
+        )
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ),
+            locale="ru-RU",
+            timezone_id="Europe/Moscow",
+            service_workers="block",
+        )
+        instance = BrowserInstance(browser, context, browser_id, self._max_concurrent)
+        async with self._lock:
+            # Replace old instance if it exists
+            old_indices = [i for i, b in enumerate(self._instances) if b.browser_id == browser_id]
+            if old_indices:
+                idx = old_indices[0]
+                try:
+                    await self._instances[idx].browser.close()
+                except Exception:
+                    logger.exception("failed to close old browser %d", browser_id)
+                self._instances[idx] = instance
+            else:
+                self._instances.append(instance)
+        logger.info("browser %d created", browser_id)
+
+    async def _recreate_browser(self, browser_id: int) -> None:
+        """Recreate a specific browser instance with retry on failure."""
+        try:
+            await self._create_browser(browser_id)
+            logger.info("browser %d recreated successfully", browser_id)
+        except Exception as e:
+            logger.error("failed to recreate browser %d: %s", browser_id, e)
+            # Schedule retry after 10 seconds
+            loop = asyncio.get_event_loop()
+            loop.call_later(
+                10,
+                lambda: asyncio.create_task(
+                    self._recreate_browser(browser_id),
+                    name=f"recreate-browser-{browser_id}-retry",
+                ),
+            )

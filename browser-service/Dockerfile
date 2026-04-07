@@ -7,7 +7,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY main.py .
+COPY main.py browser_pool.py .
 
 # Playwright-образ использует непривилегированного пользователя pwuser
 USER pwuser

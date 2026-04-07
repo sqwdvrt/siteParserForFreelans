@@ -19,8 +19,10 @@ from urllib.parse import urlparse, urlunparse
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
-from playwright.async_api import async_playwright, Browser, Playwright, TimeoutError as PWTimeoutError
+from playwright.async_api import async_playwright, Playwright, TimeoutError as PWTimeoutError
 from prometheus_client import Counter, Histogram, Gauge, generate_latest, CONTENT_TYPE_LATEST
+
+from browser_pool import BrowserPool, PoolExhausted
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO").upper())
 log = logging.getLogger(__name__)
@@ -61,6 +63,34 @@ PAGE_RENDERED = Counter(
     ["domain"]
 )
 
+RENDER_REJECTED = Counter(
+    "browser_service_render_rejected_total",
+    "Total number of rejected render requests",
+    ["error_type"],  # pool_exhausted, pool_overloaded
+)
+
+BROWSER_POOL_SIZE = Gauge(
+    "browser_service_browser_pool_size",
+    "Number of browsers in pool"
+)
+
+BROWSER_POOL_ACTIVE = Gauge(
+    "browser_service_browser_pool_active",
+    "Active render count per browser",
+    ["browser_id"]
+)
+
+BROWSER_POOL_HEALTHY = Gauge(
+    "browser_service_browser_pool_healthy",
+    "Health status per browser",
+    ["browser_id"]
+)
+
+RENDER_QUEUE_DEPTH = Gauge(
+    "browser_service_render_queue_depth",
+    "Number of pending render requests in queue"
+)
+
 _TIMEOUT_MS = int(os.getenv("BROWSER_TIMEOUT_MS", "60000"))
 # CSS-селектор, появление которого означает что страница готова.
 # Kwork: карточки проектов в .want-card или .wants-list__item
@@ -70,7 +100,8 @@ _TEST_HOST_ALLOWLIST_ENV = "BROWSER_SERVICE_TEST_HOST_ALLOWLIST"
 _BLOCKED_HOSTS = {"localhost"}
 
 _playwright: Playwright | None = None
-_browser: Browser | None = None
+_browser_pool: BrowserPool | None = None
+_render_queue: asyncio.Queue | None = None
 _proxy_server: "_PinnedProxy | None" = None
 
 
@@ -419,33 +450,46 @@ class _PinnedProxy:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global _playwright, _browser, _proxy_server
+    global _playwright, _browser_pool, _render_queue, _proxy_server
+
     log.info("launching Playwright Chromium")
     _playwright = await async_playwright().start()
+
     _proxy_server = _PinnedProxy()
     await _proxy_server.start()
-    _browser = await _playwright.chromium.launch(
-        headless=True,
-        args=[
-            "--no-sandbox",
-            "--disable-dev-shm-usage",
-            "--disable-gpu",
-            "--disable-setuid-sandbox",
-        ],
+
+    pool_size = int(os.getenv("BROWSER_POOL_SIZE", "2"))
+    max_concurrent = int(os.getenv("BROWSER_MAX_CONCURRENT", "5"))
+    browser_ttl = int(os.getenv("BROWSER_TTL_HOURS", "4")) * 3600
+    queue_size = int(os.getenv("BROWSER_QUEUE_SIZE", "50"))
+
+    _browser_pool = BrowserPool(
+        _playwright,
+        pool_size=pool_size,
+        max_concurrent=max_concurrent,
+        browser_ttl_seconds=browser_ttl,
     )
-    log.info("browser ready")
+    await _browser_pool.initialize()
+    log.info("browser pool ready: %d instances, %d concurrent each", pool_size, max_concurrent)
+
+    _render_queue = asyncio.Queue(maxsize=queue_size)
+
+    # Start health check loop via the pool
+    healthcheck_interval = int(os.getenv("BROWSER_HEALTHCHECK_INTERVAL", "30"))
+    await _browser_pool.start_health_check_loop(interval=float(healthcheck_interval))
+
     BROWSER_UP.set(1)
     try:
         yield
     finally:
         BROWSER_UP.set(0)
-        if _browser:
-            await _browser.close()
+        if _browser_pool:
+            await _browser_pool.shutdown()
         if _proxy_server:
             await _proxy_server.stop()
         if _playwright:
             await _playwright.stop()
-        log.info("browser stopped")
+        log.info("browser pool stopped")
 
 
 app = FastAPI(title="Browser Render Service", version="1.0.0", lifespan=lifespan)
@@ -454,86 +498,127 @@ app = FastAPI(title="Browser Render Service", version="1.0.0", lifespan=lifespan
 @app.get("/metrics")
 async def metrics() -> Response:
     """Prometheus metrics endpoint"""
+    if _render_queue is not None:
+        RENDER_QUEUE_DEPTH.set(_render_queue.qsize())
+    if _browser_pool is not None:
+        stats = _browser_pool.get_stats()
+        BROWSER_POOL_SIZE.set(stats["pool_size"])
+        for inst in stats["instances"]:
+            BROWSER_POOL_ACTIVE.labels(browser_id=str(inst["browser_id"])).set(inst["active"])
+            BROWSER_POOL_HEALTHY.labels(browser_id=str(inst["browser_id"])).set(1 if inst["healthy"] else 0)
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.get("/healthz")
 async def healthz() -> dict:
-    if _browser is None or not _browser.is_connected():
-        raise HTTPException(status_code=503, detail="browser not ready")
-    return {"ok": True}
+    if _browser_pool is None:
+        raise HTTPException(status_code=503, detail="browser pool not ready")
+    stats = _browser_pool.get_stats()
+    if stats["healthy_count"] == 0:
+        raise HTTPException(status_code=503, detail="no healthy browsers in pool")
+    return {"ok": True, "pool": stats}
 
 
 @app.get("/render")
 async def render(url: str = Query(..., description="URL страницы для рендера")) -> JSONResponse:
-    if _browser is None:
-        raise HTTPException(status_code=503, detail="browser not ready")
+    if _browser_pool is None:
+        raise HTTPException(status_code=503, detail="browser pool not ready")
 
+    # Backpressure check
+    if _render_queue is not None and _render_queue.full():
+        RENDER_REJECTED.labels(error_type="pool_overloaded").inc()
+        raise HTTPException(status_code=503, detail="render pool overloaded")
+
+    # Enqueue (non-blocking)
+    if _render_queue is not None:
+        await _render_queue.put(True)
+    try:
+        return await _render_with_pool(url)
+    finally:
+        if _render_queue is not None:
+            _render_queue.get_nowait()  # dequeue
+
+
+async def _render_with_pool(url: str) -> JSONResponse:
     parsed = _validate_target_url(url)
     resolved_origin_ips = await _resolve_and_validate_host(parsed.hostname or "")
 
-    context = None
-    page = None
-    start_time = time.time()
-    ACTIVE_CONNECTIONS.inc()
-    
-    try:
-        with _pinned_host_registry.pin(parsed.hostname or "", resolved_origin_ips):
-            context = await _browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-                ),
-                locale="ru-RU",
-                timezone_id="Europe/Moscow",
-                service_workers="block",
-                proxy=_build_pinned_proxy_config(parsed.hostname or "", resolved_origin_ips),
-            )
-            page = await context.new_page()
-            log.info("render start url=%s", url)
+    max_retries = int(os.getenv("BROWSER_MAX_RETRIES", "2"))
 
-            await page.goto(url, wait_until="domcontentloaded", timeout=_TIMEOUT_MS)
+    for attempt in range(max_retries):
+        browser = None
+        start_time = time.time()
+        try:
+            browser = await _browser_pool.acquire()
 
-            if "kwork.ru" in parsed.netloc:
-                try:
-                    await page.wait_for_selector(
-                        _KWORK_READY_SELECTOR,
-                        timeout=min(_TIMEOUT_MS, 20_000),
-                    )
-                    log.info("render kwork selector found url=%s", url)
-                except PWTimeoutError:
-                    log.warning("render kwork selector timeout url=%s — returning current DOM", url)
+            context = None
+            page = None
 
-            html = await page.content()
-            if len(html) > _MAX_BODY:
-                html = html[:_MAX_BODY]
-            
-            duration = time.time() - start_time
-            RENDER_DURATION.labels(status="success").observe(duration)
-            RENDER_REQUESTS.labels(status="success").inc()
-            PAGE_RENDERED.labels(domain=parsed.hostname or "unknown").inc()
-            
-            log.info("render ok url=%s html_len=%d duration=%.2fs", url, len(html), duration)
-            return JSONResponse({"html": html, "url": url})
-    except HTTPException:
-        raise
-    except PWTimeoutError as exc:
-        duration = time.time() - start_time
-        RENDER_DURATION.labels(status="timeout").observe(duration)
-        RENDER_REQUESTS.labels(status="timeout").inc()
-        RENDER_ERRORS.labels(error_type="timeout").inc()
-        log.warning("render timeout url=%s err=%s", url, exc)
-        raise HTTPException(status_code=504, detail=f"render timeout: {exc}") from exc
-    except Exception as exc:
-        duration = time.time() - start_time
-        RENDER_DURATION.labels(status="error").observe(duration)
-        RENDER_REQUESTS.labels(status="error").inc()
-        RENDER_ERRORS.labels(error_type="internal").inc()
-        log.warning("render failed url=%s err=%s", url, exc)
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-    finally:
-        ACTIVE_CONNECTIONS.dec()
-        if page is not None:
-            await page.close()
-        if context is not None:
-            await context.close()
+            try:
+                with _pinned_host_registry.pin(parsed.hostname or "", resolved_origin_ips):
+                    async with browser.lock:
+                        context = await browser.context.new_context(
+                            proxy=_build_pinned_proxy_config(parsed.hostname or "", resolved_origin_ips),
+                        )
+                        page = await context.new_page()
+
+                    log.info("render start url=%s browser=%d", url, browser.browser_id)
+
+                    await page.goto(url, wait_until="domcontentloaded", timeout=_TIMEOUT_MS)
+
+                    if "kwork.ru" in parsed.netloc:
+                        try:
+                            await page.wait_for_selector(
+                                _KWORK_READY_SELECTOR,
+                                timeout=min(_TIMEOUT_MS, 20_000),
+                            )
+                            log.info("render kwork selector found url=%s", url)
+                        except PWTimeoutError:
+                            log.warning("render kwork selector timeout url=%s — returning current DOM", url)
+
+                    html = await page.content()
+                    if len(html) > _MAX_BODY:
+                        html = html[:_MAX_BODY]
+
+                duration = time.time() - start_time
+                RENDER_DURATION.labels(status="success").observe(duration)
+                RENDER_REQUESTS.labels(status="success").inc()
+                PAGE_RENDERED.labels(domain=parsed.hostname or "unknown").inc()
+                ACTIVE_CONNECTIONS.inc()
+                ACTIVE_CONNECTIONS.dec()
+
+                log.info("render ok url=%s html_len=%d duration=%.2fs browser=%d",
+                         url, len(html), duration, browser.browser_id)
+                return JSONResponse({"html": html, "url": url})
+
+            except PWTimeoutError as exc:
+                await _browser_pool.mark_unhealthy(browser)
+                duration = time.time() - start_time
+                RENDER_DURATION.labels(status="timeout").observe(duration)
+                RENDER_REQUESTS.labels(status="timeout").inc()
+                RENDER_ERRORS.labels(error_type="timeout").inc()
+                log.warning("render timeout url=%s err=%s browser=%d", url, exc, browser.browser_id)
+                if attempt == max_retries - 1:
+                    raise HTTPException(status_code=504, detail=f"render timeout: {exc}") from exc
+                # retry on another browser
+            except Exception as exc:
+                await _browser_pool.mark_unhealthy(browser)
+                if attempt == max_retries - 1:
+                    duration = time.time() - start_time
+                    RENDER_DURATION.labels(status="error").observe(duration)
+                    RENDER_REQUESTS.labels(status="error").inc()
+                    RENDER_ERRORS.labels(error_type="internal").inc()
+                    raise HTTPException(status_code=500, detail=str(exc)) from exc
+                # retry on another browser
+            finally:
+                if page is not None:
+                    await page.close()
+                if context is not None:
+                    await context.close()
+                if browser:
+                    await _browser_pool.release(browser)
+        except PoolExhausted:
+            if attempt == max_retries - 1:
+                RENDER_REJECTED.labels(error_type="pool_exhausted").inc()
+                raise HTTPException(status_code=503, detail="render pool exhausted")
+            await asyncio.sleep(0.1)  # brief wait before retry

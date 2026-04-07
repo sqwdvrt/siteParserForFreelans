@@ -8,7 +8,8 @@
       "Bash(git reset *)",
       "Bash(git commit *)",
       "Bash(go *)",
-      "Bash(git push *)"
+      "Bash(git push *)",
+      "Bash(python *)"
     ]
   },
   "$version": 3
