@@ -175,7 +175,8 @@ func (m *digestJobRepo) ExistsByURL(ctx context.Context, url string) (bool, erro
 func (m *digestJobRepo) GetUnembeddedIDs(ctx context.Context, limit int) ([]int64, error) {
 	return nil, nil
 }
-func (m *digestJobRepo) TouchSeenAt(ctx context.Context, url string) error { return nil }
+func (m *digestJobRepo) TouchSeenAt(ctx context.Context, url string) error      { return nil }
+func (m *digestJobRepo) TouchSeenAtByID(ctx context.Context, id int64) error   { return nil }
 func (m *digestJobRepo) ExpireStaleJobs(ctx context.Context, days int) ([]int64, error) {
 	return nil, nil
 }

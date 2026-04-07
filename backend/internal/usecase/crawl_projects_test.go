@@ -92,6 +92,10 @@ func (m *mockRepo) TouchSeenAt(ctx context.Context, url string) error {
 	return nil
 }
 
+func (m *mockRepo) TouchSeenAtByID(ctx context.Context, id int64) error {
+	return nil
+}
+
 func (m *mockRepo) ExpireStaleJobs(ctx context.Context, olderThanDays int) ([]int64, error) {
 	return nil, nil
 }
@@ -188,7 +192,7 @@ func (m *mockCrawlNotifRepo) CancelPendingByJobIDs(_ context.Context, jobIDs []i
 func TestCrawlProjects_Execute_Success(t *testing.T) {
 	ext := &mockExtractor{
 		listURLs: []string{"https://kwork.ru/projects/1/view", "https://kwork.ru/projects/2/view"},
-		detail:   &domain.Job{Title: "Test Job", Source: "kwork"},
+		detail:   &domain.Job{Title: "Test Job", Source: "kwork", RawHTML: "<html>detail</html>"},
 	}
 	fetcher := &mockFetcher{
 		listHTML: []byte("<html>list</html>"),

@@ -171,7 +171,8 @@ func (m *mockJobRepo) ExistsByURL(ctx context.Context, url string) (bool, error)
 func (m *mockJobRepo) GetUnembeddedIDs(ctx context.Context, limit int) ([]int64, error) {
 	return nil, nil
 }
-func (m *mockJobRepo) TouchSeenAt(ctx context.Context, url string) error { return nil }
+func (m *mockJobRepo) TouchSeenAt(ctx context.Context, url string) error      { return nil }
+func (m *mockJobRepo) TouchSeenAtByID(ctx context.Context, id int64) error   { return nil }
 func (m *mockJobRepo) ExpireStaleJobs(ctx context.Context, days int) ([]int64, error) {
 	return nil, nil
 }
