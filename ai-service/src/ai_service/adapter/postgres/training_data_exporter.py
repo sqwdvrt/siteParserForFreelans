@@ -4,14 +4,12 @@ Training Data Exporter — экспортирует триплеты (user, good
 Используется для fine-tuning SentenceTransformer модели через TripletLoss.
 """
 import json
-import os
 from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import asyncpg
-import numpy as np
 
 
 @dataclass
@@ -153,12 +151,10 @@ class TrainingDataExporter:
                     if len(triplets) >= max_per_user:
                         break
 
-                    job_text = lambda j: f"{j['title']} {(j['description'] or '')}"
-
                     triplets.append(TrainingTriplet(
                         anchor=user_text.strip(),
-                        positive=job_text(good_job).strip(),
-                        negative=job_text(bad_job).strip(),
+                        positive=f"{good_job['title']} {good_job['description'] or ''}".strip(),
+                        negative=f"{bad_job['title']} {bad_job['description'] or ''}".strip(),
                         user_id=user_id,
                         good_job_id=good_job["job_id"],
                         bad_job_id=bad_job["job_id"],

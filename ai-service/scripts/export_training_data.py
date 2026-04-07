@@ -6,10 +6,8 @@ Export Training Data — CLI скрипт для экспорта триплет
     python scripts/export_training_data.py --days 30 --output training_data/
 """
 import asyncio
-import json
 import os
 import sys
-from datetime import datetime
 from pathlib import Path
 
 # Добавляем src в path
@@ -38,7 +36,7 @@ async def main():
         print("ERROR: Set --dsn or DATABASE_URL environment variable", file=sys.stderr)
         sys.exit(1)
 
-    print(f"Connecting to database...")
+    print("Connecting to database...")
     exporter = TrainingDataExporter(dsn)
 
     print(f"Exporting triplets (last {args.days} days)...")
@@ -48,7 +46,7 @@ async def main():
         max_triplets_per_user=args.max_triplets_per_user,
     )
 
-    print(f"Exporting evaluation pairs...")
+    print("Exporting evaluation pairs...")
     eval_pairs = await exporter.export_eval_pairs(days=args.days)
 
     print(f"Saving to {args.output}/...")

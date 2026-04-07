@@ -94,10 +94,10 @@ def _semantic_split(html: str) -> SemanticChunks:
     skills = _extract_skills(full_text)
     budget = _extract_budget(full_text)
 
-    # Description = everything except already extracted parts
-    # Simple approach: use full text, the sections above will be duplicated
-    # but that's fine for embedding (reinforces signal)
+    # Description = full text minus leading title to avoid duplication
     description = full_text
+    if title and full_text.startswith(title):
+        description = full_text[len(title):].strip()
 
     return SemanticChunks(
         title=title,

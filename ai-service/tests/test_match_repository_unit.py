@@ -125,9 +125,9 @@ def test_find_users_for_job_joins_active_job() -> None:
     assert "j.source <> 'kwork' OR j.last_seen_at >= NOW() - INTERVAL '6 hours'" in sql
     assert "COALESCE(j.posted_at, j.created_at) >= NOW() - make_interval(days => %s)" not in sql
     assert "WHERE n.job_id = j.id" in sql
-    assert params[1] == 7
-    assert params[2] == 0.8
-    assert params[3] == 4
+    assert params[3] == 7
+    assert params[4] == 0.8
+    assert params[5] == 4
 
 
 def test_find_users_for_job_applies_explicit_age_gate() -> None:
@@ -146,5 +146,5 @@ def test_find_users_for_job_applies_explicit_age_gate() -> None:
 
     sql, params = cur.execute.call_args.args
     assert "COALESCE(j.posted_at, j.created_at) >= NOW() - make_interval(days => %s)" in sql
-    assert params[3] == 2
-    assert params[4] == 4
+    assert params[5] == 2
+    assert params[6] == 4

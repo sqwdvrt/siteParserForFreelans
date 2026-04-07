@@ -67,16 +67,17 @@ class PostgresMatchRepository(PooledPostgresRepository, MatchRepository):
                     user_scope_sql = " AND u.id = ANY(%s)"
                     params.append(allowed_user_ids)
 
-                params.extend([job_id, threshold])
-                if max_age_days is not None and max_age_days > 0:
-                    job_age_sql = " AND COALESCE(j.posted_at, j.created_at) >= NOW() - make_interval(days => %s)"
-                    params.append(max_age_days)
-
                 # Expanded pool for SQL filtering (when no pre-filter)
                 ann_pool_size = limit * 5 if allowed_user_ids is None else limit
 
-                params.append(ann_pool_size)
-                params.append(limit)
+                params.append(vec)            # ORDER BY u.embedding <=> %s
+                params.append(ann_pool_size)  # inner LIMIT %s
+                params.append(job_id)         # JOIN jobs j ON j.id = %s
+                params.append(threshold)      # AND s.similarity >= %s
+                if max_age_days is not None and max_age_days > 0:
+                    job_age_sql = " AND COALESCE(j.posted_at, j.created_at) >= NOW() - make_interval(days => %s)"
+                    params.append(max_age_days)
+                params.append(limit)          # outer LIMIT %s
 
                 cur.execute(
                     f"""

@@ -302,7 +302,6 @@ def main() -> None:
     actor_timeout = int(os.getenv("ACTOR_GEMINI_TIMEOUT_SEC", "30"))
 
     # LLM cache for actor
-    from ai_service.util.llm_cache import LLMCache
     llm_cache = _create_llm_cache(redis_url)
     actor_primary = GeminiActorAgent(
         api_key=gemini_api_key,

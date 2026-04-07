@@ -7,7 +7,6 @@ import json
 import random
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 from sentence_transformers import InputExample
