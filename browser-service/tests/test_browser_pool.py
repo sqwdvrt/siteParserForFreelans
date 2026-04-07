@@ -1,8 +1,7 @@
 """Tests for Browser Pool Manager."""
-import asyncio
 import pytest
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 import sys
 from pathlib import Path
 
@@ -16,7 +15,7 @@ def mock_playwright():
     """Create a mock Playwright instance."""
     playwright = MagicMock()
     browser = AsyncMock()
-    browser.is_connected.return_value = True
+    browser.is_connected = MagicMock(return_value=True)
     browser.close = AsyncMock()
 
     context = AsyncMock()
@@ -36,7 +35,7 @@ def mock_playwright():
 def mock_browser_context():
     """Create mock browser and context."""
     browser = AsyncMock()
-    browser.is_connected.return_value = True
+    browser.is_connected = MagicMock(return_value=True)
     browser.close = AsyncMock()
 
     context = AsyncMock()
