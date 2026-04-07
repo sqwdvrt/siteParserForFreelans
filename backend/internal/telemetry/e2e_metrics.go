@@ -7,14 +7,14 @@ import (
 )
 
 const (
-	e2eLatencyHistogramName = "siteparser_e2e_latency_seconds"
+	e2eLatencyHistogramName   = "siteparser_e2e_latency_seconds"
 	stageLatencyHistogramName = "siteparser_stage_latency_seconds"
 )
 
 // E2ELatencyMetrics отслеживает end-to-end latency от crawl до notification.
 type E2ELatencyMetrics struct {
-	e2eLatency    *prometheus.HistogramVec
-	stageLatency  *prometheus.HistogramVec
+	e2eLatency   *prometheus.HistogramVec
+	stageLatency *prometheus.HistogramVec
 }
 
 // NewE2ELatencyMetrics создаёт метрики для отслеживания E2E latency.
@@ -56,8 +56,8 @@ func (m *E2ELatencyMetrics) ObserveStageLatency(stage, source string, latency ti
 
 // Stage constants for stageLatency label
 const (
-	StageCrawlToQueue   = "crawl_to_queue"
-	StageQueueToAI      = "queue_to_ai"
-	StageAIToMatch      = "ai_to_match"
-	StageMatchToNotify  = "match_to_notify"
+	StageCrawlToQueue  = "crawl_to_queue"
+	StageQueueToAI     = "queue_to_ai"
+	StageAIToMatch     = "ai_to_match"
+	StageMatchToNotify = "match_to_notify"
 )

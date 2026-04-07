@@ -4,7 +4,7 @@ Training Data Exporter — экспортирует триплеты (user, good
 Используется для fine-tuning SentenceTransformer модели через TripletLoss.
 """
 import json
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any

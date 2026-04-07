@@ -103,12 +103,12 @@ type Handlers struct {
 	FeedbackRepo          port.FeedbackRepository // nil — feedback не сохраняется
 	ProductEventRepo      port.ProductEventRepository
 	ProductMetrics        *telemetry.ProductMetrics // optional: prometheus metrics for product events
-	AuthToken             string             // обязательный bearer token для API
-	UserHMACSecret        string             // обязательный секрет подписи user-level запросов
-	Logger                *slog.Logger       // optional structured logger; defaults to slog.Default()
-	NonceStore            NonceStore         // optional: anti-replay (nonce)
-	RateLimiter           RequestRateLimiter // optional: rate limit (per ip/per telegram id)
-	TrustedProxyCIDRs     []*net.IPNet       // optional: trusted reverse proxies for forwarded headers
+	AuthToken             string                    // обязательный bearer token для API
+	UserHMACSecret        string                    // обязательный секрет подписи user-level запросов
+	Logger                *slog.Logger              // optional structured logger; defaults to slog.Default()
+	NonceStore            NonceStore                // optional: anti-replay (nonce)
+	RateLimiter           RequestRateLimiter        // optional: rate limit (per ip/per telegram id)
+	TrustedProxyCIDRs     []*net.IPNet              // optional: trusted reverse proxies for forwarded headers
 	NonceTTL              time.Duration
 	RateLimitWindow       time.Duration
 	IPRateLimit           int

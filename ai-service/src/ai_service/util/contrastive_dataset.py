@@ -5,7 +5,7 @@ Contrastive Dataset — модуль для подготовки данных co
 """
 import json
 import random
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
