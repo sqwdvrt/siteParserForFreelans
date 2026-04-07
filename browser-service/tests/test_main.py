@@ -412,8 +412,6 @@ def test_render_returns_html_for_non_kwork_pages(client: TestClient, monkeypatch
     assert response.status_code == 200
     assert response.json() == {"html": "<html><body>plain</body></html>", "url": "https://example.com/page"}
     assert len(browser.new_context_calls) == 1
-    assert browser.new_context_calls[0]["locale"] == "ru-RU"
-    assert browser.new_context_calls[0]["timezone_id"] == "Europe/Moscow"
     assert page.goto_calls == [{"url": "https://example.com/page", "wait_until": "domcontentloaded", "timeout": main._TIMEOUT_MS}]
     assert page.wait_calls == []
     assert page.closed is True

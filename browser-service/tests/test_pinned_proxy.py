@@ -69,6 +69,53 @@ class FakeBrowser:
         return self.context
 
 
+class _DummyLock:
+    async def __aenter__(self) -> "_DummyLock":
+        return self
+
+    async def __aexit__(self, *_: Any) -> None:
+        pass
+
+
+class FakeBrowserInstance:
+    def __init__(self, fake_browser: FakeBrowser) -> None:
+        self._fake_browser = fake_browser
+        self.browser_id = 0
+        self.lock = _DummyLock()
+
+    @property
+    def context(self) -> FakeBrowser:
+        return self._fake_browser
+
+
+class FakeBrowserPool:
+    def __init__(self, fake_browser: FakeBrowser) -> None:
+        self._fake_browser = fake_browser
+
+    async def acquire(self) -> FakeBrowserInstance:
+        return FakeBrowserInstance(self._fake_browser)
+
+    async def release(self, _instance: FakeBrowserInstance) -> None:
+        pass
+
+    async def mark_unhealthy(self, _instance: FakeBrowserInstance) -> None:
+        pass
+
+    def get_stats(self) -> dict[str, Any]:
+        return {
+            "pool_size": 1,
+            "healthy_count": 1,
+            "total_active": 0,
+            "instances": [{"browser_id": 0, "active": 0, "healthy": True, "load_ratio": 0.0}],
+        }
+
+    async def start_health_check_loop(self, interval: float = 30.0) -> None:
+        pass
+
+    async def shutdown(self) -> None:
+        pass
+
+
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch):
     @asynccontextmanager
@@ -77,7 +124,7 @@ def client(monkeypatch: pytest.MonkeyPatch):
 
     original_lifespan = main.app.router.lifespan_context
     main.app.router.lifespan_context = test_lifespan
-    monkeypatch.setattr(main, "_browser", None)
+    monkeypatch.setattr(main, "_browser_pool", None)
     monkeypatch.setattr(main, "_playwright", None)
     monkeypatch.setattr(main, "_resolve_host_ips", lambda _host: ["93.184.216.34"])
     try:
@@ -88,7 +135,10 @@ def client(monkeypatch: pytest.MonkeyPatch):
 
 
 def set_browser(monkeypatch: pytest.MonkeyPatch, browser: FakeBrowser | None) -> None:
-    monkeypatch.setattr(main, "_browser", browser)
+    if browser is None:
+        monkeypatch.setattr(main, "_browser_pool", None)
+    else:
+        monkeypatch.setattr(main, "_browser_pool", FakeBrowserPool(browser))
 
 
 def test_render_configures_browser_context_with_pinned_proxy(

@@ -220,7 +220,7 @@ class TestBrowserPool:
     def test_ttl_expiration(self, mock_browser_context):
         browser, context = mock_browser_context
         instance = BrowserInstance(browser, context, browser_id=0, max_concurrent=5)
-        instance.created_at = time.time() - 14400  # 4 hours ago
+        instance.created_at = time.time() - 14401  # just over 4 hours ago
 
         assert instance.is_expired(14400) is True
         assert instance.is_expired(18000) is False  # 5 hours TTL
