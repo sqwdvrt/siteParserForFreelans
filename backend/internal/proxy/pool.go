@@ -303,7 +303,7 @@ func (p *Pool) healthCheckSingle(pr *Proxy, checkURL string) error {
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer resp.Body.Close() //nolint:errcheck // close error is non-critical in health check
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return fmt.Errorf("health check failed: status %d", resp.StatusCode)

@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
-	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/telemetry"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/telemetry"
 )
 
 const (

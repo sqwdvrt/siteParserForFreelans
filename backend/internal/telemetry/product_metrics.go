@@ -5,13 +5,13 @@ import (
 )
 
 const (
-	productEventsTotalName   = "siteparser_product_events_total"
-	productConversionName    = "siteparser_product_conversion_rate"
+	productEventsTotalName = "siteparser_product_events_total"
+	productConversionName  = "siteparser_product_conversion_rate"
 )
 
 // ProductMetrics хранит Prometheus-метрики для продуктовой аналитики.
 type ProductMetrics struct {
-	eventsTotal   *prometheus.CounterVec
+	eventsTotal    *prometheus.CounterVec
 	conversionRate *prometheus.GaugeVec
 }
 

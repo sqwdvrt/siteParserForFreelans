@@ -10,7 +10,10 @@
       "Bash(go *)",
       "Bash(git push *)",
       "Bash(python *)",
-      "Bash(gofmt *)"
+      "Bash(gofmt *)",
+      "Bash(sleep *)",
+      "Bash(gh *)",
+      "Bash(curl *)"
     ]
   },
   "$version": 3
