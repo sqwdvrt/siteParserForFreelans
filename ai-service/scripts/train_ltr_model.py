@@ -5,12 +5,7 @@ Usage:
     python scripts/train_ltr_model.py --output models/ltr/
 """
 import argparse
-import json
 import logging
-from pathlib import Path
-from datetime import datetime
-
-import numpy as np
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ltr_train")
@@ -23,12 +18,12 @@ def main():
     parser.add_argument("--n-estimators", type=int, default=100)
     parser.add_argument("--learning-rate", type=float, default=0.05)
     parser.add_argument("--max-depth", type=int, default=5)
-    args = parser.parse_args()
+    parser.parse_args()
 
     try:
-        import lightgbm as lgb
-        from sklearn.model_selection import train_test_split
-        from sklearn.metrics import ndcg_score
+        import lightgbm as lgb  # noqa: F401
+        from sklearn.metrics import ndcg_score  # noqa: F401
+        from sklearn.model_selection import train_test_split  # noqa: F401
     except ImportError:
         logger.error("Required packages: lightgbm, scikit-learn")
         return

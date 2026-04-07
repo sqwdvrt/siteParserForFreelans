@@ -1,9 +1,8 @@
 """A/B testing metrics tracking."""
-import time
-import threading
-from dataclasses import dataclass, field
-from collections import defaultdict
 import logging
+import threading
+import time
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 

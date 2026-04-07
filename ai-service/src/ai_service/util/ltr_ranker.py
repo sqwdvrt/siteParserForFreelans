@@ -1,10 +1,8 @@
-import os
 import json
 import logging
-import pickle
-from pathlib import Path
+import os
 from dataclasses import dataclass
-from typing import Any
+from pathlib import Path
 
 import numpy as np
 
@@ -89,7 +87,6 @@ class LTRRanker:
         """Predict relevance score. Falls back to manual formula if model unavailable."""
         if self._model is not None:
             try:
-                import lightgbm as lgb
 
                 feature_array = features.to_array().reshape(1, -1)
                 score = self._model.predict(feature_array)[0]
