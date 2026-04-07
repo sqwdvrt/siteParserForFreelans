@@ -17,10 +17,7 @@ Covers:
 """
 from __future__ import annotations
 
-import urllib.error
-
 import pytest
-
 
 # ---------------------------------------------------------------------------
 # _to_int_or_default
@@ -249,8 +246,8 @@ def test_retry_delay_sec_does_not_exceed_max(bot):
 
 
 def test_retry_delay_sec_increases_with_attempts(bot):
-    d0 = bot._retry_delay_sec(0)
-    d1 = bot._retry_delay_sec(1)
+    bot._retry_delay_sec(0)
+    bot._retry_delay_sec(1)
     # base values (before jitter) should grow; run many times so jitter
     # doesn't flip the order – just check base formula directly
     base0 = min(bot.API_RETRY_MAX_DELAY_SEC, bot.API_RETRY_BASE_DELAY_SEC * (2 ** 0))
