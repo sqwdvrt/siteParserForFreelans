@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-GO_TOOLCHAIN="${GO_TOOLCHAIN:-go1.25.8}"
+GO_TOOLCHAIN="${GO_TOOLCHAIN:-go1.25.9}"
 GO_GOMODCACHE="${GO_GOMODCACHE:-${ROOT_DIR}/backend/.gomodcache-${GO_TOOLCHAIN}}"
 GO_GOCACHE="${GO_GOCACHE:-${ROOT_DIR}/backend/.gocache-${GO_TOOLCHAIN}}"
 PYTHON_BIN="${PYTHON_BIN:-}"

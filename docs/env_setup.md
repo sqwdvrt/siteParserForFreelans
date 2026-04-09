@@ -70,9 +70,9 @@ Production compose не поднимает локальные PostgreSQL/Redis �
 ## Требования по версиям
 
 - **Python:** `>=3.11` (по `ai-service/pyproject.toml`).
-- **Go (security baseline):** использовать патч-версию `>=1.25.8`.
+- **Go (security baseline):** использовать патч-версию `>=1.25.9`.
   Для локальных запусков можно явно задавать:
-  `GO_TOOLCHAIN=go1.25.8 bash ./scripts/go_test_backend.sh ./...`
+  `GO_TOOLCHAIN=go1.25.9 bash ./scripts/go_test_backend.sh ./...`
   Если host-сеть ограничена (proxy.golang.org/github.com недоступны), используй:
   `BACKEND_GO_TEST_MODE=docker bash ./scripts/go_test_backend.sh ./...`
 - Проверка Python:
@@ -105,7 +105,7 @@ python3.11 -m pip install python-dotenv redis psycopg2-binary pgvector sentence-
 
 ```bash
 # API
-cd backend && GOTOOLCHAIN=go1.25.8 go run ./cmd/api
+cd backend && GOTOOLCHAIN=go1.25.9 go run ./cmd/api
 
 # AI user-embed consumer
 cd ai-service && PYTHONPATH=src python3.11 cmd/user_embed_consumer/main.py

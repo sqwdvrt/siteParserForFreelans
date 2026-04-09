@@ -10,7 +10,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_INTERNAL_COVERAGE_MIN="${BACKEND_INTERNAL_COVERAGE_MIN:-70}"
 AI_SERVICE_COVERAGE_MIN="${AI_SERVICE_COVERAGE_MIN:-70}"
 TELEGRAM_BOT_COVERAGE_MIN="${TELEGRAM_BOT_COVERAGE_MIN:-80}"
-GO_COVERAGE_TOOLCHAIN="${GO_COVERAGE_TOOLCHAIN:-go1.25.8}"
+GO_COVERAGE_TOOLCHAIN="${GO_COVERAGE_TOOLCHAIN:-go1.25.9}"
 BACKEND_GOMODCACHE="${BACKEND_GOMODCACHE:-${ROOT_DIR}/backend/.gomodcache-${GO_COVERAGE_TOOLCHAIN}}"
 BACKEND_GOCACHE="${BACKEND_GOCACHE:-${ROOT_DIR}/backend/.gocache-${GO_COVERAGE_TOOLCHAIN}}"
 
@@ -91,7 +91,7 @@ ensure_go_covdata() {
   if [[ "${probe}" == *'no such tool "covdata"'* ]]; then
     echo "ERROR: go tool covdata is still unavailable after switching toolchain."
     echo "Current go version: $(go version || true)"
-    echo "Set GO_COVERAGE_TOOLCHAIN to a working toolchain (example: go1.25.8)."
+    echo "Set GO_COVERAGE_TOOLCHAIN to a working toolchain (example: go1.25.9)."
     exit 1
   fi
 }

@@ -19,23 +19,23 @@
 ## Требования
 
 - **Python:** `>=3.11` (для `ai-service`).
-- **Go (security baseline):** `>=1.25.8` (рекомендуется запускать команды через `GOTOOLCHAIN=go1.25.8`).
+- **Go (security baseline):** `>=1.25.9` (рекомендуется запускать команды через `GOTOOLCHAIN=go1.25.9`).
 
 ## Локальный Toolchain
 
-- В `backend/go.mod` зафиксирован `toolchain go1.25.8`, поэтому для повторяемых запусков используйте `GOTOOLCHAIN=go1.25.8`.
+- В `backend/go.mod` зафиксирован `toolchain go1.25.9`, поэтому для повторяемых запусков используйте `GOTOOLCHAIN=go1.25.9`.
 - Для `ai-service` и проверок (`pytest`, `pip-audit`, coverage) нужен Python `>=3.11`.
 
 Быстрая проверка локального окружения:
 ```bash
 go version
-GOTOOLCHAIN=go1.25.8 go version
+GOTOOLCHAIN=go1.25.9 go version
 python3.11 --version
 ```
 
 Рекомендуемые переменные окружения для локальной работы:
 ```bash
-export GOTOOLCHAIN=go1.25.8
+export GOTOOLCHAIN=go1.25.9
 export PYTHON_BIN=python3.11
 ```
 
