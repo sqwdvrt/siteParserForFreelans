@@ -32,7 +32,9 @@ from ai_service.adapter.sentence_transformers import CrossEncoderReranker, Sente
 from ai_service.tracing.setup import init_tracer
 from ai_service.usecase.accumulate_matches import AccumulateMatchesUseCase
 from ai_service.usecase.consumer_loop import run_consumer
+from ai_service.usecase.debug_match import DebugMatchUseCase
 from ai_service.usecase.process_job import ProcessJobUseCase
+from ai_service.util.debug_http_server import start_debug_http_server
 from ai_service.util.fallback_metrics import start_metrics_server_from_env
 from ai_service.util.postgres_pool_config import load_postgres_pool_settings
 from ai_service.util.runtime_env import require_env, resolve_redis_url
@@ -62,6 +64,8 @@ POP_TIMEOUT_SEC_ENV = "AI_PROCESS_POP_TIMEOUT_SEC"
 DEFAULT_POP_TIMEOUT_SEC = 60
 RERANK_FALLBACK_ENABLED_ENV = "RERANK_FALLBACK_ENABLED"
 DEFAULT_RERANK_FALLBACK_ENABLED = True
+DEBUG_MATCH_PORT_ENV = "AI_DEBUG_MATCH_PORT"
+DEFAULT_DEBUG_MATCH_PORT = 8093
 
 
 def _cleanup_ready_file(ready_file: str) -> None:
@@ -190,6 +194,19 @@ def _nack_inflight_messages(queue: object) -> int:
         return 0
 
 
+def _debug_match_port() -> int:
+    raw = os.getenv(DEBUG_MATCH_PORT_ENV, str(DEFAULT_DEBUG_MATCH_PORT))
+    try:
+        value = int(raw)
+    except ValueError:
+        logger.warning("invalid %s=%r, fallback to %d", DEBUG_MATCH_PORT_ENV, raw, DEFAULT_DEBUG_MATCH_PORT)
+        return DEFAULT_DEBUG_MATCH_PORT
+    if value <= 0:
+        logger.warning("non-positive %s=%r, fallback to %d", DEBUG_MATCH_PORT_ENV, raw, DEFAULT_DEBUG_MATCH_PORT)
+        return DEFAULT_DEBUG_MATCH_PORT
+    return value
+
+
 def main() -> None:
     ready_file = os.getenv(READY_FILE_ENV, DEFAULT_READY_FILE)
     _cleanup_ready_file(ready_file)
@@ -293,6 +310,22 @@ def main() -> None:
         embedding,
         **process_job_kwargs,
     )
+    debug_server = start_debug_http_server(
+        _debug_match_port(),
+        DebugMatchUseCase(
+            user_repo,
+            repo,
+            reranker=reranker,
+            similarity_threshold=threshold,
+            rerank_threshold=rerank_threshold,
+        ),
+    )
+    debug_server_thread = threading.Thread(
+        target=debug_server.serve_forever,
+        daemon=True,
+        name="ai-debug-match-http",
+    )
+    debug_server_thread.start()
     init_tracer("site-parser-ai")
     queue = RedisQueueConsumer(redis_url, queue_name)
     _mark_ready(ready_file)
@@ -341,6 +374,8 @@ def main() -> None:
     try:
         run_consumer(queue, process_job, timeout_sec=pop_timeout_sec, stop_event=stop_event)
     finally:
+        debug_server.shutdown()
+        debug_server.server_close()
         requeued = _nack_inflight_messages(queue)
         if requeued > 0:
             logger.warning("requeued %d in-flight jobs during shutdown", requeued)

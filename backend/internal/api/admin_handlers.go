@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/json"
 	"log/slog"
@@ -17,9 +18,14 @@ const adminMaxLimit = 200
 
 // AdminHandlers — HTTP handlers для /admin/* эндпоинтов.
 type AdminHandlers struct {
-	AdminRepo  port.AdminRepository
-	AdminToken string
-	Logger     *slog.Logger
+	AdminRepo        port.AdminRepository
+	DebugMatchClient AdminDebugMatchClient
+	AdminToken       string
+	Logger           *slog.Logger
+}
+
+type AdminDebugMatchClient interface {
+	GetMatchDebug(ctx context.Context, userID int64, jobURL string) (map[string]any, error)
 }
 
 func (h *AdminHandlers) logger() *slog.Logger {
@@ -147,6 +153,37 @@ func (h *AdminHandlers) ListJobs(w http.ResponseWriter, r *http.Request) {
 		"total": total,
 		"items": jobs,
 	})
+}
+
+// GetDebugMatch проксирует admin debug-match запрос во внутренний ai-service.
+// GET /admin/debug/match?user_id=1&job_url=https://...
+func (h *AdminHandlers) GetDebugMatch(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizeAdmin(w, r) {
+		return
+	}
+	if h.DebugMatchClient == nil {
+		http.Error(w, "debug match not configured", http.StatusServiceUnavailable)
+		return
+	}
+	rawUserID := strings.TrimSpace(r.URL.Query().Get("user_id"))
+	rawJobURL := strings.TrimSpace(r.URL.Query().Get("job_url"))
+	userID, err := strconv.ParseInt(rawUserID, 10, 64)
+	if err != nil || userID <= 0 {
+		http.Error(w, "invalid user_id", http.StatusBadRequest)
+		return
+	}
+	if rawJobURL == "" {
+		http.Error(w, "job_url is required", http.StatusBadRequest)
+		return
+	}
+
+	payload, err := h.DebugMatchClient.GetMatchDebug(r.Context(), userID, rawJobURL)
+	if err != nil {
+		h.logger().Error("admin debug match failed", "user_id", userID, "job_url", rawJobURL, "err", err)
+		http.Error(w, "debug match unavailable", http.StatusBadGateway)
+		return
+	}
+	writeJSON(w, payload)
 }
 
 // --- helpers ---

@@ -44,3 +44,26 @@ class UserRepository(ABC):
     def save_embedding(self, user_id: int, embedding: list[float]) -> None:
         """Сохранить embedding пользователя."""
         ...
+
+    @abstractmethod
+    def upsert_structured_profile(
+        self,
+        user_id: int,
+        *,
+        stack: tuple[str, ...],
+        specialization: str,
+        level: str,
+    ) -> None:
+        """Upsert parsed structured profile for the user."""
+        ...
+
+    @abstractmethod
+    def backfill_preferences_from_profile_parse(
+        self,
+        user_id: int,
+        *,
+        include_keywords: tuple[str, ...],
+        min_budget_hint: float | None,
+    ) -> None:
+        """Backfill empty preference fields from parser output without overwriting manual settings."""
+        ...

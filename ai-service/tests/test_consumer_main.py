@@ -21,6 +21,20 @@ def _load_consumer_main_module():
     return module
 
 
+def _patch_debug_server(monkeypatch, module) -> None:
+    class FakeDebugServer:
+        def serve_forever(self) -> None:
+            return
+
+        def shutdown(self) -> None:
+            return
+
+        def server_close(self) -> None:
+            return
+
+    monkeypatch.setattr(module, "start_debug_http_server", lambda *_args, **_kwargs: FakeDebugServer())
+
+
 def test_main_imports_without_gemini_when_classifier_disabled(monkeypatch) -> None:
     monkeypatch.setenv("ENABLE_GEMINI_CLASSIFIER", "0")
     for module_name in list(sys.modules):
@@ -50,6 +64,7 @@ def test_shutdown_grace_sec_invalid_env_fallback(monkeypatch) -> None:
 
 def test_main_caps_pop_timeout_to_shutdown_grace(monkeypatch, tmp_path: Path) -> None:
     module = _load_consumer_main_module()
+    _patch_debug_server(monkeypatch, module)
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
@@ -86,6 +101,7 @@ def test_main_caps_pop_timeout_to_shutdown_grace(monkeypatch, tmp_path: Path) ->
 
 def test_main_exits_on_missing_database_url(monkeypatch, tmp_path: Path) -> None:
     module = _load_consumer_main_module()
+    _patch_debug_server(monkeypatch, module)
 
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
     monkeypatch.delenv("DATABASE_URL", raising=False)
@@ -97,6 +113,7 @@ def test_main_exits_on_missing_database_url(monkeypatch, tmp_path: Path) -> None
 
 def test_main_forces_requeue_on_shutdown_timeout(monkeypatch, tmp_path: Path) -> None:
     module = _load_consumer_main_module()
+    _patch_debug_server(monkeypatch, module)
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
@@ -158,6 +175,7 @@ def test_main_forces_requeue_on_shutdown_timeout(monkeypatch, tmp_path: Path) ->
 
 def test_main_requeues_inflight_messages_on_clean_shutdown(monkeypatch, tmp_path: Path) -> None:
     module = _load_consumer_main_module()
+    _patch_debug_server(monkeypatch, module)
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
@@ -194,6 +212,7 @@ def test_main_requeues_inflight_messages_on_clean_shutdown(monkeypatch, tmp_path
 
 def test_main_passes_postgres_pool_settings_to_repositories(monkeypatch, tmp_path: Path) -> None:
     module = _load_consumer_main_module()
+    _patch_debug_server(monkeypatch, module)
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")
@@ -269,6 +288,7 @@ def test_main_passes_rerank_fallback_flag_into_process_job_use_case(
     expected: bool,
 ) -> None:
     module = _load_consumer_main_module()
+    _patch_debug_server(monkeypatch, module)
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://user:pass@localhost:5432/db")
     monkeypatch.setenv("REDIS_URL", "redis://localhost:6379/0")

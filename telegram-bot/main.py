@@ -24,6 +24,10 @@ from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Callable
 
+sys.path.insert(0, os.path.dirname(__file__))
+
+from handlers.debug import fetch_debug_match, format_debug_match_message, is_debug_admin
+
 try:
     import redis
 except ImportError:
@@ -1229,6 +1233,36 @@ def get_user_stats(
         {},
         headers=_signed_user_headers(api_auth_token, api_user_hmac_secret, "GET", url, telegram_id, body),
     )
+
+
+def _send_debug_match_diagnostics(
+    token: str,
+    chat_id: int,
+    telegram_id: int,
+    job_url: str,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> bool:
+    if not is_debug_admin(telegram_id, os.getenv("ADMIN_TELEGRAM_ID")):
+        send_message(token, chat_id, "Эта команда доступна только администратору.")
+        return True
+    admin_auth_token = (os.getenv("ADMIN_AUTH_TOKEN") or "").strip()
+    if not admin_auth_token:
+        send_message(token, chat_id, "Admin debug не настроен.")
+        return True
+    user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+    if user_id is None:
+        send_message(token, chat_id, "Сначала отправьте /start")
+        return True
+    payload = fetch_debug_match(api_url, admin_auth_token, user_id, job_url)
+    send_message(
+        token,
+        chat_id,
+        format_debug_match_message(job_url, payload),
+        parse_html=True,
+    )
+    return True
 
 
 def _to_int_or_default(value: object, default: int = 0) -> int:
@@ -3720,6 +3754,23 @@ def _handle_update(
             token,
             chat_id,
             telegram_id,
+            api_url,
+            api_auth_token,
+            api_user_hmac_secret,
+        )
+
+    if text == "/debug_match" or text.startswith("/debug_match "):
+        _clear_conversation_state(telegram_id)
+        rest = text[len("/debug_match"):].strip()
+        if not rest:
+            send_message(token, chat_id, "Использование: /debug_match <job_url>")
+            return True
+        _record_command("debug_match", "ok")
+        return _send_debug_match_diagnostics(
+            token,
+            chat_id,
+            telegram_id,
+            rest,
             api_url,
             api_auth_token,
             api_user_hmac_secret,

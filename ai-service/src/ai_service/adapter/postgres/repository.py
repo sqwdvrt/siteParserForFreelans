@@ -56,6 +56,36 @@ class PostgresJobRepository(PooledPostgresRepository, JobRepository):
             created_at=row["created_at"],
         )
 
+    def get_by_url(self, job_url: str) -> Job | None:
+        with self._conn() as conn:
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        id, source, url, title, description, COALESCE(budget, '') AS budget,
+                        raw_html, posted_at, created_at
+                    FROM jobs
+                    WHERE url = %s
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """,
+                    (job_url,),
+                )
+                row: dict[str, Any] | None = cur.fetchone()
+        if row is None:
+            return None
+        return Job(
+            id=row["id"],
+            source=row["source"] or "kwork",
+            url=row["url"] or "",
+            title=row["title"] or "",
+            description=row["description"],
+            budget=row["budget"] or "",
+            raw_html=row["raw_html"] or "",
+            posted_at=row["posted_at"],
+            created_at=row["created_at"],
+        )
+
     def save_embedding(
         self,
         job_id: int,

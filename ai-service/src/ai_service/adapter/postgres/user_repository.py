@@ -103,6 +103,60 @@ class PostgresUserRepository(PooledPostgresRepository, UserRepository):
                     (embedding, user_id),
                 )
 
+    def upsert_structured_profile(
+        self,
+        user_id: int,
+        *,
+        stack: tuple[str, ...],
+        specialization: str,
+        level: str,
+    ) -> None:
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO user_profile_structured (user_id, stack, specialization, level, updated_at)
+                    VALUES (%s, %s, %s, %s, NOW())
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET stack = EXCLUDED.stack,
+                        specialization = EXCLUDED.specialization,
+                        level = EXCLUDED.level,
+                        updated_at = NOW()
+                    """,
+                    (user_id, list(stack), specialization, level),
+                )
+
+    def backfill_preferences_from_profile_parse(
+        self,
+        user_id: int,
+        *,
+        include_keywords: tuple[str, ...],
+        min_budget_hint: float | None,
+    ) -> None:
+        keywords = list(self._normalize_text_values(include_keywords))
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO user_preferences (user_id, include_keywords, min_budget)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT (user_id) DO UPDATE
+                    SET include_keywords = CASE
+                            WHEN (user_preferences.include_keywords IS NULL OR cardinality(user_preferences.include_keywords) = 0)
+                                 AND EXCLUDED.include_keywords IS NOT NULL
+                                 AND cardinality(EXCLUDED.include_keywords) > 0
+                            THEN EXCLUDED.include_keywords
+                            ELSE user_preferences.include_keywords
+                        END,
+                        min_budget = CASE
+                            WHEN user_preferences.min_budget IS NULL AND EXCLUDED.min_budget IS NOT NULL
+                            THEN EXCLUDED.min_budget
+                            ELSE user_preferences.min_budget
+                        END
+                    """,
+                    (user_id, keywords, min_budget_hint),
+                )
+
     def _row_to_user(self, conn: Any, row: dict[str, Any] | None) -> User | None:
         if row is None:
             return None

@@ -146,6 +146,51 @@ def test_put_user_pause_status_returns_status_code(bot, monkeypatch):
     assert status == 204
 
 
+def test_debug_match_helper_formats_payload(bot):
+    from handlers.debug import format_debug_match_message
+
+    text = format_debug_match_message(
+        "https://kwork.ru/projects/1",
+        {
+            "project": {"title": "FastAPI backend", "source": "kwork"},
+            "embedding_similarity": 0.41,
+            "similarity_threshold": 0.62,
+            "rerank_score": 0.58,
+            "rerank_threshold": 0.60,
+            "preference_filter": {"passed": True, "reason": ""},
+            "final_score": 0.34,
+            "job_stack": ["fastapi", "postgresql"],
+            "profile_stack": ["django", "postgresql"],
+            "stack_intersection": ["postgresql"],
+            "conclusion": "не прошёл бы ANN порог (0.41 < 0.62)",
+        },
+    )
+
+    assert "Диагностика матчинга" in text
+    assert "Embedding similarity: 0.41" in text
+    assert "Rerank score: 0.58" in text
+    assert "Final score: 0.34" in text
+    assert "Пересечение: postgresql" in text
+
+
+def test_send_debug_match_requires_admin(bot, monkeypatch):
+    messages = []
+    monkeypatch.delenv("ADMIN_TELEGRAM_ID", raising=False)
+    monkeypatch.setattr(bot, "send_message", lambda *args, **kwargs: messages.append(args[2]) or True)
+
+    bot._send_debug_match_diagnostics(
+        "token",
+        123,
+        999,
+        "https://kwork.ru/projects/1",
+        "https://api.example.com",
+        "api-token",
+        "h" * 32,
+    )
+
+    assert messages == ["Эта команда доступна только администратору."]
+
+
 def test_set_my_commands_registers_public_command_surface(bot, monkeypatch):
     captured = {}
 

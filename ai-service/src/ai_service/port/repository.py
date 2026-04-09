@@ -25,6 +25,11 @@ class JobRepository(ABC):
         ...
 
     @abstractmethod
+    def get_by_url(self, job_url: str) -> Job | None:
+        """Получить job по url. None если не найден."""
+        ...
+
+    @abstractmethod
     def save_embedding(
         self,
         job_id: int,

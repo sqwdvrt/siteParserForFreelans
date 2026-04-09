@@ -21,6 +21,17 @@ type mockAdminRepo struct {
 	listJobsFunc  func(ctx context.Context, source string, limit, offset int) ([]port.AdminJob, int64, error)
 }
 
+type mockAdminDebugClient struct {
+	getMatchDebugFunc func(ctx context.Context, userID int64, jobURL string) (map[string]any, error)
+}
+
+func (m *mockAdminDebugClient) GetMatchDebug(ctx context.Context, userID int64, jobURL string) (map[string]any, error) {
+	if m.getMatchDebugFunc != nil {
+		return m.getMatchDebugFunc(ctx, userID, jobURL)
+	}
+	return map[string]any{}, nil
+}
+
 func (m *mockAdminRepo) GetStats(ctx context.Context) (*port.AdminStats, error) {
 	if m.getStatsFunc != nil {
 		return m.getStatsFunc(ctx)
@@ -287,5 +298,50 @@ func TestParseHelpers(t *testing.T) {
 	writeJSON(rr, map[string]string{"ok": "true"})
 	if ct := rr.Header().Get("Content-Type"); !strings.Contains(ct, "application/json") {
 		t.Fatalf("content-type=%q", ct)
+	}
+}
+
+func TestAdminHandlersGetDebugMatch(t *testing.T) {
+	var gotUserID int64
+	var gotJobURL string
+	h := newAdminHandlers(&mockAdminRepo{})
+	h.DebugMatchClient = &mockAdminDebugClient{
+		getMatchDebugFunc: func(ctx context.Context, userID int64, jobURL string) (map[string]any, error) {
+			gotUserID = userID
+			gotJobURL = jobURL
+			return map[string]any{"conclusion": "ok"}, nil
+		},
+	}
+
+	req := newAdminRequest(http.MethodGet, "/admin/debug/match?user_id=7&job_url=https://kwork.ru/projects/7")
+	req.URL.RawQuery = "user_id=7&job_url=https://kwork.ru/projects/7"
+	rr := httptest.NewRecorder()
+	h.GetDebugMatch(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status=%d", rr.Code)
+	}
+	if gotUserID != 7 || gotJobURL != "https://kwork.ru/projects/7" {
+		t.Fatalf("unexpected proxy args: user_id=%d job_url=%q", gotUserID, gotJobURL)
+	}
+
+	req = newAdminRequest(http.MethodGet, "/admin/debug/match?user_id=bad")
+	req.URL.RawQuery = "user_id=bad"
+	rr = httptest.NewRecorder()
+	h.GetDebugMatch(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status=%d", rr.Code)
+	}
+
+	h.DebugMatchClient = &mockAdminDebugClient{
+		getMatchDebugFunc: func(ctx context.Context, userID int64, jobURL string) (map[string]any, error) {
+			return nil, errors.New("upstream failed")
+		},
+	}
+	req = newAdminRequest(http.MethodGet, "/admin/debug/match?user_id=9&job_url=https://kwork.ru/projects/9")
+	req.URL.RawQuery = "user_id=9&job_url=https://kwork.ru/projects/9"
+	rr = httptest.NewRecorder()
+	h.GetDebugMatch(rr, req)
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("status=%d", rr.Code)
 	}
 }

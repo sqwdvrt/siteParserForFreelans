@@ -21,6 +21,7 @@ except ImportError:
 from ai_service.adapter.postgres import PostgresUserRepository
 from ai_service.adapter.redis import RedisUserEmbedQueueConsumer, RedisUserRematchQueue
 from ai_service.adapter.sentence_transformers import SentenceTransformerEmbedding
+from ai_service.adapter.gemini import GeminiProfileParser
 from ai_service.tracing.setup import init_tracer
 from ai_service.usecase.process_user_embed import ProcessUserEmbedUseCase
 from ai_service.usecase.user_embed_consumer_loop import run_user_embed_consumer
@@ -50,6 +51,7 @@ SHUTDOWN_GRACE_SEC_ENV = "AI_SHUTDOWN_GRACE_SEC"
 DEFAULT_SHUTDOWN_GRACE_SEC = 20.0
 POP_TIMEOUT_SEC_ENV = "AI_USER_EMBED_POP_TIMEOUT_SEC"
 DEFAULT_POP_TIMEOUT_SEC = 60
+PROFILE_PARSE_ENABLED_ENV = "PROFILE_PARSE_ENABLED"
 
 
 class _TrackedProcessUserEmbed:
@@ -142,6 +144,11 @@ def _pop_timeout_sec() -> int:
     return value
 
 
+def _profile_parse_enabled() -> bool:
+    raw = os.getenv(PROFILE_PARSE_ENABLED_ENV, "1").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _nack_inflight_messages(queue: object) -> int:
     nack_all_inflight = getattr(queue, "nack_all_inflight", None)
     if not callable(nack_all_inflight):
@@ -187,6 +194,7 @@ def main() -> None:
     queue_name = os.getenv("USER_EMBED_QUEUE", "user-embed")
     rematch_queue_name = os.getenv("USER_REMATCH_QUEUE", "user-rematch")
     model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    gemini_api_key = os.getenv("GEMINI_API_KEY", "")
     grace_sec = _shutdown_grace_sec()
     pop_timeout_sec = cap_blocking_pop_timeout(
         _pop_timeout_sec(),
@@ -199,11 +207,22 @@ def main() -> None:
     user_repo = PostgresUserRepository(db_url, **pg_pool_kwargs)
     embedding = SentenceTransformerEmbedding(model_name)
     user_rematch_queue = RedisUserRematchQueue(redis_url, rematch_queue_name)
+    profile_parser = None
+    if _profile_parse_enabled():
+        if gemini_api_key:
+            profile_parser = GeminiProfileParser(api_key=gemini_api_key)
+        else:
+            logger.warning("PROFILE_PARSE_ENABLED=true but GEMINI_API_KEY not set; continuing without profile parser")
     if _warmup_enabled():
         _warmup_embedding(embedding)
     else:
         logger.info("embedding warmup disabled by %s", WARMUP_ENABLED_ENV)
-    process_user_embed = ProcessUserEmbedUseCase(user_repo, embedding, user_rematch_queue)
+    process_user_embed = ProcessUserEmbedUseCase(
+        user_repo,
+        embedding,
+        user_rematch_queue,
+        profile_parser=profile_parser,
+    )
     queue = RedisUserEmbedQueueConsumer(redis_url, queue_name)
     _mark_ready(ready_file)
 

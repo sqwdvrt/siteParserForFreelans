@@ -130,6 +130,83 @@ def test_run_polling_handles_profile(bot, monkeypatch):
     send_message.assert_called_once()
 
 
+def test_run_polling_handles_debug_match_for_admin(bot, monkeypatch):
+    updates = [
+        (
+            [
+                {
+                    "update_id": 1,
+                    "message": {
+                        "chat": {"id": 100},
+                        "from": {"id": 200},
+                        "text": "/debug_match https://kwork.ru/projects/42",
+                    },
+                }
+            ],
+            2,
+        )
+    ]
+
+    monkeypatch.setenv("ADMIN_TELEGRAM_ID", "200")
+    monkeypatch.setenv("ADMIN_AUTH_TOKEN", "admin-secret-token")
+    monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
+    monkeypatch.setattr(bot, "_resolve_user_id", lambda *_args, **_kwargs: 7)
+    monkeypatch.setattr(
+        bot,
+        "fetch_debug_match",
+        lambda *_args, **_kwargs: {
+            "project": {"title": "FastAPI backend", "source": "kwork"},
+            "embedding_similarity": 0.41,
+            "similarity_threshold": 0.62,
+            "rerank_score": 0.58,
+            "rerank_threshold": 0.60,
+            "preference_filter": {"passed": True, "reason": ""},
+            "final_score": 0.34,
+            "job_stack": ["fastapi"],
+            "profile_stack": ["postgresql"],
+            "stack_intersection": [],
+            "conclusion": "не прошёл бы ANN порог (0.41 < 0.62)",
+        },
+    )
+    send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(bot, "send_message", send_message)
+
+    with pytest.raises(KeyboardInterrupt):
+        bot.run_polling("token", "https://api.example.com", "tok", "hmac")
+
+    send_message.assert_called_once()
+    assert "Диагностика матчинга" in send_message.call_args.args[2]
+
+
+def test_run_polling_rejects_debug_match_for_non_admin(bot, monkeypatch):
+    updates = [
+        (
+            [
+                {
+                    "update_id": 1,
+                    "message": {
+                        "chat": {"id": 100},
+                        "from": {"id": 201},
+                        "text": "/debug_match https://kwork.ru/projects/42",
+                    },
+                }
+            ],
+            2,
+        )
+    ]
+
+    monkeypatch.setenv("ADMIN_TELEGRAM_ID", "200")
+    monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
+    send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(bot, "send_message", send_message)
+
+    with pytest.raises(KeyboardInterrupt):
+        bot.run_polling("token", "https://api.example.com", "tok", "hmac")
+
+    send_message.assert_called_once()
+    assert "только администратору" in send_message.call_args.args[2]
+
+
 def test_run_polling_profile_uses_cached_user_id(bot, monkeypatch):
     updates = [
         (

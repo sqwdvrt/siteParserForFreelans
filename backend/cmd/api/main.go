@@ -166,9 +166,10 @@ func main() {
 	}
 
 	adminHandlers := &api.AdminHandlers{
-		AdminRepo:  adminRepo,
-		AdminToken: adminToken,
-		Logger:     slog.Default(),
+		AdminRepo:        adminRepo,
+		DebugMatchClient: &api.HTTPAdminDebugMatchClient{BaseURL: os.Getenv("AI_DEBUG_MATCH_BASE_URL")},
+		AdminToken:       adminToken,
+		Logger:           slog.Default(),
 	}
 
 	r := chi.NewRouter()
@@ -226,6 +227,7 @@ func main() {
 		r.Get("/users/{id}", adminHandlers.GetUser)
 		r.Delete("/users/{id}", adminHandlers.DeleteUser)
 		r.Get("/jobs", adminHandlers.ListJobs)
+		r.Get("/debug/match", adminHandlers.GetDebugMatch)
 	})
 
 	addr := os.Getenv("API_ADDR")
