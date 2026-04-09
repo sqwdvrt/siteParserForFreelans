@@ -22,6 +22,7 @@ class FakePage:
     goto_error: Exception | None = None
     wait_error: Exception | None = None
     content_error: Exception | None = None
+    close_error: Exception | None = None
     request_urls: list[str] | None = None
     on_goto: Any | None = None
     context: Any | None = None
@@ -54,6 +55,8 @@ class FakePage:
 
     async def close(self) -> None:
         self.closed = True
+        if self.close_error is not None:
+            raise self.close_error
 
 
 @dataclass
@@ -81,6 +84,7 @@ class FakeRoute:
 class FakeContext:
     page: FakePage
     new_page_error: Exception | None = None
+    close_error: Exception | None = None
     route_handler: Any | None = None
     route_calls: list[dict[str, Any]] = field(default_factory=list)
     closed: bool = False
@@ -99,6 +103,8 @@ class FakeContext:
 
     async def close(self) -> None:
         self.closed = True
+        if self.close_error is not None:
+            raise self.close_error
 
 
 @dataclass
@@ -146,6 +152,7 @@ class FakeBrowserPool:
 
     def __init__(self, fake_browser: FakeBrowser) -> None:
         self._fake_browser = fake_browser
+        self.marked_unhealthy = 0
 
     async def acquire(self) -> FakeBrowserInstance:
         return FakeBrowserInstance(self._fake_browser)
@@ -154,7 +161,7 @@ class FakeBrowserPool:
         pass
 
     async def mark_unhealthy(self, _instance: FakeBrowserInstance) -> None:
-        pass
+        self.marked_unhealthy += 1
 
     def get_stats(self) -> dict[str, Any]:
         healthy = self._fake_browser.connected
@@ -192,11 +199,14 @@ def client(monkeypatch: pytest.MonkeyPatch):
         main.app.router.lifespan_context = original_lifespan
 
 
-def set_browser(monkeypatch: pytest.MonkeyPatch, browser: FakeBrowser | None) -> None:
+def set_browser(monkeypatch: pytest.MonkeyPatch, browser: FakeBrowser | None) -> FakeBrowserPool | None:
     if browser is None:
         monkeypatch.setattr(main, "_browser_pool", None)
+        return None
     else:
-        monkeypatch.setattr(main, "_browser_pool", FakeBrowserPool(browser))
+        pool = FakeBrowserPool(browser)
+        monkeypatch.setattr(main, "_browser_pool", pool)
+        return pool
 
 
 def test_healthz_returns_200_when_browser_connected(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -416,6 +426,24 @@ def test_render_returns_html_for_non_kwork_pages(client: TestClient, monkeypatch
     assert page.wait_calls == []
     assert page.closed is True
     assert context.closed is True
+
+
+def test_render_returns_html_even_if_context_close_fails(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = FakePage(html="<html><body>plain</body></html>")
+    context = FakeContext(page=page, close_error=RuntimeError("cleanup boom"))
+    browser = FakeBrowser(context=context)
+    pool = set_browser(monkeypatch, browser)
+
+    response = client.get("/render", params={"url": "https://example.com/page"})
+
+    assert response.status_code == 200
+    assert response.json() == {"html": "<html><body>plain</body></html>", "url": "https://example.com/page"}
+    assert page.closed is True
+    assert context.closed is True
+    assert pool.marked_unhealthy == 1
 
 
 def test_render_waits_for_kwork_selector(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

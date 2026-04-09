@@ -569,6 +569,8 @@ async def _render_with_pool(url: str) -> JSONResponse:
     for attempt in range(max_retries):
         browser = None
         start_time = time.time()
+        response: JSONResponse | None = None
+        browser_marked_unhealthy = False
         try:
             browser = await _browser_pool.acquire()
 
@@ -610,10 +612,11 @@ async def _render_with_pool(url: str) -> JSONResponse:
 
                 log.info("render ok url=%s html_len=%d duration=%.2fs browser=%d",
                          url, len(html), duration, browser.browser_id)
-                return JSONResponse({"html": html, "url": url})
+                response = JSONResponse({"html": html, "url": url})
 
             except PWTimeoutError as exc:
                 await _browser_pool.mark_unhealthy(browser)
+                browser_marked_unhealthy = True
                 duration = time.time() - start_time
                 RENDER_DURATION.labels(status="timeout").observe(duration)
                 RENDER_REQUESTS.labels(status="timeout").inc()
@@ -624,6 +627,7 @@ async def _render_with_pool(url: str) -> JSONResponse:
                 # retry on another browser
             except Exception as exc:
                 await _browser_pool.mark_unhealthy(browser)
+                browser_marked_unhealthy = True
                 if attempt == max_retries - 1:
                     duration = time.time() - start_time
                     RENDER_DURATION.labels(status="error").observe(duration)
@@ -632,12 +636,26 @@ async def _render_with_pool(url: str) -> JSONResponse:
                     raise HTTPException(status_code=500, detail=str(exc)) from exc
                 # retry on another browser
             finally:
+                cleanup_error = None
                 if page is not None:
-                    await page.close()
+                    try:
+                        await page.close()
+                    except Exception as exc:
+                        cleanup_error = exc
                 if context is not None:
-                    await context.close()
+                    try:
+                        await context.close()
+                    except Exception as exc:
+                        cleanup_error = cleanup_error or exc
+                if cleanup_error is not None:
+                    if browser is not None and not browser_marked_unhealthy:
+                        await _browser_pool.mark_unhealthy(browser)
+                        browser_marked_unhealthy = True
+                    log.warning("render cleanup failed url=%s browser=%s err=%s", url, browser.browser_id if browser else "n/a", cleanup_error)
                 if browser:
                     await _browser_pool.release(browser)
+            if response is not None:
+                return response
         except PoolExhausted:
             if attempt == max_retries - 1:
                 RENDER_REJECTED.labels(error_type="pool_exhausted").inc()
