@@ -10,10 +10,15 @@ GO_TOOLCHAIN="${GO_TOOLCHAIN:-go1.25.9}"
 GO_GOMODCACHE="${GO_GOMODCACHE:-${ROOT_DIR}/backend/.gomodcache-${GO_TOOLCHAIN}}"
 GO_GOCACHE="${GO_GOCACHE:-${ROOT_DIR}/backend/.gocache-${GO_TOOLCHAIN}}"
 PY_MODE="local"
-PIP_AUDIT_REQ_PATH="ai-service/requirements.txt"
 AI_VENV_PYTHON="${ROOT_DIR}/ai-service/.venv/bin/python"
 SECURITY_BASELINE_SKIP_PIP_AUDIT="${SECURITY_BASELINE_SKIP_PIP_AUDIT:-0}"
-PIP_AUDIT_ARGS=(--no-deps -r "$PIP_AUDIT_REQ_PATH" --ignore-vuln CVE-2026-4539)
+PYTHON_REQ_FILES=(
+  "ai-service/requirements.txt"
+  "telegram-bot/requirements.txt"
+)
+PIP_AUDIT_IGNORE_ARGS=(
+  --ignore-vuln CVE-2026-4539
+)
 
 echo "[security] Validating pinned baseline versions"
 
@@ -84,7 +89,6 @@ else
       is_python_ge_311 docker run --rm -i --entrypoint python siteparserforfreelans-ai-service; then
       PY_MODE="docker"
       PY_CMD=(docker run --rm -i --entrypoint python siteparserforfreelans-ai-service)
-      PIP_AUDIT_REQ_PATH="/app/requirements.txt"
     fi
   fi
   if [[ ${#PY_CMD[@]} -eq 0 ]]; then
@@ -111,24 +115,41 @@ if ! grep -qiE '^pillow==12\.1\.1$' ai-service/requirements.txt; then
   exit 1
 fi
 
-REQ_SPEC_REGEX='^[A-Za-z0-9_.-]+(\[[A-Za-z0-9_,.-]+\])?==[^[:space:]#;]+([[:space:]]*;[[:space:]]*.+)?$'
-BAD_REQ_LINES=()
-REQ_LINE_NO=0
-while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
-  REQ_LINE_NO=$((REQ_LINE_NO + 1))
-  req_line="${raw_line%%#*}"
-  req_line="$(printf '%s' "$req_line" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
-  [[ -z "$req_line" ]] && continue
-  if [[ ! "$req_line" =~ $REQ_SPEC_REGEX ]]; then
-    BAD_REQ_LINES+=("${REQ_LINE_NO}:${raw_line}")
-  fi
-done < ai-service/requirements.txt
-if (( ${#BAD_REQ_LINES[@]} > 0 )); then
-  echo "ERROR: ai-service/requirements.txt must contain only pinned specs ('package==version')."
-  echo "Invalid lines:"
-  printf '  %s\n' "${BAD_REQ_LINES[@]}"
+if [[ ! -f telegram-bot/requirements.txt ]]; then
+  echo "ERROR: telegram-bot/requirements.txt is missing."
   exit 1
 fi
+
+if ! grep -qiE '^python-dotenv==1\.2\.1$' telegram-bot/requirements.txt; then
+  echo "ERROR: telegram-bot/requirements.txt must pin python-dotenv==1.2.1"
+  exit 1
+fi
+
+if ! grep -qiE '^redis==6\.4\.0$' telegram-bot/requirements.txt; then
+  echo "ERROR: telegram-bot/requirements.txt must pin redis==6.4.0"
+  exit 1
+fi
+
+REQ_SPEC_REGEX='^[A-Za-z0-9_.-]+(\[[A-Za-z0-9_,.-]+\])?==[^[:space:]#;]+([[:space:]]*;[[:space:]]*.+)?$'
+for req_file in "${PYTHON_REQ_FILES[@]}"; do
+  BAD_REQ_LINES=()
+  REQ_LINE_NO=0
+  while IFS= read -r raw_line || [[ -n "$raw_line" ]]; do
+    REQ_LINE_NO=$((REQ_LINE_NO + 1))
+    req_line="${raw_line%%#*}"
+    req_line="$(printf '%s' "$req_line" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+    [[ -z "$req_line" ]] && continue
+    if [[ ! "$req_line" =~ $REQ_SPEC_REGEX ]]; then
+      BAD_REQ_LINES+=("${REQ_LINE_NO}:${raw_line}")
+    fi
+  done < "$req_file"
+  if (( ${#BAD_REQ_LINES[@]} > 0 )); then
+    echo "ERROR: ${req_file} must contain only pinned specs ('package==version')."
+    echo "Invalid lines:"
+    printf '  %s\n' "${BAD_REQ_LINES[@]}"
+    exit 1
+  fi
+done
 
 echo "[security] Running govulncheck with ${GO_TOOLCHAIN}"
 mkdir -p "${GO_GOMODCACHE}" "${GO_GOCACHE}"
@@ -145,20 +166,31 @@ if [[ "$SECURITY_BASELINE_SKIP_PIP_AUDIT" == "1" ]]; then
 else
   echo "[security] Running pip-audit"
   if [[ "$PY_MODE" == "docker" ]]; then
-    docker run --rm --entrypoint sh siteparserforfreelans-ai-service -lc \
-      'python -m pip install --upgrade pip pip-audit >/dev/null && python -m pip_audit --no-deps -r /app/requirements.txt --ignore-vuln CVE-2026-4539'
+    docker run --rm -v "${ROOT_DIR}:/repo" --entrypoint sh siteparserforfreelans-ai-service -lc '
+      python -m pip install --upgrade pip pip-audit >/dev/null
+      python -m pip_audit --no-deps -r /repo/ai-service/requirements.txt --ignore-vuln CVE-2026-4539
+      python -m pip_audit --no-deps -r /repo/telegram-bot/requirements.txt
+    '
   else
     if is_python_virtualenv "${PY_CMD[@]}"; then
       echo "[security] Detected virtualenv Python; installing pip-audit into venv (without --user)"
       PIP_DISABLE_PIP_VERSION_CHECK=1 \
         "${PY_CMD[@]}" -m pip install --upgrade pip pip-audit >/dev/null
-      "${PY_CMD[@]}" -m pip_audit "${PIP_AUDIT_ARGS[@]}"
     else
       PIP_DISABLE_PIP_VERSION_CHECK=1 PYTHONUSERBASE="$PY_USER_BASE" HOME="$ROOT_DIR" \
         "${PY_CMD[@]}" -m pip install --upgrade --user pip pip-audit >/dev/null
-      PYTHONUSERBASE="$PY_USER_BASE" HOME="$ROOT_DIR" \
-        "${PY_CMD[@]}" -m pip_audit "${PIP_AUDIT_ARGS[@]}"
     fi
+    for req_file in "${PYTHON_REQ_FILES[@]}"; do
+      audit_args=(--no-deps -r "$req_file")
+      if [[ "$req_file" == "ai-service/requirements.txt" ]]; then
+        audit_args+=("${PIP_AUDIT_IGNORE_ARGS[@]}")
+      fi
+      if [[ "$PY_MODE" == "docker" ]]; then
+        continue
+      fi
+      PYTHONUSERBASE="$PY_USER_BASE" HOME="$ROOT_DIR" \
+        "${PY_CMD[@]}" -m pip_audit "${audit_args[@]}"
+    done
   fi
 fi
 

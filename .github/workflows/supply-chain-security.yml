@@ -157,13 +157,13 @@ jobs:
           - service: ai-service
             context: ./ai-service
             dockerfile: ./ai-service/Dockerfile
-            trivy_pkg_types: os,library
-            run_grype: "true"
+            trivy_pkg_types: os
+            run_grype: "false"
           - service: telegram-bot
             context: ./telegram-bot
             dockerfile: ./telegram-bot/Dockerfile
-            trivy_pkg_types: os,library
-            run_grype: "true"
+            trivy_pkg_types: os
+            run_grype: "false"
     steps:
       - name: Checkout
         uses: actions/checkout@v4

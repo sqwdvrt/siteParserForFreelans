@@ -2,8 +2,10 @@ FROM python:3.11-slim@sha256:b1b81d67b8df73bf6067191790c233ef9e598b863fc1ccf4479
 
 WORKDIR /app
 
+COPY requirements.txt .
+
 RUN pip install --no-cache-dir --upgrade "pip>=26.0.1" "setuptools>=80.9.0" "wheel>=0.46.2" && \
-    pip install --no-cache-dir python-dotenv==1.2.1 redis==6.4.0
+    pip install --no-cache-dir -r requirements.txt
 
 COPY main.py .
 
