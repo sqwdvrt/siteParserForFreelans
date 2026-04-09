@@ -280,6 +280,25 @@ Production monitoring overrides должны указывать на:
 - `rediss://...`
 - `postgresql://...sslmode=require`
 
+### 7.1 Node Exporter — мониторинг хоста
+
+Node Exporter добавлен в `docker-compose.monitoring.yml` и собирает CPU, RAM, disk метрики хоста VPS.
+
+При запуске monitoring stack он автоматически поднимается вместе с остальными сервисами (profile: monitoring). Экспортирует метрики на порту `9100` хоста (через `network_mode: host`).
+
+Проверка:
+
+```bash
+curl -s http://localhost:9100/metrics | grep node_filesystem_avail_bytes | head -3
+```
+
+Алерты настроены автоматически:
+- `SiteParserDiskSpaceHigh` — warning при <15% свободного места на `/`
+- `SiteParserDiskSpaceCritical` — critical при <5% свободного места
+- `SiteParserHighMemoryPressure` — warning при <10% доступной RAM
+
+Посмотреть метрики в Grafana: `http://127.0.0.1:3000` → Infra dashboard → Host panels.
+
 ## 8. Backup and restore
 
 PostgreSQL - источник истины. Redis - transient queues, его обычно не восстанавливают как полноценный state store.
