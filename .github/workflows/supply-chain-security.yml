@@ -189,6 +189,8 @@ jobs:
           docker build -t "${IMAGE_REF}" -f "${{ matrix.dockerfile }}" "${{ matrix.context }}"
 
       - name: Run Trivy scan
+        id: trivy_scan
+        continue-on-error: true
         env:
           IMAGE_REF: local/${{ matrix.service }}:${{ github.sha }}
         run: |
@@ -207,8 +209,32 @@ jobs:
             --exit-code 1 \
             "${IMAGE_REF}"
 
+      - name: Summarize Trivy findings
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f "trivy-${{ matrix.service }}.json" ]; then
+            echo "Trivy did not produce a report file."
+            exit 1
+          fi
+          jq -r '
+            [
+              .Results[]? as $result |
+              $result.Vulnerabilities[]? |
+              select(.Severity == "HIGH" or .Severity == "CRITICAL") |
+              [
+                ($result.Target // "unknown"),
+                (.PkgName // "unknown"),
+                (.InstalledVersion // "unknown"),
+                (.FixedVersion // "-"),
+                (.VulnerabilityID // "unknown"),
+                .Severity
+              ] | @tsv
+            ] | .[]
+          ' "trivy-${{ matrix.service }}.json" | sed -n '1,50p'
+
       - name: Run Grype scan
-        if: ${{ matrix.run_grype == 'true' }}
+        if: ${{ matrix.run_grype == 'true' && steps.trivy_scan.outcome == 'success' }}
         env:
           IMAGE_REF: local/${{ matrix.service }}:${{ github.sha }}
           # Trivy refreshes its DB on every run; Grype's default 5-day age guard
@@ -249,6 +275,7 @@ jobs:
           echo "SBOM signature is created on push events only (OIDC keyless signing)." > "sbom-${{ matrix.service }}.sig.note.txt"
 
       - name: Upload supply-chain artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: supply-chain-${{ matrix.service }}
@@ -261,6 +288,12 @@ jobs:
             sbom-${{ matrix.service }}.bundle
             sbom-${{ matrix.service }}.sig.note.txt
           if-no-files-found: ignore
+
+      - name: Fail on Trivy findings
+        if: ${{ steps.trivy_scan.outcome == 'failure' }}
+        run: |
+          echo "ERROR: Trivy detected HIGH/CRITICAL findings for ${{ matrix.service }}"
+          exit 1
 
   publish-gate-status:
     runs-on: ubuntu-latest
