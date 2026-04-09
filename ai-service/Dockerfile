@@ -51,21 +51,47 @@ RUN rm -rf /tmp/hf-build && mkdir -p /tmp/hf-build && \
     "${VENV_PATH}/bin/python" -u - <<'PY'
 import os
 from pathlib import Path
+from huggingface_hub import snapshot_download
 from sentence_transformers import CrossEncoder, SentenceTransformer
 
-embedding_name = os.environ["EMBEDDING_MODEL"]
-embedding_dst = Path("/opt/models") / embedding_name
-embedding_dst.parent.mkdir(parents=True, exist_ok=True)
-embedding_model = SentenceTransformer(embedding_name, cache_folder="/tmp/hf-build/sentence-transformers")
-embedding_model.save(str(embedding_dst))
-print(f"Preloaded embedding model '{embedding_name}' to '{embedding_dst}'")
+def preload_repo(model_name: str, *, validate):
+    dst = Path("/opt/models") / model_name
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    candidates = [model_name]
+    if "/" not in model_name:
+        candidates.append(f"sentence-transformers/{model_name}")
+    last_exc = None
+    for repo_id in candidates:
+        try:
+            snapshot_download(
+                repo_id=repo_id,
+                cache_dir="/tmp/hf-build",
+                local_dir=str(dst),
+            )
+            validate(str(dst))
+            print(f"Preloaded model '{model_name}' from repo '{repo_id}' to '{dst}'")
+            return
+        except Exception as exc:  # noqa: BLE001
+            last_exc = exc
+    raise last_exc
 
-rerank_name = os.environ["RERANK_MODEL"]
-rerank_dst = Path("/opt/models") / rerank_name
-rerank_dst.parent.mkdir(parents=True, exist_ok=True)
-rerank_model = CrossEncoder(rerank_name, cache_folder="/tmp/hf-build/sentence-transformers")
-rerank_model.save(str(rerank_dst))
-print(f"Preloaded rerank model '{rerank_name}' to '{rerank_dst}'")
+
+preload_repo(
+    os.environ["EMBEDDING_MODEL"],
+    validate=lambda model_path: SentenceTransformer(
+        model_path,
+        cache_folder="/tmp/hf-build/sentence-transformers",
+        local_files_only=True,
+    ),
+)
+preload_repo(
+    os.environ["RERANK_MODEL"],
+    validate=lambda model_path: CrossEncoder(
+        model_path,
+        cache_folder="/tmp/hf-build/sentence-transformers",
+        local_files_only=True,
+    ),
+)
 PY
 
 # Runtime stage: copy prebuilt venv with runtime deps only.
