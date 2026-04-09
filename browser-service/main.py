@@ -105,6 +105,15 @@ _render_queue: asyncio.Queue | None = None
 _proxy_server: "_PinnedProxy | None" = None
 
 
+async def _start_playwright() -> Playwright:
+    log.info("launching Playwright Chromium")
+    return await async_playwright().start()
+
+
+async def _stop_playwright(playwright: Playwright) -> None:
+    await playwright.stop()
+
+
 def _resolve_host_ips(host: str) -> list[str]:
     infos = socket.getaddrinfo(host, None, type=socket.SOCK_STREAM)
     ips: list[str] = []
@@ -452,8 +461,18 @@ class _PinnedProxy:
 async def lifespan(_: FastAPI):
     global _playwright, _browser_pool, _render_queue, _proxy_server
 
-    log.info("launching Playwright Chromium")
-    _playwright = await async_playwright().start()
+    async def _restart_pool_playwright() -> Playwright:
+        global _playwright
+        _playwright = await _start_playwright()
+        return _playwright
+
+    async def _shutdown_pool_playwright(playwright: Playwright) -> None:
+        global _playwright
+        await _stop_playwright(playwright)
+        if _playwright is playwright:
+            _playwright = None
+
+    _playwright = await _restart_pool_playwright()
 
     _proxy_server = _PinnedProxy()
     await _proxy_server.start()
@@ -468,6 +487,8 @@ async def lifespan(_: FastAPI):
         pool_size=pool_size,
         max_concurrent=max_concurrent,
         browser_ttl_seconds=browser_ttl,
+        playwright_factory=_restart_pool_playwright,
+        playwright_shutdown=_shutdown_pool_playwright,
     )
     await _browser_pool.initialize()
     log.info("browser pool ready: %d instances, %d concurrent each", pool_size, max_concurrent)
@@ -488,7 +509,7 @@ async def lifespan(_: FastAPI):
         if _proxy_server:
             await _proxy_server.stop()
         if _playwright:
-            await _playwright.stop()
+            await _shutdown_pool_playwright(_playwright)
         log.info("browser pool stopped")
 
 

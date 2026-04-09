@@ -10,9 +10,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from browser_pool import BrowserPool, BrowserInstance, PoolExhausted
 
 
-@pytest.fixture
-def mock_playwright():
-    """Create a mock Playwright instance."""
+def make_mock_playwright():
+    """Create a mock Playwright instance with a working browser/context pair."""
     playwright = MagicMock()
     browser = AsyncMock()
     browser.is_connected = MagicMock(return_value=True)
@@ -26,9 +25,15 @@ def mock_playwright():
 
     playwright.chromium = AsyncMock()
     playwright.chromium.launch.return_value = browser
-    playwright.chromium.new_context = AsyncMock(return_value=context)
+    browser.new_context = AsyncMock(return_value=context)
 
     return playwright, browser, context, page
+
+
+@pytest.fixture
+def mock_playwright():
+    """Create a mock Playwright instance."""
+    return make_mock_playwright()
 
 
 @pytest.fixture
@@ -224,3 +229,30 @@ class TestBrowserPool:
 
         assert instance.is_expired(14400) is True
         assert instance.is_expired(18000) is False  # 5 hours TTL
+
+    @pytest.mark.asyncio
+    async def test_recreate_browser_recovers_closed_playwright_transport(self):
+        stale_pw, stale_browser, stale_context, _ = make_mock_playwright()
+        fresh_pw, fresh_browser, fresh_context, _ = make_mock_playwright()
+        playwright_factory = AsyncMock(return_value=fresh_pw)
+        playwright_shutdown = AsyncMock()
+
+        pool = BrowserPool(
+            stale_pw,
+            pool_size=1,
+            playwright_factory=playwright_factory,
+            playwright_shutdown=playwright_shutdown,
+        )
+        await pool.initialize()
+
+        stale_pw.chromium.launch.side_effect = RuntimeError("BrowserType.launch: the handler is closed")
+
+        await pool._recreate_browser(0)
+
+        playwright_factory.assert_awaited_once()
+        playwright_shutdown.assert_awaited_once_with(stale_pw)
+        assert pool._playwright is fresh_pw
+        assert pool._instances[0].browser is fresh_browser
+        assert pool._instances[0].context is fresh_context
+
+        await pool.shutdown()

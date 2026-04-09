@@ -8,7 +8,7 @@ automatic recycling (TTL-based), and background recreation of unhealthy browsers
 import asyncio
 import logging
 import time
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from playwright.async_api import Browser, BrowserContext, Playwright
 
@@ -76,14 +76,19 @@ class BrowserPool:
         max_concurrent: int = 5,
         browser_ttl_seconds: int = 14400,
         launch_args: list[str] | None = None,
+        playwright_factory: Callable[[], Awaitable[Playwright]] | None = None,
+        playwright_shutdown: Callable[[Playwright], Awaitable[None]] | None = None,
     ) -> None:
         self._playwright: Playwright = playwright_instance
         self._pool_size: int = pool_size
         self._max_concurrent: int = max_concurrent
         self._browser_ttl: int = browser_ttl_seconds
         self._launch_args: list[str] = launch_args or list(DEFAULT_ARGS)
+        self._playwright_factory = playwright_factory
+        self._playwright_shutdown = playwright_shutdown
         self._instances: list[BrowserInstance] = []
         self._lock: asyncio.Lock = asyncio.Lock()
+        self._recovery_lock: asyncio.Lock = asyncio.Lock()
         self._health_check_task: asyncio.Task[None] | None = None
 
     async def initialize(self) -> None:
@@ -206,20 +211,13 @@ class BrowserPool:
 
     async def _create_browser(self, browser_id: int) -> None:
         """Create a new browser instance."""
-        browser = await self._playwright.chromium.launch(
-            headless=True,
-            args=self._launch_args,
-        )
-        context = await browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            ),
-            locale="ru-RU",
-            timezone_id="Europe/Moscow",
-            service_workers="block",
-        )
-        instance = BrowserInstance(browser, context, browser_id, self._max_concurrent)
+        failed_playwright = self._playwright
+        try:
+            instance = await self._launch_browser_instance(browser_id)
+        except Exception as exc:
+            if not await self._recover_transport_if_needed(failed_playwright, exc):
+                raise
+            return
         async with self._lock:
             # Replace old instance if it exists
             old_indices = [i for i, b in enumerate(self._instances) if b.browser_id == browser_id]
@@ -250,3 +248,68 @@ class BrowserPool:
                     name=f"recreate-browser-{browser_id}-retry",
                 ),
             )
+
+    async def _launch_browser_instance(self, browser_id: int) -> BrowserInstance:
+        browser = await self._playwright.chromium.launch(
+            headless=True,
+            args=self._launch_args,
+        )
+        context = await browser.new_context(
+            user_agent=(
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            ),
+            locale="ru-RU",
+            timezone_id="Europe/Moscow",
+            service_workers="block",
+        )
+        return BrowserInstance(browser, context, browser_id, self._max_concurrent)
+
+    async def _recover_transport_if_needed(self, failed_playwright: Playwright, exc: Exception) -> bool:
+        if not self._is_transport_closed_error(exc):
+            return False
+        if self._playwright_factory is None:
+            return False
+        if self._playwright is not failed_playwright:
+            return True
+
+        async with self._recovery_lock:
+            if self._playwright is not failed_playwright:
+                return True
+
+            logger.warning("playwright transport closed, rebuilding browser pool: %s", exc)
+            old_instances = list(self._instances)
+            async with self._lock:
+                self._instances = []
+
+            for instance in old_instances:
+                try:
+                    await instance.browser.close()
+                except Exception:
+                    logger.exception(
+                        "failed to close browser %d during transport recovery",
+                        instance.browser_id,
+                    )
+
+            if self._playwright_shutdown is not None:
+                try:
+                    await self._playwright_shutdown(failed_playwright)
+                except Exception:
+                    logger.exception("failed to stop stale playwright during recovery")
+
+            self._playwright = await self._playwright_factory()
+
+            new_instances: list[BrowserInstance] = []
+            for browser_id in range(self._pool_size):
+                new_instances.append(await self._launch_browser_instance(browser_id))
+
+            async with self._lock:
+                self._instances = new_instances
+
+            logger.info("browser pool recovered after playwright transport restart")
+            return True
+
+    @staticmethod
+    def _is_transport_closed_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "handler is closed" in message or "transport closed" in message
