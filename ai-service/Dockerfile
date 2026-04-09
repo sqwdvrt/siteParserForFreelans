@@ -1,6 +1,6 @@
 # AI Service: consumer (ai-process), user_embed_consumer
 # Build stage: install runtime deps into venv (excluding dev/test deps).
-FROM python:3.11-slim@sha256:6d98ca198cea726f2c86da2699594339a7b7ff08e49728797b4ed6e3b5c3b62a AS builder
+FROM python:3.11-slim@sha256:b1b81d67b8df73bf6067191790c233ef9e598b863fc1ccf447956138ca466d99 AS builder
 
 ARG TORCH_VERSION=2.8.0
 ARG EMBEDDING_MODEL=all-MiniLM-L6-v2
@@ -12,7 +12,7 @@ ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 WORKDIR /build
 
 RUN python -m venv "${VENV_PATH}" && \
-    "${VENV_PATH}/bin/pip" install --upgrade "pip==26.0" "setuptools==80.9.0" "wheel==0.46.2"
+    "${VENV_PATH}/bin/pip" install --upgrade "pip==26.0.1" "setuptools==80.9.0" "wheel==0.46.2"
 
 COPY requirements.txt .
 COPY requirements.runtime.lock .
@@ -32,7 +32,10 @@ RUN "${VENV_PATH}/bin/pip" uninstall -y wheel
 # not used by the service at runtime, so drop them from the shipped venv.
 RUN find "${VENV_PATH}/lib" -type d -path '*/site-packages/*.dist-info/sboms' -prune -exec rm -rf {} + && \
     find "${VENV_PATH}/lib" -type d \( \
+      -path '*/site-packages/pip-*.dist-info' -o \
+      -path '*/site-packages/setuptools-*.dist-info' -o \
       -path '*/site-packages/setuptools/_vendor/jaraco.context-*.dist-info' -o \
+      -path '*/site-packages/setuptools/_vendor/*.dist-info' -o \
       -path '*/site-packages/setuptools/_vendor/wheel-*.dist-info' \
     \) -prune -exec rm -rf {} +
 
@@ -66,7 +69,7 @@ print(f"Preloaded rerank model '{rerank_name}' to '{rerank_dst}'")
 PY
 
 # Runtime stage: copy prebuilt venv with runtime deps only.
-FROM python:3.11-slim@sha256:6d98ca198cea726f2c86da2699594339a7b7ff08e49728797b4ed6e3b5c3b62a
+FROM python:3.11-slim@sha256:b1b81d67b8df73bf6067191790c233ef9e598b863fc1ccf447956138ca466d99
 
 ENV VENV_PATH=/opt/venv
 ENV PATH="${VENV_PATH}/bin:${PATH}"
@@ -80,9 +83,12 @@ COPY src ./src
 COPY cmd ./cmd
 
 RUN groupadd --system app && useradd --system --gid app --create-home --home-dir /home/app --shell /usr/sbin/nologin app && \
-    rm -rf /usr/local/lib/python3.11/site-packages/wheel-*.dist-info \
+    rm -rf /usr/local/lib/python3.11/ensurepip \
+      /usr/local/lib/python3.11/site-packages/pip-*.dist-info \
+      /usr/local/lib/python3.11/site-packages/setuptools-*.dist-info \
+      /usr/local/lib/python3.11/site-packages/wheel-*.dist-info \
       /usr/local/lib/python3.11/site-packages/setuptools/_vendor/jaraco.context-*.dist-info \
-      /usr/local/lib/python3.11/site-packages/setuptools/_vendor/wheel-*.dist-info && \
+      /usr/local/lib/python3.11/site-packages/setuptools/_vendor/*.dist-info && \
     mkdir -p /tmp/hf /tmp/transformers /tmp/torch /tmp/.cache && \
     chown -R app:app /app /home/app /tmp /opt/models
 

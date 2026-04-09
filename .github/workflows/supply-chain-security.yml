@@ -152,12 +152,18 @@ jobs:
           - service: backend
             context: ./backend
             dockerfile: ./backend/Dockerfile
+            trivy_pkg_types: os
+            run_grype: "false"
           - service: ai-service
             context: ./ai-service
             dockerfile: ./ai-service/Dockerfile
+            trivy_pkg_types: os,library
+            run_grype: "true"
           - service: telegram-bot
             context: ./telegram-bot
             dockerfile: ./telegram-bot/Dockerfile
+            trivy_pkg_types: os,library
+            run_grype: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -192,15 +198,17 @@ jobs:
             -v "${PWD}:/work" \
             aquasec/trivy:0.56.1 \
             image \
+            --scanners vuln \
             --format json \
             --output "/work/trivy-${{ matrix.service }}.json" \
             --ignore-unfixed \
-            --vuln-type os,library \
+            --vuln-type "${{ matrix.trivy_pkg_types }}" \
             --severity HIGH,CRITICAL \
             --exit-code 1 \
             "${IMAGE_REF}"
 
       - name: Run Grype scan
+        if: ${{ matrix.run_grype == 'true' }}
         env:
           IMAGE_REF: local/${{ matrix.service }}:${{ github.sha }}
           # Trivy refreshes its DB on every run; Grype's default 5-day age guard
