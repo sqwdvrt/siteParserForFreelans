@@ -8,6 +8,7 @@ RUN pip install --no-cache-dir --upgrade "pip>=26.0.1" "setuptools>=80.9.0" "whe
     pip install --no-cache-dir -r requirements.txt
 
 COPY main.py .
+COPY handlers ./handlers
 
 RUN rm -rf /usr/local/lib/python3.11/ensurepip && \
     find /usr/local/lib/python3.11/site-packages -type d -path '*/site-packages/*.dist-info/sboms' -prune -exec rm -rf {} + && \
