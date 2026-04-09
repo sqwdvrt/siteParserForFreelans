@@ -1,6 +1,6 @@
 # AI Service: consumer (ai-process), user_embed_consumer
 # Build stage: install runtime deps into venv (excluding dev/test deps).
-FROM python:3.11-slim@sha256:b1b81d67b8df73bf6067191790c233ef9e598b863fc1ccf447956138ca466d99 AS builder
+FROM python:3.11-slim-bookworm@sha256:9c6f90801e6b68e772b7c0ca74260cbf7af9f320acec894e26fccdaccfbe3b47 AS builder
 
 ARG TORCH_VERSION=2.8.0
 ARG EMBEDDING_MODEL=all-MiniLM-L6-v2
@@ -69,7 +69,7 @@ print(f"Preloaded rerank model '{rerank_name}' to '{rerank_dst}'")
 PY
 
 # Runtime stage: copy prebuilt venv with runtime deps only.
-FROM python:3.11-slim@sha256:b1b81d67b8df73bf6067191790c233ef9e598b863fc1ccf447956138ca466d99
+FROM python:3.11-slim-bookworm@sha256:9c6f90801e6b68e772b7c0ca74260cbf7af9f320acec894e26fccdaccfbe3b47
 
 ENV VENV_PATH=/opt/venv
 ENV PATH="${VENV_PATH}/bin:${PATH}"
