@@ -230,6 +230,127 @@ func TestNotificationRepository_Delete(t *testing.T) {
 	}
 }
 
+func TestNotificationRepository_EnsurePending_SkipWhenMissed(t *testing.T) {
+	pool := setupTestDBForNotification(t)
+	repo := NewNotificationRepository(pool)
+	ctx := context.Background()
+	userID, jobID := createTestUserAndJob(t, pool, "EnsurePendingSkipMissed")
+
+	if _, _, err := repo.EnsurePending(ctx, userID, jobID, 0.40, 0.50, "v1", []string{"initial"}, "initial"); err != nil {
+		t.Fatalf("EnsurePending: %v", err)
+	}
+	if err := repo.MarkMissed(ctx, userID, jobID); err != nil {
+		t.Fatalf("MarkMissed: %v", err)
+	}
+
+	wasInserted, shouldSend, err := repo.EnsurePending(ctx, userID, jobID, 0.75, 0.90, "v2", []string{"better"}, "updated why")
+	if err != nil {
+		t.Fatalf("EnsurePending after missed: %v", err)
+	}
+	if wasInserted {
+		t.Fatal("want wasInserted=false when notification already in missed backlog")
+	}
+	if shouldSend {
+		t.Fatal("want shouldSend=false when notification already in missed backlog")
+	}
+
+	var status string
+	var matchScore float64
+	var finalScore float64
+	var rankerVersion string
+	var whyItFits string
+	if err := pool.QueryRow(ctx, `
+		SELECT status, COALESCE(match_score, 0), COALESCE(final_score, 0), COALESCE(ranker_version, ''), COALESCE(why_it_fits, '')
+		FROM notifications
+		WHERE user_id = $1 AND job_id = $2
+	`, userID, jobID).Scan(&status, &matchScore, &finalScore, &rankerVersion, &whyItFits); err != nil {
+		t.Fatalf("query missed notification: %v", err)
+	}
+	if status != "missed" {
+		t.Fatalf("status = %q, want missed", status)
+	}
+	if matchScore != 0.75 || finalScore != 0.90 {
+		t.Fatalf("scores = (%v,%v), want (0.75,0.90)", matchScore, finalScore)
+	}
+	if rankerVersion != "v2" {
+		t.Fatalf("rankerVersion = %q, want v2", rankerVersion)
+	}
+	if whyItFits != "updated why" {
+		t.Fatalf("whyItFits = %q, want updated why", whyItFits)
+	}
+}
+
+func TestNotificationRepository_GetMissedForUser_ConvertAndDelete(t *testing.T) {
+	pool := setupTestDBForNotification(t)
+	repo := NewNotificationRepository(pool)
+	ctx := context.Background()
+	userID, jobID1 := createTestUserAndJob(t, pool, "MissedConvert1")
+	_, jobID2 := createTestUserAndJob(t, pool, "MissedConvert2")
+
+	if _, _, err := repo.EnsurePending(ctx, userID, jobID1, 0.55, 0.65, "v1", []string{"one"}, "why one"); err != nil {
+		t.Fatalf("EnsurePending 1: %v", err)
+	}
+	if _, _, err := repo.EnsurePending(ctx, userID, jobID2, 0.70, 0.80, "v2", []string{"two"}, "why two"); err != nil {
+		t.Fatalf("EnsurePending 2: %v", err)
+	}
+	if err := repo.MarkMissed(ctx, userID, jobID1); err != nil {
+		t.Fatalf("MarkMissed 1: %v", err)
+	}
+	if err := repo.MarkMissed(ctx, userID, jobID2); err != nil {
+		t.Fatalf("MarkMissed 2: %v", err)
+	}
+
+	missed, err := repo.GetMissedForUser(ctx, userID)
+	if err != nil {
+		t.Fatalf("GetMissedForUser: %v", err)
+	}
+	if len(missed) != 2 {
+		t.Fatalf("missed len = %d, want 2", len(missed))
+	}
+	if missed[0].JobID != jobID2 || missed[1].JobID != jobID1 {
+		t.Fatalf("missed order = [%d %d], want [%d %d]", missed[0].JobID, missed[1].JobID, jobID2, jobID1)
+	}
+	if missed[0].JobStatus != "active" {
+		t.Fatalf("job status = %q, want active", missed[0].JobStatus)
+	}
+
+	converted, err := repo.ConvertMissedToPending(ctx, []int64{missed[0].ID})
+	if err != nil {
+		t.Fatalf("ConvertMissedToPending: %v", err)
+	}
+	if converted != 1 {
+		t.Fatalf("converted = %d, want 1", converted)
+	}
+
+	var convertedStatus string
+	if err := pool.QueryRow(ctx, `
+		SELECT status FROM notifications WHERE id = $1
+	`, missed[0].ID).Scan(&convertedStatus); err != nil {
+		t.Fatalf("query converted notification: %v", err)
+	}
+	if convertedStatus != "pending" {
+		t.Fatalf("converted status = %q, want pending", convertedStatus)
+	}
+
+	deleted, err := repo.DeleteNotifications(ctx, []int64{missed[1].ID})
+	if err != nil {
+		t.Fatalf("DeleteNotifications: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+
+	var remaining int
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM notifications WHERE user_id = $1
+	`, userID).Scan(&remaining); err != nil {
+		t.Fatalf("count notifications: %v", err)
+	}
+	if remaining != 1 {
+		t.Fatalf("remaining = %d, want 1", remaining)
+	}
+}
+
 func TestNotificationRepository_SentRecently(t *testing.T) {
 	pool := setupTestDBForNotification(t)
 	repo := NewNotificationRepository(pool)

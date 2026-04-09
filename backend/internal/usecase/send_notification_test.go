@@ -17,10 +17,12 @@ type mockNotifRepo struct {
 	markDispatchedFunc func(ctx context.Context, userID, jobID int64) error
 	markSentFunc       func(ctx context.Context, userID, jobID int64) error
 	markFailedFunc     func(ctx context.Context, userID, jobID int64) error
+	markMissedFunc     func(ctx context.Context, userID, jobID int64) error
 	deleteFunc         func(ctx context.Context, userID, jobID int64) error
 	sentRecentlyFunc   func(ctx context.Context, userID int64, within time.Duration) (bool, error)
 	countTodayFunc     func(ctx context.Context, userID int64) (int, error)
 	deleteCalls        [][2]int64
+	markMissedCalls    [][2]int64
 }
 
 func (m *mockNotifRepo) EnsurePending(ctx context.Context, userID, jobID int64, score float64, finalScore float64, rankerVersion string, reasonCodes []string, whyItFits string) (bool, bool, error) {
@@ -47,6 +49,22 @@ func (m *mockNotifRepo) ReleasePendingDigestNotifications(ctx context.Context, u
 	return nil
 }
 func (m *mockNotifRepo) ReclaimStaleDigestClaims(ctx context.Context, olderThan time.Duration) (int64, error) {
+	return 0, nil
+}
+func (m *mockNotifRepo) MarkMissed(ctx context.Context, userID, jobID int64) error {
+	m.markMissedCalls = append(m.markMissedCalls, [2]int64{userID, jobID})
+	if m.markMissedFunc != nil {
+		return m.markMissedFunc(ctx, userID, jobID)
+	}
+	return nil
+}
+func (m *mockNotifRepo) GetMissedForUser(ctx context.Context, userID int64) ([]port.MissedNotification, error) {
+	return nil, nil
+}
+func (m *mockNotifRepo) ConvertMissedToPending(ctx context.Context, notificationIDs []int64) (int64, error) {
+	return 0, nil
+}
+func (m *mockNotifRepo) DeleteNotifications(ctx context.Context, notificationIDs []int64) (int64, error) {
 	return 0, nil
 }
 
@@ -239,14 +257,15 @@ func TestSendNotification_Execute_RateLimited(t *testing.T) {
 
 func TestSendNotification_Execute_DailyLimitReached(t *testing.T) {
 	sent := false
-	uc := NewSendNotification(
-		&mockNotifRepo{
-			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
-				return true, true, nil
-			},
-			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
-			countTodayFunc:   func(context.Context, int64) (int, error) { return 5, nil },
+	notifRepo := &mockNotifRepo{
+		ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
+			return true, true, nil
 		},
+		sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
+		countTodayFunc:   func(context.Context, int64) (int, error) { return 5, nil },
+	}
+	uc := NewSendNotification(
+		notifRepo,
 		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
 			return &domain.User{ID: 1, TelegramID: 999}, nil
 		}},
@@ -264,6 +283,9 @@ func TestSendNotification_Execute_DailyLimitReached(t *testing.T) {
 	}
 	if sent {
 		t.Error("must not send when daily limit (5) reached")
+	}
+	if len(notifRepo.markMissedCalls) != 1 || notifRepo.markMissedCalls[0] != [2]int64{1, 1} {
+		t.Fatalf("markMissedCalls=%v, want [[1 1]]", notifRepo.markMissedCalls)
 	}
 }
 
@@ -757,8 +779,8 @@ func TestSendNotification_Execute_MarkDispatchedFails_DoesNotSend(t *testing.T) 
 
 // TestSendNotification_Execute_RateLimited_DeletesRecord проверяет, что при rate limit
 // только что созданная pending-запись удаляется.
-func TestSendNotification_Execute_RateLimited_DeletesRecord(t *testing.T) {
-	deleteCalled := false
+func TestSendNotification_Execute_RateLimited_MarksMissed(t *testing.T) {
+	missedCalled := false
 	uc := NewSendNotification(
 		&mockNotifRepo{
 			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
@@ -767,8 +789,8 @@ func TestSendNotification_Execute_RateLimited_DeletesRecord(t *testing.T) {
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) {
 				return true, nil // rate limited
 			},
-			deleteFunc: func(context.Context, int64, int64) error {
-				deleteCalled = true
+			markMissedFunc: func(context.Context, int64, int64) error {
+				missedCalled = true
 				return nil
 			},
 		},
@@ -788,22 +810,22 @@ func TestSendNotification_Execute_RateLimited_DeletesRecord(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if !deleteCalled {
-		t.Fatal("must delete pending record when rate limited")
+	if !missedCalled {
+		t.Fatal("must mark new notification as missed when rate limited")
 	}
 }
 
-func TestSendNotification_ExecuteBatch_RateLimited_DropsNewItems(t *testing.T) {
+func TestSendNotification_ExecuteBatch_RateLimited_MarksMissedNewItems(t *testing.T) {
 	sent := false
-	deletedJobIDs := make([]int64, 0, 2)
+	missedJobIDs := make([]int64, 0, 2)
 	uc := NewSendNotification(
 		&mockNotifRepo{
 			ensurePendingFunc: func(_ context.Context, _ int64, _ int64, _ float64, _ float64, _ string, _ []string, _ string) (bool, bool, error) {
 				return true, true, nil // new batch items
 			},
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return true, nil },
-			deleteFunc: func(_ context.Context, _ int64, jobID int64) error {
-				deletedJobIDs = append(deletedJobIDs, jobID)
+			markMissedFunc: func(_ context.Context, _ int64, jobID int64) error {
+				missedJobIDs = append(missedJobIDs, jobID)
 				return nil
 			},
 		},
@@ -829,8 +851,8 @@ func TestSendNotification_ExecuteBatch_RateLimited_DropsNewItems(t *testing.T) {
 	if sent {
 		t.Fatal("must not send batch when all items are rate limited")
 	}
-	if len(deletedJobIDs) != 2 {
-		t.Fatalf("deleted jobs=%d, want 2", len(deletedJobIDs))
+	if len(missedJobIDs) != 2 {
+		t.Fatalf("missed jobs=%d, want 2", len(missedJobIDs))
 	}
 }
 
@@ -897,8 +919,8 @@ func TestSendNotification_ExecuteBatch_RetryBypassesRateLimit(t *testing.T) {
 
 func TestSendNotification_ExecuteBatch_DailyLimit_TrimsNewItems(t *testing.T) {
 	sent := false
-	deletedJobIDs := make([]int64, 0, 2)
 	markedJobIDs := make([]int64, 0, 2)
+	missedJobIDs := make([]int64, 0, 2)
 	ensureCalls := 0
 
 	uc := NewSendNotification(
@@ -916,8 +938,8 @@ func TestSendNotification_ExecuteBatch_DailyLimit_TrimsNewItems(t *testing.T) {
 			},
 			sentRecentlyFunc: func(context.Context, int64, time.Duration) (bool, error) { return false, nil },
 			countTodayFunc:   func(context.Context, int64) (int, error) { return 4, nil }, // maxPerDay=5 => keep 1 new
-			deleteFunc: func(_ context.Context, _ int64, jobID int64) error {
-				deletedJobIDs = append(deletedJobIDs, jobID)
+			markMissedFunc: func(_ context.Context, _ int64, jobID int64) error {
+				missedJobIDs = append(missedJobIDs, jobID)
 				return nil
 			},
 			markSentFunc: func(_ context.Context, _ int64, jobID int64) error {
@@ -951,8 +973,8 @@ func TestSendNotification_ExecuteBatch_DailyLimit_TrimsNewItems(t *testing.T) {
 	if !sent {
 		t.Fatal("must send trimmed batch")
 	}
-	if len(deletedJobIDs) != 1 || deletedJobIDs[0] != 20 {
-		t.Fatalf("deleted jobs=%v, want [20]", deletedJobIDs)
+	if len(missedJobIDs) != 1 || missedJobIDs[0] != 20 {
+		t.Fatalf("missed jobs=%v, want [20]", missedJobIDs)
 	}
 	if len(markedJobIDs) != 2 {
 		t.Fatalf("marked jobs=%v, want 2 items", markedJobIDs)

@@ -73,6 +73,16 @@ func (m *mockExpireNotifRepo) ReleasePendingDigestNotifications(_ context.Contex
 func (m *mockExpireNotifRepo) ReclaimStaleDigestClaims(_ context.Context, _ time.Duration) (int64, error) {
 	return 0, nil
 }
+func (m *mockExpireNotifRepo) MarkMissed(_ context.Context, _, _ int64) error { return nil }
+func (m *mockExpireNotifRepo) GetMissedForUser(_ context.Context, _ int64) ([]port.MissedNotification, error) {
+	return nil, nil
+}
+func (m *mockExpireNotifRepo) ConvertMissedToPending(_ context.Context, _ []int64) (int64, error) {
+	return 0, nil
+}
+func (m *mockExpireNotifRepo) DeleteNotifications(_ context.Context, _ []int64) (int64, error) {
+	return 0, nil
+}
 func (m *mockExpireNotifRepo) CancelPendingByJobIDs(_ context.Context, jobIDs []int64) (int64, error) {
 	m.cancelledJobIDs = append(m.cancelledJobIDs, jobIDs...)
 	if m.cancelErr != nil {

@@ -12,6 +12,20 @@ type PendingNotification struct {
 	WhyItFits  string
 }
 
+// MissedNotification stores jobs preserved after rate/daily-limit drops.
+type MissedNotification struct {
+	ID            int64
+	UserID        int64
+	JobID         int64
+	MatchScore    float64
+	FinalScore    float64
+	RankerVersion string
+	ReasonCodes   []string
+	WhyItFits     string
+	JobStatus     string
+	JobCreatedAt  time.Time
+}
+
 // NotificationRepository — репозиторий уведомлений (дедупликация, at-most-once delivery, rate limit).
 type NotificationRepository interface {
 	// EnsurePending вставляет запись со статусом 'pending', если её ещё нет.
@@ -66,4 +80,16 @@ type NotificationRepository interface {
 	// CancelPendingByJobIDs удаляет все pending-уведомления для указанных job_id.
 	// Вызывается при экспирации jobs, чтобы не отправлять уведомления о закрытых вакансиях.
 	CancelPendingByJobIDs(ctx context.Context, jobIDs []int64) (int64, error)
+
+	// MarkMissed переводит запись в backlog-статус 'missed' после rate/daily-limit skip.
+	MarkMissed(ctx context.Context, userID, jobID int64) error
+
+	// GetMissedForUser возвращает backlog missed-записей пользователя с данными о job.
+	GetMissedForUser(ctx context.Context, userID int64) ([]MissedNotification, error)
+
+	// ConvertMissedToPending переводит указанные missed-записи обратно в pending.
+	ConvertMissedToPending(ctx context.Context, notificationIDs []int64) (int64, error)
+
+	// DeleteNotifications удаляет записи notifications по их id.
+	DeleteNotifications(ctx context.Context, notificationIDs []int64) (int64, error)
 }

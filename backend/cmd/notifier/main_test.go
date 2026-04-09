@@ -310,6 +310,18 @@ func (s *stubNotifRepo) ReleasePendingDigestNotifications(ctx context.Context, u
 func (s *stubNotifRepo) ReclaimStaleDigestClaims(ctx context.Context, olderThan time.Duration) (int64, error) {
 	return 0, nil
 }
+func (s *stubNotifRepo) MarkMissed(ctx context.Context, userID, jobID int64) error {
+	return nil
+}
+func (s *stubNotifRepo) GetMissedForUser(ctx context.Context, userID int64) ([]port.MissedNotification, error) {
+	return nil, nil
+}
+func (s *stubNotifRepo) ConvertMissedToPending(ctx context.Context, notificationIDs []int64) (int64, error) {
+	return 0, nil
+}
+func (s *stubNotifRepo) DeleteNotifications(ctx context.Context, notificationIDs []int64) (int64, error) {
+	return 0, nil
+}
 
 func (s *stubNotifRepo) MarkSent(ctx context.Context, userID, jobID int64) error {
 	if s.markSent != nil {

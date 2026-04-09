@@ -105,6 +105,9 @@ func (d *DailyDigest) sendDigestForUser(ctx context.Context, userID int64) error
 		slog.Debug("daily digest: daily limit already reached", "user_id", userID)
 		return nil
 	}
+	if err := d.recoverMissedNotifications(ctx, userID, remaining); err != nil {
+		return err
+	}
 
 	pending, err := d.notifRepo.ClaimPendingDigestNotifications(ctx, userID, remaining)
 	if err != nil {
@@ -179,6 +182,41 @@ func (d *DailyDigest) sendDigestForUser(ctx context.Context, userID int64) error
 	}
 	slog.Info("daily digest: sent", "user_id", userID, "jobs", len(delivered))
 	return nil
+}
+
+func (d *DailyDigest) recoverMissedNotifications(ctx context.Context, userID int64, remaining int) error {
+	if remaining <= 0 {
+		return nil
+	}
+	missed, err := d.notifRepo.GetMissedForUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if len(missed) == 0 {
+		return nil
+	}
+
+	convertIDs := make([]int64, 0, remaining)
+	deleteIDs := make([]int64, 0)
+	for _, item := range missed {
+		if item.JobStatus != "" && item.JobStatus != "active" {
+			deleteIDs = append(deleteIDs, item.ID)
+			continue
+		}
+		if len(convertIDs) < remaining {
+			convertIDs = append(convertIDs, item.ID)
+		}
+	}
+	if len(deleteIDs) > 0 {
+		if _, err := d.notifRepo.DeleteNotifications(ctx, deleteIDs); err != nil {
+			return err
+		}
+	}
+	if len(convertIDs) == 0 {
+		return nil
+	}
+	_, err = d.notifRepo.ConvertMissedToPending(ctx, convertIDs)
+	return err
 }
 
 func (d *DailyDigest) recordNotificationSent(ctx context.Context, userID int64, job *domain.Job, deliveryMode string) error {

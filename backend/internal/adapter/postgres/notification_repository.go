@@ -79,6 +79,24 @@ func (r *NotificationRepository) EnsurePending(
 			return false, false, err
 		}
 	}
+	if status == "missed" {
+		if _, err := r.pool.Exec(ctx, `
+			UPDATE notifications
+			SET
+				match_score = GREATEST(COALESCE(match_score, 0), $3),
+				final_score = GREATEST(COALESCE(final_score, 0), $4),
+				ranker_version = COALESCE(NULLIF($5, ''), ranker_version),
+				reason_codes = CASE
+					WHEN array_length($6::text[], 1) IS NULL THEN reason_codes
+					ELSE $6
+				END,
+				why_it_fits = COALESCE(NULLIF($7, ''), why_it_fits)
+			WHERE user_id = $1 AND job_id = $2 AND status = 'missed'
+		`, userID, jobID, matchScore, finalScore, rankerVersion, reasonCodes, whyItFits); err != nil {
+			return false, false, err
+		}
+		return false, false, nil
+	}
 	if status == "sending" || status == "dispatched" {
 		return false, false, nil
 	}
@@ -181,6 +199,100 @@ func (r *NotificationRepository) CancelPendingByJobIDs(ctx context.Context, jobI
 	}
 	tag, err := r.pool.Exec(ctx,
 		`DELETE FROM notifications WHERE job_id = ANY($1) AND status = 'pending'`, jobIDs)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// MarkMissed preserves a newly inserted notification in backlog state when a user hits delivery limits.
+func (r *NotificationRepository) MarkMissed(ctx context.Context, userID, jobID int64) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE notifications
+		SET status = 'missed',
+		    claimed_at = NULL,
+		    sent_at = NULL
+		WHERE user_id = $1
+		  AND job_id = $2
+		  AND status = 'pending'
+	`, userID, jobID)
+	return err
+}
+
+// GetMissedForUser returns backlog notifications ordered by best score first.
+func (r *NotificationRepository) GetMissedForUser(ctx context.Context, userID int64) ([]port.MissedNotification, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT
+			n.id,
+			n.user_id,
+			n.job_id,
+			COALESCE(n.match_score, 0),
+			COALESCE(n.final_score, n.match_score, 0),
+			COALESCE(n.ranker_version, ''),
+			COALESCE(n.reason_codes, ARRAY[]::text[]),
+			COALESCE(n.why_it_fits, ''),
+			COALESCE(j.status, 'active'),
+			j.created_at
+		FROM notifications n
+		JOIN jobs j ON j.id = n.job_id
+		WHERE n.user_id = $1
+		  AND n.status = 'missed'
+		ORDER BY COALESCE(n.final_score, n.match_score, 0) DESC, n.id ASC
+	`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []port.MissedNotification
+	for rows.Next() {
+		var item port.MissedNotification
+		if err := rows.Scan(
+			&item.ID,
+			&item.UserID,
+			&item.JobID,
+			&item.MatchScore,
+			&item.FinalScore,
+			&item.RankerVersion,
+			&item.ReasonCodes,
+			&item.WhyItFits,
+			&item.JobStatus,
+			&item.JobCreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	return result, rows.Err()
+}
+
+// ConvertMissedToPending restores backlog notifications back to pending.
+func (r *NotificationRepository) ConvertMissedToPending(ctx context.Context, notificationIDs []int64) (int64, error) {
+	if len(notificationIDs) == 0 {
+		return 0, nil
+	}
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE notifications
+		SET status = 'pending',
+		    claimed_at = NULL
+		WHERE id = ANY($1)
+		  AND status = 'missed'
+	`, notificationIDs)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
+}
+
+// DeleteNotifications removes notifications by their primary keys.
+func (r *NotificationRepository) DeleteNotifications(ctx context.Context, notificationIDs []int64) (int64, error) {
+	if len(notificationIDs) == 0 {
+		return 0, nil
+	}
+	tag, err := r.pool.Exec(ctx, `
+		DELETE FROM notifications
+		WHERE id = ANY($1)
+	`, notificationIDs)
 	if err != nil {
 		return 0, err
 	}

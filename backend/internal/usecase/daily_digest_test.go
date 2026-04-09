@@ -63,6 +63,8 @@ func (m *digestUserRepo) GetProUsersWithNotifyHour(ctx context.Context, hour int
 type digestNotifRepo struct {
 	countTodayFunc      func(ctx context.Context, userID int64) (int, error)
 	claimPendingFunc    func(ctx context.Context, userID int64, limit int) ([]port.PendingNotification, error)
+	getMissedFunc       func(ctx context.Context, userID int64) ([]port.MissedNotification, error)
+	convertMissedFunc   func(ctx context.Context, notificationIDs []int64) (int64, error)
 	releaseClaimsFunc   func(ctx context.Context, userID int64, jobIDs []int64) error
 	reclaimClaimsFunc   func(ctx context.Context, olderThan time.Duration) (int64, error)
 	markDispatchedFunc  func(ctx context.Context, userID, jobID int64) error
@@ -70,6 +72,7 @@ type digestNotifRepo struct {
 	markDispatchedCalls []int64
 	markSentCalls       []int64
 	deleteCalls         []int64
+	convertedIDs        []int64
 	releasedJobIDs      []int64
 	reclaimCalled       bool
 }
@@ -141,6 +144,25 @@ func (m *digestNotifRepo) ReclaimStaleDigestClaims(ctx context.Context, olderTha
 		return m.reclaimClaimsFunc(ctx, olderThan)
 	}
 	return 0, nil
+}
+func (m *digestNotifRepo) MarkMissed(ctx context.Context, userID, jobID int64) error {
+	return nil
+}
+func (m *digestNotifRepo) GetMissedForUser(ctx context.Context, userID int64) ([]port.MissedNotification, error) {
+	if m.getMissedFunc != nil {
+		return m.getMissedFunc(ctx, userID)
+	}
+	return nil, nil
+}
+func (m *digestNotifRepo) ConvertMissedToPending(ctx context.Context, notificationIDs []int64) (int64, error) {
+	m.convertedIDs = append([]int64(nil), notificationIDs...)
+	if m.convertMissedFunc != nil {
+		return m.convertMissedFunc(ctx, notificationIDs)
+	}
+	return int64(len(notificationIDs)), nil
+}
+func (m *digestNotifRepo) DeleteNotifications(ctx context.Context, notificationIDs []int64) (int64, error) {
+	return int64(len(notificationIDs)), nil
 }
 
 func (m *digestNotifRepo) GetPendingForUser(ctx context.Context, userID int64) ([]port.PendingNotification, error) {
@@ -368,6 +390,42 @@ func TestDailyDigestSendDigestForUserSkipsOnLimitsAndEmptyData(t *testing.T) {
 	)
 	if err := uc.sendDigestForUser(context.Background(), 3); err != nil {
 		t.Fatalf("empty pending err=%v", err)
+	}
+}
+
+func TestDailyDigestSendDigestForUser_ConvertsMissedBeforeClaim(t *testing.T) {
+	notifRepo := &digestNotifRepo{
+		countTodayFunc: func(context.Context, int64) (int, error) { return 1, nil },
+		getMissedFunc: func(context.Context, int64) ([]port.MissedNotification, error) {
+			return []port.MissedNotification{
+				{ID: 11, JobID: 101, FinalScore: 9.2, JobStatus: "active", JobCreatedAt: time.Now().Add(-2 * time.Hour)},
+				{ID: 12, JobID: 102, FinalScore: 8.1, JobStatus: "expired", JobCreatedAt: time.Now().Add(-2 * time.Hour)},
+			}, nil
+		},
+		claimPendingFunc: func(context.Context, int64, int) ([]port.PendingNotification, error) {
+			return []port.PendingNotification{
+				{JobID: 101, MatchScore: 9.2, WhyItFits: "rolled over"},
+			}, nil
+		},
+	}
+	jobRepo := &digestJobRepo{
+		getByIDsFunc: func(ctx context.Context, ids []int64) (map[int64]*domain.Job, error) {
+			return map[int64]*domain.Job{
+				101: {ID: 101, Source: "kwork", Title: "Recovered", LastSeenAt: time.Now().Add(-1 * time.Hour)},
+			}, nil
+		},
+	}
+	notifier := &digestNotifier{}
+	uc := NewDailyDigest(&digestUserRepo{}, notifRepo, jobRepo, notifier, 3)
+
+	if err := uc.sendDigestForUser(context.Background(), 42); err != nil {
+		t.Fatalf("sendDigestForUser: %v", err)
+	}
+	if len(notifRepo.convertedIDs) != 1 || notifRepo.convertedIDs[0] != 11 {
+		t.Fatalf("convertedIDs=%v, want [11]", notifRepo.convertedIDs)
+	}
+	if len(notifier.payload.Batch) != 1 || notifier.payload.Batch[0].Job == nil || notifier.payload.Batch[0].Job.ID != 101 {
+		t.Fatalf("batch=%+v, want recovered job 101", notifier.payload.Batch)
 	}
 }
 

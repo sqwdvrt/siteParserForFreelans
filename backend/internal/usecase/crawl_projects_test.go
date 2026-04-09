@@ -179,6 +179,16 @@ func (m *mockCrawlNotifRepo) ReleasePendingDigestNotifications(context.Context, 
 func (m *mockCrawlNotifRepo) ReclaimStaleDigestClaims(context.Context, time.Duration) (int64, error) {
 	return 0, nil
 }
+func (m *mockCrawlNotifRepo) MarkMissed(context.Context, int64, int64) error { return nil }
+func (m *mockCrawlNotifRepo) GetMissedForUser(context.Context, int64) ([]port.MissedNotification, error) {
+	return nil, nil
+}
+func (m *mockCrawlNotifRepo) ConvertMissedToPending(context.Context, []int64) (int64, error) {
+	return 0, nil
+}
+func (m *mockCrawlNotifRepo) DeleteNotifications(context.Context, []int64) (int64, error) {
+	return 0, nil
+}
 
 func (m *mockCrawlNotifRepo) CancelPendingByJobIDs(_ context.Context, jobIDs []int64) (int64, error) {
 	m.cancelCalled = true

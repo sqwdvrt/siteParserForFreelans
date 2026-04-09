@@ -146,8 +146,8 @@ func (u *SendNotification) Execute(
 		}
 		if recent {
 			slog.Debug("send notification: rate limited", "user_id", userID)
-			if delErr := u.notifRepo.Delete(ctx, userID, jobID); delErr != nil {
-				slog.Error("send notification: delete on rate limit failed", "user_id", userID, "err", delErr)
+			if markErr := u.notifRepo.MarkMissed(ctx, userID, jobID); markErr != nil {
+				slog.Error("send notification: mark missed on rate limit failed", "user_id", userID, "job_id", jobID, "err", markErr)
 			}
 			return nil
 		}
@@ -158,8 +158,8 @@ func (u *SendNotification) Execute(
 		}
 		if count >= u.maxPerDay {
 			slog.Debug("send notification: daily limit reached", "user_id", userID, "count", count)
-			if delErr := u.notifRepo.Delete(ctx, userID, jobID); delErr != nil {
-				slog.Error("send notification: delete on daily limit failed", "user_id", userID, "err", delErr)
+			if markErr := u.notifRepo.MarkMissed(ctx, userID, jobID); markErr != nil {
+				slog.Error("send notification: mark missed on daily limit failed", "user_id", userID, "job_id", jobID, "err", markErr)
 			}
 			return nil
 		}
@@ -512,7 +512,7 @@ func (u *SendNotification) applyBatchLimits(
 	}
 	if recent {
 		slog.Debug("send batch notification: rate limited for newly inserted jobs", "user_id", userID)
-		return u.keepInsertedJobsAndDeleteRest(ctx, userID, items, 0), nil
+		return u.keepInsertedJobsAndMarkMissedRest(ctx, userID, items, 0), nil
 	}
 
 	count, err := u.notifRepo.CountToday(ctx, userID)
@@ -522,7 +522,7 @@ func (u *SendNotification) applyBatchLimits(
 	remaining := u.maxPerDay - count
 	if remaining <= 0 {
 		slog.Debug("send batch notification: daily limit reached for newly inserted jobs", "user_id", userID, "count", count)
-		return u.keepInsertedJobsAndDeleteRest(ctx, userID, items, 0), nil
+		return u.keepInsertedJobsAndMarkMissedRest(ctx, userID, items, 0), nil
 	}
 	if insertedCount <= remaining {
 		return items, nil
@@ -530,10 +530,10 @@ func (u *SendNotification) applyBatchLimits(
 
 	slog.Debug("send batch notification: trimming newly inserted jobs by daily limit",
 		"user_id", userID, "count_today", count, "max_per_day", u.maxPerDay, "allowed_new", remaining)
-	return u.keepInsertedJobsAndDeleteRest(ctx, userID, items, remaining), nil
+	return u.keepInsertedJobsAndMarkMissedRest(ctx, userID, items, remaining), nil
 }
 
-func (u *SendNotification) keepInsertedJobsAndDeleteRest(
+func (u *SendNotification) keepInsertedJobsAndMarkMissedRest(
 	ctx context.Context,
 	userID int64,
 	items []batchDeliveryItem,
@@ -555,8 +555,8 @@ func (u *SendNotification) keepInsertedJobsAndDeleteRest(
 			out = append(out, item)
 			continue
 		}
-		if err := u.notifRepo.Delete(ctx, userID, item.jobID); err != nil {
-			slog.Error("send batch notification: delete on limit failed",
+		if err := u.notifRepo.MarkMissed(ctx, userID, item.jobID); err != nil {
+			slog.Error("send batch notification: mark missed on limit failed",
 				"user_id", userID, "job_id", item.jobID, "err", err)
 		}
 	}
