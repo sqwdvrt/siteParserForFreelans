@@ -100,6 +100,10 @@ FROM python:3.11-slim-bookworm@sha256:9c6f90801e6b68e772b7c0ca74260cbf7af9f320ac
 ENV VENV_PATH=/opt/venv
 ENV PATH="${VENV_PATH}/bin:${PATH}"
 
+RUN apt-get update && \
+    apt-get upgrade -y --no-install-recommends && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY --from=builder "${VENV_PATH}" "${VENV_PATH}"

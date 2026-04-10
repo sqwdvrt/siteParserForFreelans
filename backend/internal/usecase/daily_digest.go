@@ -105,8 +105,8 @@ func (d *DailyDigest) sendDigestForUser(ctx context.Context, userID int64) error
 		slog.Debug("daily digest: daily limit already reached", "user_id", userID)
 		return nil
 	}
-	if err := d.recoverMissedNotifications(ctx, userID, remaining); err != nil {
-		return err
+	if recoverErr := d.recoverMissedNotifications(ctx, userID, remaining); recoverErr != nil {
+		return recoverErr
 	}
 
 	pending, err := d.notifRepo.ClaimPendingDigestNotifications(ctx, userID, remaining)
@@ -208,8 +208,8 @@ func (d *DailyDigest) recoverMissedNotifications(ctx context.Context, userID int
 		}
 	}
 	if len(deleteIDs) > 0 {
-		if _, err := d.notifRepo.DeleteNotifications(ctx, deleteIDs); err != nil {
-			return err
+		if _, deleteErr := d.notifRepo.DeleteNotifications(ctx, deleteIDs); deleteErr != nil {
+			return deleteErr
 		}
 	}
 	if len(convertIDs) == 0 {

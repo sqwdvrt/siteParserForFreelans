@@ -142,7 +142,10 @@ class PostgresUserRepository(PooledPostgresRepository, UserRepository):
                     VALUES (%s, %s, %s)
                     ON CONFLICT (user_id) DO UPDATE
                     SET include_keywords = CASE
-                            WHEN (user_preferences.include_keywords IS NULL OR cardinality(user_preferences.include_keywords) = 0)
+                            WHEN (
+                                user_preferences.include_keywords IS NULL
+                                OR cardinality(user_preferences.include_keywords) = 0
+                            )
                                  AND EXCLUDED.include_keywords IS NOT NULL
                                  AND cardinality(EXCLUDED.include_keywords) > 0
                             THEN EXCLUDED.include_keywords

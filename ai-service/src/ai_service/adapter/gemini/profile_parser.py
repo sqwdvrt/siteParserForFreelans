@@ -62,7 +62,12 @@ class GeminiProfileParser(ProfileParser):
         try:
             url = f"{GEMINI_API_BASE}/{self._model}:generateContent"
             payload = {
-                "contents": [{"role": "user", "parts": [{"text": PROFILE_PARSE_PROMPT.format(profile_text=profile_text)}]}],
+                "contents": [
+                    {
+                        "role": "user",
+                        "parts": [{"text": PROFILE_PARSE_PROMPT.format(profile_text=profile_text)}],
+                    }
+                ],
                 "generationConfig": {
                     "responseMimeType": "application/json",
                 },

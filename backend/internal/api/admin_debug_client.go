@@ -40,7 +40,9 @@ func (c *HTTPAdminDebugMatchClient) GetMatchDebug(ctx context.Context, userID in
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		_ = resp.Body.Close()
+	}()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("upstream status=%d", resp.StatusCode)
 	}

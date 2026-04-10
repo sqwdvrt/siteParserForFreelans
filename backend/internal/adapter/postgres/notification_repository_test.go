@@ -6,6 +6,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"testing"
 	"time"
@@ -269,7 +270,7 @@ func TestNotificationRepository_EnsurePending_SkipWhenMissed(t *testing.T) {
 	if status != "missed" {
 		t.Fatalf("status = %q, want missed", status)
 	}
-	if matchScore != 0.75 || finalScore != 0.90 {
+	if math.Abs(matchScore-0.75) > 1e-6 || math.Abs(finalScore-0.90) > 1e-6 {
 		t.Fatalf("scores = (%v,%v), want (0.75,0.90)", matchScore, finalScore)
 	}
 	if rankerVersion != "v2" {
