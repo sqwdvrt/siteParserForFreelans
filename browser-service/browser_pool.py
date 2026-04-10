@@ -20,7 +20,6 @@ DEFAULT_ARGS: list[str] = [
     "--disable-dev-shm-usage",
     "--disable-gpu",
     "--disable-setuid-sandbox",
-    "--single-process",
 ]
 
 
@@ -139,16 +138,22 @@ class BrowserPool:
         async with self._lock:
             browser.active = max(0, browser.active - 1)
 
-    async def mark_unhealthy(self, browser: BrowserInstance) -> None:
-        """Mark browser unhealthy and trigger background recreate."""
+    async def mark_unhealthy(self, browser: BrowserInstance, *, wait: bool = False) -> None:
+        """Mark browser unhealthy and recreate it.
+
+        Render retries can wait for recreation to avoid immediately retrying
+        into an empty or recovering pool after Chromium transport failures.
+        """
         async with self._lock:
             browser.healthy = False
             browser.active = max(0, browser.active - 1)
-        # Recreate in background
-        asyncio.create_task(
-            self._recreate_browser(browser.browser_id),
-            name=f"recreate-browser-{browser.browser_id}",
-        )
+        if wait:
+            await self._recreate_browser(browser.browser_id)
+        else:
+            asyncio.create_task(
+                self._recreate_browser(browser.browser_id),
+                name=f"recreate-browser-{browser.browser_id}",
+            )
 
     async def health_check(self) -> None:
         """Check all browsers, recreate unhealthy ones."""

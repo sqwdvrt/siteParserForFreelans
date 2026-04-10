@@ -152,7 +152,9 @@ class FakeBrowserPool:
 
     def __init__(self, fake_browser: FakeBrowser) -> None:
         self._fake_browser = fake_browser
+        self._fallback_browser: FakeBrowser | None = None
         self.marked_unhealthy = 0
+        self.mark_unhealthy_wait_values: list[bool] = []
 
     async def acquire(self) -> FakeBrowserInstance:
         return FakeBrowserInstance(self._fake_browser)
@@ -160,8 +162,11 @@ class FakeBrowserPool:
     async def release(self, _instance: FakeBrowserInstance) -> None:
         pass
 
-    async def mark_unhealthy(self, _instance: FakeBrowserInstance) -> None:
+    async def mark_unhealthy(self, _instance: FakeBrowserInstance, *, wait: bool = False) -> None:
         self.marked_unhealthy += 1
+        self.mark_unhealthy_wait_values.append(wait)
+        if wait and self._fallback_browser is not None:
+            self._fake_browser = self._fallback_browser
 
     def get_stats(self) -> dict[str, Any]:
         healthy = self._fake_browser.connected
@@ -548,3 +553,25 @@ def test_render_maps_page_creation_errors_to_500_and_closes_context(
     assert response.status_code == 500
     assert response.json()["detail"] == "page boom"
     assert context.closed is True
+
+
+def test_render_waits_for_browser_recovery_before_retry(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    failing_page = FakePage(content_error=RuntimeError("Target page, context or browser has been closed"))
+    failing_browser = FakeBrowser(context=FakeContext(page=failing_page))
+    healthy_page = FakePage(html="<html><body>recovered</body></html>")
+    healthy_browser = FakeBrowser(context=FakeContext(page=healthy_page))
+    pool = set_browser(monkeypatch, failing_browser)
+    assert pool is not None
+    pool._fallback_browser = healthy_browser
+
+    response = client.get("/render", params={"url": "https://example.com/retry-after-recovery"})
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "html": "<html><body>recovered</body></html>",
+        "url": "https://example.com/retry-after-recovery",
+    }
+    assert pool.mark_unhealthy_wait_values == [True]

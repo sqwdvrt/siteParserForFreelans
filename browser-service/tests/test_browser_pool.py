@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from browser_pool import BrowserPool, BrowserInstance, PoolExhausted
+from browser_pool import BrowserPool, BrowserInstance, PoolExhausted, DEFAULT_ARGS
 
 
 def make_mock_playwright():
@@ -229,6 +229,9 @@ class TestBrowserPool:
 
         assert instance.is_expired(14400) is True
         assert instance.is_expired(18000) is False  # 5 hours TTL
+
+    def test_default_launch_args_do_not_force_chromium_single_process(self):
+        assert "--single-process" not in DEFAULT_ARGS
 
     @pytest.mark.asyncio
     async def test_recreate_browser_recovers_closed_playwright_transport(self):

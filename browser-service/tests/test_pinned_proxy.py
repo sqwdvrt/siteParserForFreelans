@@ -98,7 +98,8 @@ class FakeBrowserPool:
     async def release(self, _instance: FakeBrowserInstance) -> None:
         pass
 
-    async def mark_unhealthy(self, _instance: FakeBrowserInstance) -> None:
+    async def mark_unhealthy(self, _instance: FakeBrowserInstance, *, wait: bool = False) -> None:
+        del wait
         pass
 
     def get_stats(self) -> dict[str, Any]:

@@ -615,7 +615,7 @@ async def _render_with_pool(url: str) -> JSONResponse:
                 response = JSONResponse({"html": html, "url": url})
 
             except PWTimeoutError as exc:
-                await _browser_pool.mark_unhealthy(browser)
+                await _browser_pool.mark_unhealthy(browser, wait=True)
                 browser_marked_unhealthy = True
                 duration = time.time() - start_time
                 RENDER_DURATION.labels(status="timeout").observe(duration)
@@ -626,7 +626,7 @@ async def _render_with_pool(url: str) -> JSONResponse:
                     raise HTTPException(status_code=504, detail=f"render timeout: {exc}") from exc
                 # retry on another browser
             except Exception as exc:
-                await _browser_pool.mark_unhealthy(browser)
+                await _browser_pool.mark_unhealthy(browser, wait=True)
                 browser_marked_unhealthy = True
                 if attempt == max_retries - 1:
                     duration = time.time() - start_time
