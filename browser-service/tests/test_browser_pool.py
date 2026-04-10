@@ -256,3 +256,32 @@ class TestBrowserPool:
         assert pool._instances[0].context is fresh_context
 
         await pool.shutdown()
+
+    @pytest.mark.asyncio
+    async def test_recreate_browser_recovers_target_closed_transport(self):
+        stale_pw, _, _, _ = make_mock_playwright()
+        fresh_pw, fresh_browser, fresh_context, _ = make_mock_playwright()
+        playwright_factory = AsyncMock(return_value=fresh_pw)
+        playwright_shutdown = AsyncMock()
+
+        pool = BrowserPool(
+            stale_pw,
+            pool_size=1,
+            playwright_factory=playwright_factory,
+            playwright_shutdown=playwright_shutdown,
+        )
+        await pool.initialize()
+
+        stale_pw.chromium.launch.side_effect = RuntimeError(
+            "BrowserType.launch: Target page, context or browser has been closed"
+        )
+
+        await pool._recreate_browser(0)
+
+        playwright_factory.assert_awaited_once()
+        playwright_shutdown.assert_awaited_once_with(stale_pw)
+        assert pool._playwright is fresh_pw
+        assert pool._instances[0].browser is fresh_browser
+        assert pool._instances[0].context is fresh_context
+
+        await pool.shutdown()

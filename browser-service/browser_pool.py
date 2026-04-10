@@ -312,4 +312,9 @@ class BrowserPool:
     @staticmethod
     def _is_transport_closed_error(exc: Exception) -> bool:
         message = str(exc).lower()
-        return "handler is closed" in message or "transport closed" in message
+        return (
+            "handler is closed" in message
+            or "transport closed" in message
+            or "target page, context or browser has been closed" in message
+            or "connection closed while reading from the driver" in message
+        )
