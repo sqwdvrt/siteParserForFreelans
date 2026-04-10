@@ -208,7 +208,9 @@ groups:
             increase(siteparser_crawler_jobs_scraped_total{job="backend-crawler"}[24h])
             <
             (
-              avg_over_time(increase(siteparser_crawler_jobs_scraped_total{job="backend-crawler"}[24h])[7d:1d])
+              # Median is used instead of average so a single counter/reset
+              # spike does not keep the volume-drop alert firing for days.
+              quantile_over_time(0.5, increase(siteparser_crawler_jobs_scraped_total{job="backend-crawler"}[24h])[7d:1d])
               * 0.3
             )
           )
