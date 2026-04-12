@@ -13,6 +13,10 @@ backend/.gocache-*/
 backend/.gomodcache-*/
 backend/.gocache*
 backend/.gomodcache*
+backend/**/.gocache*/
+backend/**/.gomodcache*/
+backend/**/.gocache*
+backend/**/.gomodcache*
 rules/
 .cursor/
 .omc/
