@@ -280,6 +280,67 @@ Production monitoring overrides должны указывать на:
 - `rediss://...`
 - `postgresql://...sslmode=require`
 
+## 7.1 VPS health report automation
+
+Для автоматической self-check сводки на самом VPS в репозитории есть:
+- `scripts/vps_health_report.py` — собирает health/report, пишет JSON и log, шлёт Telegram только при `WARN/FAIL`;
+- `scripts/vps_ops_report.sh` — локальный операторский wrapper: по SSH обновляет report и печатает краткую сводку;
+- `scripts/vps_safe_docker_cleanup.sh` — безопасная cleanup-команда для ручного запуска при high disk usage;
+- `scripts/install_vps_health_report_timer.sh` + `ops/systemd/siteparser-vps-health-report.{service,timer}` — установка systemd timer.
+
+Установка на VPS:
+
+```bash
+cd /home/deploy/app/siteParserForFreelans
+chmod +x scripts/vps_health_report.py scripts/vps_ops_report.sh scripts/vps_safe_docker_cleanup.sh scripts/install_vps_health_report_timer.sh
+
+# Preferred path when root / passwordless sudo is available:
+sudo bash ./scripts/install_vps_health_report_timer.sh
+systemctl status siteparser-vps-health-report.timer
+
+# Fallback when root access is unavailable:
+bash ./scripts/install_vps_health_report_timer.sh
+crontab -l
+```
+
+Разовый ручной прогон на VPS:
+
+```bash
+cd /home/deploy/app/siteParserForFreelans
+set -a
+. ./.env.production
+set +a
+python3 ./scripts/vps_health_report.py generate --notify-telegram
+```
+
+Артефакты отчёта лежат в shared state и переживают release switch:
+
+```text
+/home/deploy/app/.siteParserForFreelans-deploy/shared/ops/vps-health-report.json
+/home/deploy/app/.siteParserForFreelans-deploy/shared/ops/vps-health-report.log
+```
+
+Локальный операторский запуск:
+
+```bash
+cd /path/to/repo
+bash ./scripts/vps_ops_report.sh
+```
+
+Если диск уже в warn-zone и нужно безопасно убрать Docker мусор без удаления всех rollback image refs:
+
+```bash
+bash ./scripts/vps_ops_report.sh --cleanup-docker
+```
+
+Опционально можно вынести Telegram для этих health-уведомлений в отдельный канал/бот:
+- `VPS_HEALTH_TELEGRAM_BOT_TOKEN`
+- `VPS_HEALTH_TELEGRAM_CHAT_ID`
+
+Если они не заданы, health-report использует:
+1. `ALERTMANAGER_TELEGRAM_BOT_TOKEN` / `ALERTMANAGER_TELEGRAM_CHAT_ID`
+2. затем fallback на `TELEGRAM_BOT_TOKEN` / `TELEGRAM_ID`
+
 ## 8. Backup and restore
 
 PostgreSQL - источник истины. Redis - transient queues, его обычно не восстанавливают как полноценный state store.

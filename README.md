@@ -107,6 +107,8 @@ docker compose up -d ai-user-rematch
 - Product analytics dashboard: `monitoring/grafana/dashboards/product-analytics.json`
 - Backup script: `scripts/backup_postgres.sh`
 - Restore script: `scripts/restore_postgres.sh`
+- VPS health report generator: `scripts/vps_health_report.py`
+- Local operator wrapper for VPS report/cleanup: `scripts/vps_ops_report.sh`
 
 ## Deployment Profiles
 
@@ -229,6 +231,40 @@ Production `.env.production` должен содержать digest-pinned `BACK
 `ai-user-embed`, `ai-user-rematch` и `ai-ac-consumer` входят в production compose по умолчанию (без отдельного profile).
 
 В production compose **не** поднимает локальные PostgreSQL/Redis контейнеры: они приходят из self-hosted infra в `infra_default`.
+
+### VPS Ops Report
+
+Для регулярной self-check автоматизации на VPS:
+
+```bash
+# На VPS, из корня репо
+chmod +x scripts/vps_health_report.py scripts/vps_ops_report.sh scripts/vps_safe_docker_cleanup.sh scripts/install_vps_health_report_timer.sh
+
+# Если есть root / passwordless sudo, installer поставит systemd timer.
+sudo bash ./scripts/install_vps_health_report_timer.sh
+
+# Если root-доступа нет, тот же installer автоматически fallback'нется на user crontab.
+bash ./scripts/install_vps_health_report_timer.sh
+
+# Разовый прогон на VPS
+set -a
+. ./.env.production
+set +a
+python3 ./scripts/vps_health_report.py generate --notify-telegram
+
+# С локальной машины: обновить report по SSH и получить краткую сводку
+bash ./scripts/vps_ops_report.sh
+
+# С локальной машины: при high disk usage выполнить safe Docker cleanup и затем перечитать report
+bash ./scripts/vps_ops_report.sh --cleanup-docker
+```
+
+Что делает automation:
+- каждые 5 минут запускает production gate, проверяет disk/memory/swap, Prometheus alerts/targets и очереди;
+- пишет JSON и append-only log в `/home/deploy/app/.siteParserForFreelans-deploy/shared/ops/`;
+- шлёт Telegram только при `WARN/FAIL`, и только если fingerprint проблемы изменился.
+
+Если нужен отдельный ops-бот или отдельный чат для этих уведомлений, задай `VPS_HEALTH_TELEGRAM_BOT_TOKEN` и `VPS_HEALTH_TELEGRAM_CHAT_ID` в `.env.production`.
 
 ### Railway (монорепо)
 

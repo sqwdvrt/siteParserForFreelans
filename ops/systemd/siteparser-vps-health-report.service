@@ -1,0 +1,9 @@
+[Unit]
+Description=SiteParser VPS health report
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/deploy/app/siteParserForFreelans
+ExecStart=/bin/bash -lc 'cd /home/deploy/app/siteParserForFreelans && set -a && . ./.env.production && set +a && python3 /home/deploy/app/.siteParserForFreelans-deploy/shared/ops/bin/vps_health_report.py generate --repo-root /home/deploy/app/siteParserForFreelans --output-json /home/deploy/app/.siteParserForFreelans-deploy/shared/ops/vps-health-report.json --append-log /home/deploy/app/.siteParserForFreelans-deploy/shared/ops/vps-health-report.log --notify-telegram'
