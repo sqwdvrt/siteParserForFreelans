@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # backup_vps_cron.sh — запускать из cron на VPS.
 # Использует docker exec на infra-postgres-1 (pg_dump уже есть внутри).
-# Бэкап складывается в shared/backups/, ротация 14 дней.
+# Бэкап складывается в shared/backups/, ротация 7 дней.
 set -euo pipefail
 
 BACKUP_DIR="${BACKUP_DIR:-/home/deploy/app/.siteParserForFreelans-deploy/shared/backups}"
-RETENTION_DAYS="${RETENTION_DAYS:-14}"
+RETENTION_DAYS="${RETENTION_DAYS:-7}"
 PG_CONTAINER="${PG_CONTAINER:-infra-postgres-1}"
 PG_USER="${PG_USER:-site_parser}"
 PG_DBNAME="${PG_DBNAME:-site_parser}"
