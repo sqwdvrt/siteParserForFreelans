@@ -105,13 +105,13 @@ if ! grep -qE '^requires-python = ">=3\.11"$' ai-service/pyproject.toml; then
   exit 1
 fi
 
-if ! grep -qiE '"pillow>=12\.1\.1"' ai-service/pyproject.toml; then
-  echo "ERROR: ai-service/pyproject.toml must include pillow>=12.1.1 in [project].dependencies"
+if ! grep -qiE '"pillow>=12\.2\.0"' ai-service/pyproject.toml; then
+  echo "ERROR: ai-service/pyproject.toml must include pillow>=12.2.0 in [project].dependencies"
   exit 1
 fi
 
-if ! grep -qiE '^pillow==12\.1\.1$' ai-service/requirements.txt; then
-  echo "ERROR: ai-service/requirements.txt must pin pillow==12.1.1"
+if ! grep -qiE '^pillow==12\.2\.0$' ai-service/requirements.txt; then
+  echo "ERROR: ai-service/requirements.txt must pin pillow==12.2.0"
   exit 1
 fi
 
