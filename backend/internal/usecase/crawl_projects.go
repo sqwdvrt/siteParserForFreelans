@@ -17,13 +17,13 @@ type FilteredObserverFunc func(source, reason string)
 
 // CrawlProjects — use case: fetch list → details → save → stage deferred enqueue.
 type CrawlProjects struct {
-	fetcher          port.Fetcher
-	extractor        port.Extractor
-	repo             port.JobRepository
-	stager           port.JobEmbedDispatchRepository
-	findSimilarJob   FindSimilarJob    // optional: cross-platform dedup
-	jobFilter        JobFilterFunc     // optional: relevance filter
-	observeFiltered  FilteredObserverFunc // optional: metrics for filtered jobs
+	fetcher         port.Fetcher
+	extractor       port.Extractor
+	repo            port.JobRepository
+	stager          port.JobEmbedDispatchRepository
+	findSimilarJob  FindSimilarJob       // optional: cross-platform dedup
+	jobFilter       JobFilterFunc        // optional: relevance filter
+	observeFiltered FilteredObserverFunc // optional: metrics for filtered jobs
 }
 
 // FindSimilarJob checks for a cross-platform duplicate of the given job.

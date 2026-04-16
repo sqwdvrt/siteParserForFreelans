@@ -7,22 +7,22 @@ import (
 )
 
 const (
-	crawlerRunsTotalMetricName           = "siteparser_crawler_runs_total"
-	crawlerRunDurationMetricName         = "siteparser_crawler_run_duration_seconds"
-	crawlerSavedJobsTotalMetricName      = "siteparser_crawler_saved_jobs_total"
-	crawlerJobsScrapedTotalMetricName    = "siteparser_crawler_jobs_scraped_total"
-	crawlerJobsFilteredTotalMetricName   = "siteparser_crawler_jobs_filtered_total"
-	crawlerQueueDepthMetricName          = "siteparser_crawler_queue_depth"
-	notifierNotificationsMetricName   = "siteparser_notifier_notifications_total"
-	notifierQueueDepthMetricName      = "siteparser_notifier_queue_depth"
-	queueStateReady                   = "ready"
-	queueStateProcessing              = "processing"
-	queueStateDLQ                     = "dlq"
-	crawlerRunStatusSuccess           = "success"
-	crawlerRunStatusFailed            = "failed"
-	crawlerRunStatusInterrupted       = "interrupted"
-	notifierNotificationStatusSent    = "sent"
-	notifierNotificationStatusFailed  = "failed"
+	crawlerRunsTotalMetricName         = "siteparser_crawler_runs_total"
+	crawlerRunDurationMetricName       = "siteparser_crawler_run_duration_seconds"
+	crawlerSavedJobsTotalMetricName    = "siteparser_crawler_saved_jobs_total"
+	crawlerJobsScrapedTotalMetricName  = "siteparser_crawler_jobs_scraped_total"
+	crawlerJobsFilteredTotalMetricName = "siteparser_crawler_jobs_filtered_total"
+	crawlerQueueDepthMetricName        = "siteparser_crawler_queue_depth"
+	notifierNotificationsMetricName    = "siteparser_notifier_notifications_total"
+	notifierQueueDepthMetricName       = "siteparser_notifier_queue_depth"
+	queueStateReady                    = "ready"
+	queueStateProcessing               = "processing"
+	queueStateDLQ                      = "dlq"
+	crawlerRunStatusSuccess            = "success"
+	crawlerRunStatusFailed             = "failed"
+	crawlerRunStatusInterrupted        = "interrupted"
+	notifierNotificationStatusSent     = "sent"
+	notifierNotificationStatusFailed   = "failed"
 )
 
 type CrawlerMetrics struct {
