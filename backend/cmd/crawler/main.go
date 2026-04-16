@@ -27,6 +27,7 @@ import (
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/tgchannel"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/weblancer"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/config"
+	crawlerfilter "github.com/sqwdvrt/siteParserForFreelans/backend/internal/crawler/filter"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/observability"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/security"
@@ -293,6 +294,7 @@ func main() {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
 	crawlerMetrics := telemetry.NewCrawlerMetrics(registry, queueName)
+	jobFilter := crawlerfilter.New()
 
 	fetcher := http.NewFetcher(http.Config{
 		Timeout:                 30 * time.Second,
@@ -339,32 +341,39 @@ func main() {
 		crawl   *usecase.CrawlProjects
 	}
 	var sources []crawlSource
+	newCrawl := func(f port.Fetcher, e port.Extractor) *usecase.CrawlProjects {
+		return usecase.NewCrawlProjects(f, e, repo, dispatchRepo).
+			WithCrossPlatformDedup(findSimilar).
+			WithJobFilter(jobFilter.IsRelevant).
+			WithFilteredObserver(crawlerMetrics.ObserveFiltered)
+	}
+
 	if enabledSources["kwork"] {
 		sources = append(sources, crawlSource{
 			name:    "kwork",
 			listURL: kworkListURL,
-			crawl:   usecase.NewCrawlProjects(kworkFetcher, kwork.NewExtractor(), repo, dispatchRepo).WithCrossPlatformDedup(findSimilar),
+			crawl:   newCrawl(kworkFetcher, kwork.NewExtractor()),
 		})
 	}
 	if enabledSources["flru"] {
 		sources = append(sources, crawlSource{
 			name:    "flru",
 			listURL: flruListURL,
-			crawl:   usecase.NewCrawlProjects(fetcher, flru.NewExtractor(), repo, dispatchRepo).WithCrossPlatformDedup(findSimilar),
+			crawl:   newCrawl(fetcher, flru.NewExtractor()),
 		})
 	}
 	if enabledSources["freelancehunt"] {
 		sources = append(sources, crawlSource{
 			name:    "freelancehunt",
 			listURL: freelancehuntListURL,
-			crawl:   usecase.NewCrawlProjects(fetcher, freelancehunt.NewExtractor(), repo, dispatchRepo).WithCrossPlatformDedup(findSimilar),
+			crawl:   newCrawl(fetcher, freelancehunt.NewExtractor()),
 		})
 	}
 	if enabledSources["weblancer"] {
 		sources = append(sources, crawlSource{
 			name:    "weblancer",
 			listURL: weblancerListURL,
-			crawl:   usecase.NewCrawlProjects(fetcher, weblancer.NewExtractor(), repo, dispatchRepo).WithCrossPlatformDedup(findSimilar),
+			crawl:   newCrawl(fetcher, weblancer.NewExtractor()),
 		})
 	}
 	if enabledSources["tgchannel"] {
@@ -376,7 +385,7 @@ func main() {
 			sources = append(sources, crawlSource{
 				name:    "tgchannel:" + username,
 				listURL: "https://t.me/s/" + username,
-				crawl:   usecase.NewCrawlProjects(fetcher, tgchannel.NewExtractor(username), repo, dispatchRepo).WithCrossPlatformDedup(findSimilar),
+				crawl:   newCrawl(fetcher, tgchannel.NewExtractor(username)),
 			})
 		}
 	}

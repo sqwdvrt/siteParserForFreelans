@@ -7,11 +7,12 @@ import (
 )
 
 const (
-	crawlerRunsTotalMetricName        = "siteparser_crawler_runs_total"
-	crawlerRunDurationMetricName      = "siteparser_crawler_run_duration_seconds"
-	crawlerSavedJobsTotalMetricName   = "siteparser_crawler_saved_jobs_total"
-	crawlerJobsScrapedTotalMetricName = "siteparser_crawler_jobs_scraped_total"
-	crawlerQueueDepthMetricName       = "siteparser_crawler_queue_depth"
+	crawlerRunsTotalMetricName           = "siteparser_crawler_runs_total"
+	crawlerRunDurationMetricName         = "siteparser_crawler_run_duration_seconds"
+	crawlerSavedJobsTotalMetricName      = "siteparser_crawler_saved_jobs_total"
+	crawlerJobsScrapedTotalMetricName    = "siteparser_crawler_jobs_scraped_total"
+	crawlerJobsFilteredTotalMetricName   = "siteparser_crawler_jobs_filtered_total"
+	crawlerQueueDepthMetricName          = "siteparser_crawler_queue_depth"
 	notifierNotificationsMetricName   = "siteparser_notifier_notifications_total"
 	notifierQueueDepthMetricName      = "siteparser_notifier_queue_depth"
 	queueStateReady                   = "ready"
@@ -25,12 +26,13 @@ const (
 )
 
 type CrawlerMetrics struct {
-	queueName   string
-	runsTotal   *prometheus.CounterVec
-	runDuration *prometheus.HistogramVec
-	savedJobs   prometheus.Counter
-	scrapedJobs prometheus.Counter
-	queueDepth  *prometheus.GaugeVec
+	queueName    string
+	runsTotal    *prometheus.CounterVec
+	runDuration  *prometheus.HistogramVec
+	savedJobs    prometheus.Counter
+	scrapedJobs  prometheus.Counter
+	filteredJobs *prometheus.CounterVec
+	queueDepth   *prometheus.GaugeVec
 }
 
 func NewCrawlerMetrics(reg prometheus.Registerer, queueName string) *CrawlerMetrics {
@@ -66,6 +68,13 @@ func NewCrawlerMetrics(reg prometheus.Registerer, queueName string) *CrawlerMetr
 				Help: "Total number of jobs scraped by crawler runs.",
 			},
 		),
+		filteredJobs: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: crawlerJobsFilteredTotalMetricName,
+				Help: "Total number of jobs filtered out by the crawler before saving.",
+			},
+			[]string{"source", "reason"},
+		),
 		queueDepth: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
 				Name: crawlerQueueDepthMetricName,
@@ -75,7 +84,7 @@ func NewCrawlerMetrics(reg prometheus.Registerer, queueName string) *CrawlerMetr
 		),
 	}
 
-	reg.MustRegister(m.runsTotal, m.runDuration, m.savedJobs, m.scrapedJobs, m.queueDepth)
+	reg.MustRegister(m.runsTotal, m.runDuration, m.savedJobs, m.scrapedJobs, m.filteredJobs, m.queueDepth)
 	m.runsTotal.WithLabelValues(crawlerRunStatusSuccess).Add(0)
 	m.runsTotal.WithLabelValues(crawlerRunStatusFailed).Add(0)
 	m.runsTotal.WithLabelValues(crawlerRunStatusInterrupted).Add(0)
@@ -101,6 +110,10 @@ func (m *CrawlerMetrics) ObserveSavedJobs(saved int) {
 func (m *CrawlerMetrics) ObserveRunFailure(elapsed time.Duration) {
 	m.runsTotal.WithLabelValues(crawlerRunStatusFailed).Inc()
 	m.runDuration.WithLabelValues(crawlerRunStatusFailed).Observe(elapsed.Seconds())
+}
+
+func (m *CrawlerMetrics) ObserveFiltered(source, reason string) {
+	m.filteredJobs.WithLabelValues(source, reason).Inc()
 }
 
 func (m *CrawlerMetrics) ObserveRunInterrupted(elapsed time.Duration) {

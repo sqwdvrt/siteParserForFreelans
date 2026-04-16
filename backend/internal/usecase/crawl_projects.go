@@ -9,13 +9,21 @@ import (
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 )
 
+// JobFilterFunc decides whether a job is relevant. Returns (relevant, reasonTag, reasonDetail).
+type JobFilterFunc func(title, category string) (bool, string, string)
+
+// FilteredObserverFunc records a filtered-out job metric.
+type FilteredObserverFunc func(source, reason string)
+
 // CrawlProjects — use case: fetch list → details → save → stage deferred enqueue.
 type CrawlProjects struct {
-	fetcher        port.Fetcher
-	extractor      port.Extractor
-	repo           port.JobRepository
-	stager         port.JobEmbedDispatchRepository
-	findSimilarJob FindSimilarJob // optional: cross-platform dedup
+	fetcher          port.Fetcher
+	extractor        port.Extractor
+	repo             port.JobRepository
+	stager           port.JobEmbedDispatchRepository
+	findSimilarJob   FindSimilarJob    // optional: cross-platform dedup
+	jobFilter        JobFilterFunc     // optional: relevance filter
+	observeFiltered  FilteredObserverFunc // optional: metrics for filtered jobs
 }
 
 // FindSimilarJob checks for a cross-platform duplicate of the given job.
@@ -41,6 +49,18 @@ func NewCrawlProjects(
 // WithCrossPlatformDedup sets a function to detect duplicate jobs across sources.
 func (u *CrawlProjects) WithCrossPlatformDedup(fn FindSimilarJob) *CrawlProjects {
 	u.findSimilarJob = fn
+	return u
+}
+
+// WithJobFilter sets the relevance filter applied before saving each job.
+func (u *CrawlProjects) WithJobFilter(fn JobFilterFunc) *CrawlProjects {
+	u.jobFilter = fn
+	return u
+}
+
+// WithFilteredObserver sets the callback used to record filtered-out job metrics.
+func (u *CrawlProjects) WithFilteredObserver(fn FilteredObserverFunc) *CrawlProjects {
+	u.observeFiltered = fn
 	return u
 }
 
@@ -142,6 +162,17 @@ func (u *CrawlProjects) Execute(ctx context.Context, listURL string) (saved int,
 				// Update last_seen_at on the canonical job
 				if touchErr := u.repo.TouchSeenAtByID(ctx, dupID); touchErr != nil {
 					slog.Warn("crawl: touch canonical seen_at failed", "id", dupID, "err", touchErr)
+				}
+				continue
+			}
+		}
+
+		// Relevance filter: skip jobs outside allowed categories / with blocked keywords
+		if u.jobFilter != nil {
+			if relevant, reasonTag, reasonDetail := u.jobFilter(job.Title, ""); !relevant {
+				slog.Info("crawl: job filtered out", "url", detailURL, "reason", reasonDetail)
+				if u.observeFiltered != nil {
+					u.observeFiltered(job.Source, reasonTag)
 				}
 				continue
 			}
