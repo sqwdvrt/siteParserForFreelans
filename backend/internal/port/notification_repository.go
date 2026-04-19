@@ -92,4 +92,8 @@ type NotificationRepository interface {
 
 	// DeleteNotifications удаляет записи notifications по их id.
 	DeleteNotifications(ctx context.Context, notificationIDs []int64) (int64, error)
+
+	// GetFreeUsersWithPendingNotifications возвращает IDs не-pro пользователей,
+	// у которых есть pending-уведомления и которые не на паузе.
+	GetFreeUsersWithPendingNotifications(ctx context.Context) ([]int64, error)
 }

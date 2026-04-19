@@ -83,6 +83,10 @@ func (m *mockExpireNotifRepo) ConvertMissedToPending(_ context.Context, _ []int6
 func (m *mockExpireNotifRepo) DeleteNotifications(_ context.Context, _ []int64) (int64, error) {
 	return 0, nil
 }
+
+func (m *mockExpireNotifRepo) GetFreeUsersWithPendingNotifications(_ context.Context) ([]int64, error) {
+	return nil, nil
+}
 func (m *mockExpireNotifRepo) CancelPendingByJobIDs(_ context.Context, jobIDs []int64) (int64, error) {
 	m.cancelledJobIDs = append(m.cancelledJobIDs, jobIDs...)
 	if m.cancelErr != nil {

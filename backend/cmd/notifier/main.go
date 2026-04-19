@@ -44,6 +44,8 @@ const (
 	localTelegramTokenEnv          = "LOCAL_TELEGRAM_BOT_TOKEN"
 	defaultDigestLockKey           = "notifier:daily-digest:leader"
 	defaultDigestLockTTL           = 15 * time.Minute
+	defaultAccumulationLockKey     = "notifier:accumulation:leader"
+	defaultAccumulationLockTTL     = 9 * time.Minute
 )
 
 func resolveTelegramBotToken(isProd bool) (token string, source string) {
@@ -112,14 +114,6 @@ func main() {
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 	)
 	notifierMetrics := telemetry.NewNotifierMetrics(registry, queueName)
-	e2eMetrics := telemetry.NewE2ELatencyMetrics(registry)
-
-	rateSec, err := config.ParsePositiveIntEnv("NOTIFY_RATE_LIMIT_SEC", 300)
-	if err != nil {
-		slog.Error("invalid NOTIFY_RATE_LIMIT_SEC", "err", err)
-		os.Exit(1)
-	}
-	rateLimit := time.Duration(rateSec) * time.Second
 
 	maxPerDay := getNotifierMaxPerDay()
 	notifierMaxRetries, err := config.ParsePositiveIntEnv("NOTIFIER_MAX_RETRIES", defaultNotifierMaxRetries)
@@ -198,9 +192,7 @@ func main() {
 		BreakerOpenJitter:       breakerOpenJitter,
 	})
 	notifier.ConfigureBatchSessionStore(telegram.NewRedisBatchSessionStore(rdb), os.Getenv("BOT_REDIS_PREFIX"))
-	sendNotif := usecase.NewSendNotification(notifRepo, userRepo, jobRepo, notifier, rateLimit, maxPerDay).
-		WithProductEventRepo(productEventRepo).
-		WithE2ELatencyMetrics(e2eMetrics)
+	sendNotif := usecase.NewSendNotification(notifRepo, userRepo, jobRepo)
 
 	dailyDigest := usecase.NewDailyDigest(userRepo, notifRepo, jobRepo, notifier, maxPerDay).
 		WithProductEventRepo(productEventRepo)
@@ -243,6 +235,46 @@ func main() {
 	digestCron.Start()
 	defer digestCron.Stop()
 	slog.Info("digest cron started", "spec", digestCronSpec)
+
+	accumulationCronSpec := os.Getenv("ACCUMULATION_CRON")
+	if accumulationCronSpec == "" {
+		accumulationCronSpec = "*/10 * * * *" // каждые 10 мин; собирает накопленные pending для free-пользователей
+	}
+	accumulationLock := redisadapter.NewRedisLock(rdb)
+	accumulationCron := cron.New()
+	if _, err := accumulationCron.AddFunc(accumulationCronSpec, func() {
+		lease, ok, err := accumulationLock.Acquire(context.Background(), defaultAccumulationLockKey, defaultAccumulationLockTTL)
+		if err != nil {
+			slog.Error("accumulation lock acquire failed", "key", defaultAccumulationLockKey, "err", err)
+			return
+		}
+		if !ok {
+			slog.Info("accumulation skipped; lock already held", "key", defaultAccumulationLockKey)
+			return
+		}
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer releaseCancel()
+		defer func() {
+			released, releaseErr := lease.Release(releaseCtx)
+			if releaseErr != nil {
+				slog.Error("accumulation lock release failed", "key", defaultAccumulationLockKey, "err", releaseErr)
+				return
+			}
+			if !released {
+				slog.Warn("accumulation lock release skipped; token no longer owned", "key", defaultAccumulationLockKey)
+			}
+		}()
+
+		accCtx, accCancel := context.WithTimeout(context.Background(), 9*time.Minute)
+		defer accCancel()
+		dailyDigest.ExecuteAccumulation(accCtx)
+	}); err != nil {
+		slog.Error("accumulation cron add func", "spec", accumulationCronSpec, "err", err)
+		os.Exit(1)
+	}
+	accumulationCron.Start()
+	defer accumulationCron.Stop()
+	slog.Info("accumulation cron started", "spec", accumulationCronSpec)
 
 	consumer := redisadapter.NewMatchNotifyConsumer(
 		rdb,

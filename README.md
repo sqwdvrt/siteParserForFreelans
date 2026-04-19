@@ -102,13 +102,15 @@ docker compose up -d ai-user-rematch
 
 - Monitoring, alerts, incident runbook, DR/backup/restore: `docs/operations.md`
 - Release checklist: `docs/operations.md` (`0) Release Checklist`)
-- Monitoring stack (Prometheus + Alertmanager + Redis/Postgres exporters): `docker-compose.monitoring.yml`
+- Monitoring stack (Prometheus + Alertmanager + Grafana + Redis/Postgres exporters + `browser-service-exporter`): `docker-compose.monitoring.yml`
 - Monitoring config and alert rules: `monitoring/prometheus/prometheus.yml`, `monitoring/prometheus/alerts.yml`
 - Product analytics dashboard: `monitoring/grafana/dashboards/product-analytics.json`
-- Backup script: `scripts/backup_postgres.sh`
+- Local backup script: `scripts/backup_postgres.sh`
+- VPS backup cron: `scripts/backup_vps_cron.sh` (`shared/backups/`, 7-day retention)
 - Restore script: `scripts/restore_postgres.sh`
 - VPS health report generator: `scripts/vps_health_report.py`
-- Local operator wrapper for VPS report/cleanup: `scripts/vps_ops_report.sh`
+- VPS health report wrapper: `scripts/vps_ops_report.sh`
+- VPS health report timer installer: `scripts/install_vps_health_report_timer.sh`
 
 ## Deployment Profiles
 
@@ -121,11 +123,12 @@ docker compose up -d ai-user-rematch
   `telegram-bot` публикуется только на loopback (`BOT_BIND_IP`/`BOT_PORT`), поэтому production webhook должен идти через host reverse proxy на `WEBHOOK_URL -> 127.0.0.1:${BOT_PORT}`.
   `pgAdmin` тоже публикуется только на loopback и открывается через SSH tunnel.
 - `docker-compose.ssl.yml` — VPS-overlay поверх `docker-compose.prod.yml`.
-  Подключает внешнюю сеть `infra_default` с self-hosted `postgres` и `redis`, а также пробрасывает самоподписанный CA-сертификат во все контейнеры через `SSL_CERT_FILE`.
+  Подключает внешнюю сеть `infra_default` с self-hosted `postgres` и `redis`, а также пробрасывает CA-сертификат в app-сервисы и `redis-exporter` через `SSL_CERT_FILE`.
+  Путь к CA override'ится переменной `INFRA_CERTS_DIR` (по умолчанию `/home/deploy/infra/certs`).
   Канонический production-запуск на VPS:
   `docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml up -d`
   Подробнее: `docs/vps_deploy.md`.
-- `docker-compose.monitoring.yml` — профиль мониторинга (Prometheus + Alertmanager, profile `monitoring`).
+- `docker-compose.monitoring.yml` — профиль мониторинга (`monitoring`: Prometheus, Alertmanager, Grafana, `redis-exporter`, `postgres-exporter`, `browser-service-exporter`).
   По умолчанию он заточен под локальный dev-compose, а для production на VPS должен запускаться вместе с `docker-compose.ssl.yml`
   и переопределяться env-переменными scrape/DB endpoints.
   Все compose-файлы используют project-scoped default network: не полагайтесь на общий hardcoded Docker network между разными окружениями/`-p` project names.
@@ -264,6 +267,8 @@ bash ./scripts/vps_ops_report.sh --cleanup-docker
 - пишет JSON и append-only log в `/home/deploy/app/.siteParserForFreelans-deploy/shared/ops/`;
 - шлёт Telegram только при `WARN/FAIL`, и только если fingerprint проблемы изменился.
 
+`scripts/install_vps_health_report_timer.sh` ставит systemd timer при запуске от root и иначе пишет тот же job в user crontab. `scripts/backup_vps_cron.sh` по умолчанию хранит backup-файлы только 7 дней.
+
 Если нужен отдельный ops-бот или отдельный чат для этих уведомлений, задай `VPS_HEALTH_TELEGRAM_BOT_TOKEN` и `VPS_HEALTH_TELEGRAM_CHAT_ID` в `.env.production`.
 
 ### Railway (монорепо)
@@ -322,6 +327,8 @@ cd backend && go run ./cmd/crawler
 ```
 
 ## Конфигурация (.env)
+
+Полный production/env reference и VPS automation notes: `docs/env_setup.md`.
 
 | Переменная | Описание |
 |------------|----------|

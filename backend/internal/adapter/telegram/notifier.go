@@ -168,29 +168,10 @@ func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayl
 	text := ""
 	var keyboard [][]map[string]interface{}
 	if len(p.Batch) > 0 {
-		items := sortedBatchItems(p.Batch)
-		if len(items) == 0 {
+		if len(sortedBatchItems(p.Batch)) == 0 {
 			return fmt.Errorf("job is nil")
 		}
-		first := items[0]
-		text = formatMessage(port.NotifyPayload{
-			Job:           first.Job,
-			Score:         first.FinalScore,
-			FinalScore:    first.FinalScore,
-			RankerVersion: first.RankerVersion,
-			ReasonCodes:   first.ReasonCodes,
-			WhyItFits:     first.WhyItFits,
-		})
-
-		if n.batchSessionStore != nil {
-			state, err := n.storeBatchSession(ctx, telegramID, items)
-			if err != nil {
-				return err
-			}
-			keyboard = buildBatchNavigationKeyboard(state)
-		} else {
-			keyboard = buildFeedbackKeyboard(port.NotifyPayload{Job: first.Job})
-		}
+		text = formatBatchMessage(p)
 	} else {
 		text = formatMessage(p)
 		keyboard = buildFeedbackKeyboard(p)

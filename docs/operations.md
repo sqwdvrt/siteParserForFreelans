@@ -17,7 +17,7 @@ export PROD_COMPOSE="docker compose --env-file .env.production -f docker-compose
 
 `$PROD_DEPLOY_PATH` и `$STAGING_DEPLOY_PATH` по-прежнему остаются операторскими точками входа: теперь это live symlink на `current`, а `current` уже указывает на активный release. Mutable state лежит в скрытой sibling-директории deploy state с `repo/`, `releases/`, `current`, `shared/.env.production` и `shared/backups/`, а release-local `.env.production` в live path уже содержит resolved digest-pinned image refs для текущего релиза.
 
-> `docker-compose.ssl.yml` — VPS-overlay: подключает внешнюю сеть `infra_default` и пробрасывает CA-сертификат во все контейнеры. Требует запущенного `/home/deploy/infra`. Подробнее: `docs/vps_deploy.md`.
+> `docker-compose.ssl.yml` — VPS-overlay: подключает внешнюю сеть `infra_default` и пробрасывает CA-сертификат в app-сервисы и `redis-exporter`. Путь к сертификату можно переопределить через `INFRA_CERTS_DIR`. Требует запущенного `/home/deploy/infra`. Подробнее: `docs/vps_deploy.md`.
 
 ### 0.1 Preflight before deploy
 1. Проверить target SHA и release notes.
@@ -59,7 +59,7 @@ docker compose --env-file .env.example -f docker-compose.yml --profile workers -
 ```
 2. Проверить production compose contract ровно так же, как его валидирует `release-preflight-gate`:
 ```bash
-docker compose --env-file .env.production.example -f docker-compose.prod.yml config -q
+docker compose --env-file .env.production.example -f docker-compose.prod.yml -f docker-compose.ssl.yml -f docker-compose.monitoring.yml --profile monitoring config -q
 ```
 3. Для текущего VPS дополнительно проверить overlay contract:
 ```bash
@@ -121,6 +121,7 @@ set +a
 
 bash ./scripts/post_deploy_production_gate.sh
 ```
+Этот gate ждёт healthy-состояния для `backend-api`, `browser-service`, `backend-crawler`, `backend-notifier`, `ai-service`, `ai-user-embed`, `ai-user-rematch`, `ai-ac-consumer` и `telegram-bot`.
 
 ### 0.5 Queue drain and post-release observation
 1. Снять срез по очередям до и после production deploy:
@@ -177,6 +178,8 @@ $PROD_COMPOSE stop backend-api backend-crawler backend-notifier ai-service ai-us
 - Grafana datasources: `monitoring/grafana/datasources/*.yml`
 - Redis exporter: service `redis-exporter` (queue/Redis metrics via key lengths and exporter stats)
 - Postgres exporter: service `postgres-exporter` (DB/pool/runtime metrics)
+- Browser-service exporter: service `browser-service-exporter` (дополнительный health/scrape sentinel для `browser-service`)
+- Grafana: service `grafana` (dashboards + provisioning for Prometheus and Product Analytics Postgres)
 - CI-проверка конфигов: `.github/workflows/monitoring-gate.yml`
 
 Для доставки алертов в каналы:
@@ -206,7 +209,7 @@ Production monitoring запускай вместе с `docker-compose.prod.yml`
 - `POSTGRES_EXPORTER_DATA_SOURCE_NAME=postgresql://...?...sslmode=require`
 - `GRAFANA_POSTGRES_HOST`, `GRAFANA_POSTGRES_PORT`, `GRAFANA_POSTGRES_SSLMODE=require`
 
-На VPS добавь ещё `docker-compose.ssl.yml`, чтобы monitoring-контейнеры попали в `infra_default` и увидели self-hosted Redis/Postgres.
+На VPS добавь ещё `docker-compose.ssl.yml`, чтобы проект попал в `infra_default`, app-сервисы и `redis-exporter` получили CA-файл, а monitoring overrides указывали на self-hosted Redis/Postgres/TLS targets.
 
 Пример:
 ```bash
@@ -265,6 +268,8 @@ curl -kfsS https://127.0.0.1:8443/readyz
 - Redis:
   - queue depth: `ai-process`, `ai-process:processing`, `ai-process:dlq`;
   - queue depth: `user-embed`, `user-embed:processing`, `user-embed:dlq`;
+  - queue depth: `user-rematch`, `user-rematch:processing`, `user-rematch:dlq`;
+  - queue depth: `ac-batch`, `ac-batch:processing`, `ac-batch:dlq`;
   - queue depth: `match-notify`, `match-notify:processing`, `match-notify:dlq`.
 - PostgreSQL:
   - active connections, long-running queries, deadlocks;
@@ -374,7 +379,7 @@ done
 - PostgreSQL:
   - еженощный full backup (`pg_dump -Fc`);
   - WAL/PITR можно добавить позже, если вы отдельно включите такую схему в self-hosted infra;
-  - retention не меньше 14 дней.
+  - retention по умолчанию 7 дней, как в `scripts/backup_vps_cron.sh`.
 - Redis:
   - для очередей можно принимать потерю transient-сообщений;
   - если требуется строгая гарантия, включить AOF/snapshot + внешнее хранилище.
@@ -384,13 +389,13 @@ done
 
 ### 4.3 Скрипты
 - Backup:
-  `scripts/backup_postgres.sh`
+  `scripts/backup_vps_cron.sh`
 - Restore:
   `scripts/restore_postgres.sh`
 
 Пример backup:
 ```bash
-DATABASE_URL='postgres://...' ./scripts/backup_postgres.sh
+BACKUP_DIR=/home/deploy/app/.siteParserForFreelans-deploy/shared/backups ./scripts/backup_vps_cron.sh
 ```
 
 Пример restore:
@@ -422,7 +427,7 @@ $PROD_COMPOSE stop backend-api backend-crawler backend-notifier ai-service ai-us
 ```
 2. Снять аварийный backup текущего (даже «плохого») состояния:
 ```bash
-DATABASE_URL='postgres://...' BACKUP_DIR='./backups/emergency' ./scripts/backup_postgres.sh
+BACKUP_DIR=/home/deploy/app/.siteParserForFreelans-deploy/shared/backups ./scripts/backup_vps_cron.sh
 ```
 3. Выбрать последний гарантированно рабочий dump (pre-release backup) и проверить checksum.
 4. Выполнить restore:

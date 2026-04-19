@@ -29,7 +29,7 @@
  └───────────────────────────┬──────────────────────────────────────┘
                              │
                     ┌────────▼─────────┐
-                    │  telegram-bot    │  Python · getUpdates polling
+                    │  telegram-bot    │  Python · webhook/polling thin client
                     │  (thin client)   │
                     └────────┬─────────┘
                              │ HTTP + HMAC
@@ -784,17 +784,18 @@ make logs SERVICE=backend-api   # Логи конкретного сервиса
 ```bash
 export PROD_COMPOSE="docker compose --env-file .env.production -f docker-compose.prod.yml -f docker-compose.ssl.yml"
 
-# Первый запуск
-$PROD_COMPOSE up -d --build
+# Обновить pinned images
+$PROD_COMPOSE pull
 
-# Обновление
-$PROD_COMPOSE up -d
+# Канонический production/VPS запуск
+$PROD_COMPOSE up -d --no-build
 ```
 
 `docker-compose.ssl.yml` — overlay, который:
 
 - подключает внешнюю сеть `infra_default` (postgres + redis)
-- пробрасывает самоподписанный CA-сертификат через `SSL_CERT_FILE` во все контейнеры
+- пробрасывает CA-сертификат через `SSL_CERT_FILE` в app-сервисы и `redis-exporter`
+- позволяет переопределить путь к сертификату через `INFRA_CERTS_DIR` (по умолчанию `/home/deploy/infra/certs`)
 
 **Обязательные env vars в `.env.production`:**
 
@@ -804,8 +805,29 @@ $PROD_COMPOSE up -d
 - `TELEGRAM_BOT_TOKEN`
 - `API_AUTH_TOKEN` (≥32 chars)
 - `API_USER_HMAC_SECRET` (≥32 chars)
+- `ADMIN_AUTH_TOKEN` (Bearer token для admin API, ≥32 chars)
 - `APP_ENV=production`
 - `API_URL=https://api.freematch.ru`
+- `BOT_MODE=webhook`
+- `WEBHOOK_URL=https://api.freematch.ru/webhook`
+- `WEBHOOK_SECRET_TOKEN`
+
+Если используется monitoring profile, дополнительно нужны:
+
+- `GRAFANA_ADMIN_PASSWORD`
+- `POSTGRES_EXPORTER_DATA_SOURCE_NAME`
+- `BACKEND_API_METRICS_TARGET=backend-api:8443`
+- `BACKEND_API_METRICS_SCHEME=https`
+- `BACKEND_API_METRICS_TLS_INSECURE_SKIP_VERIFY=true`
+
+### VPS automation
+
+На текущем VPS дополнительно работают repo-native ops scripts:
+
+- `scripts/vps_health_report.py` — пишет JSON и append-only log в shared `ops/`, шлёт Telegram только при `WARN/FAIL`
+- `scripts/install_vps_health_report_timer.sh` — ставит systemd timer при запуске от root и fallback'ится на user `crontab`, если root недоступен
+- `scripts/vps_ops_report.sh` — локальный SSH wrapper для сводки и безопасного cleanup
+- `scripts/backup_vps_cron.sh` — nightly PostgreSQL backup в `shared/backups/` с retention 7 дней по умолчанию
 
 ### Активация Pro для пользователя
 
@@ -818,6 +840,19 @@ UPDATE users SET is_pro = TRUE WHERE telegram_id = 123456789;
 ---
 
 ## 10. Мониторинг
+
+### Monitoring stack
+
+Текущий compose monitoring profile включает:
+
+- `prometheus`
+- `alertmanager`
+- `grafana`
+- `redis-exporter`
+- `postgres-exporter`
+- `browser-service-exporter`
+
+`browser-service-exporter` служит дополнительным health/scrape sentinel для `browser-service`, а Grafana provisioning поднимает Prometheus datasource и SQL dashboard для `product_events`.
 
 ### Prometheus метрики
 
@@ -854,6 +889,16 @@ UPDATE users SET is_pro = TRUE WHERE telegram_id = 123456789;
 - DB / Redis unavailable
 - Queue depth threshold exceeded
 - Notification failure rate spike
+
+Для production monitoring используется тот же VPS compose-контур с overlay:
+
+```bash
+docker compose --env-file .env.production \
+  -f docker-compose.prod.yml \
+  -f docker-compose.ssl.yml \
+  -f docker-compose.monitoring.yml \
+  --profile monitoring up -d
+```
 
 ---
 

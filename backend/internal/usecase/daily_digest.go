@@ -11,6 +11,7 @@ import (
 
 const moscowLocation = "Europe/Moscow"
 const defaultDigestClaimTTL = 15 * time.Minute
+const defaultMaxPerDay = 5
 
 // DailyDigest отправляет pro-пользователям накопленные pending-уведомления в заданный час.
 type DailyDigest struct {
@@ -182,6 +183,36 @@ func (d *DailyDigest) sendDigestForUser(ctx context.Context, userID int64) error
 	}
 	slog.Info("daily digest: sent", "user_id", userID, "jobs", len(delivered))
 	return nil
+}
+
+// ExecuteAccumulation отправляет накопленные pending-уведомления free-пользователям.
+// Вызывается коротким cron-ом (по умолч. каждые 10 мин) вместо немедленной доставки.
+func (d *DailyDigest) ExecuteAccumulation(ctx context.Context) {
+	reclaimed, err := d.notifRepo.ReclaimStaleDigestClaims(ctx, defaultDigestClaimTTL)
+	if err != nil {
+		slog.Error("accumulation digest: reclaim stale claims failed", "err", err)
+		return
+	}
+	if reclaimed > 0 {
+		slog.Warn("accumulation digest: reclaimed stale claims", "count", reclaimed)
+	}
+
+	userIDs, err := d.notifRepo.GetFreeUsersWithPendingNotifications(ctx)
+	if err != nil {
+		slog.Error("accumulation digest: get free users with pending failed", "err", err)
+		return
+	}
+	if len(userIDs) == 0 {
+		slog.Debug("accumulation digest: no free users with pending notifications")
+		return
+	}
+	slog.Info("accumulation digest: processing free users", "count", len(userIDs))
+
+	for _, userID := range userIDs {
+		if err := d.sendDigestForUser(ctx, userID); err != nil {
+			slog.Error("accumulation digest: send for user failed", "user_id", userID, "err", err)
+		}
+	}
 }
 
 func (d *DailyDigest) recoverMissedNotifications(ctx context.Context, userID int64, remaining int) error {

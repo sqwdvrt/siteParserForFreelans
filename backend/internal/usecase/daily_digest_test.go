@@ -165,6 +165,10 @@ func (m *digestNotifRepo) DeleteNotifications(ctx context.Context, notificationI
 	return int64(len(notificationIDs)), nil
 }
 
+func (m *digestNotifRepo) GetFreeUsersWithPendingNotifications(ctx context.Context) ([]int64, error) {
+	return nil, nil
+}
+
 func (m *digestNotifRepo) GetPendingForUser(ctx context.Context, userID int64) ([]port.PendingNotification, error) {
 	return m.ClaimPendingDigestNotifications(ctx, userID, 0)
 }

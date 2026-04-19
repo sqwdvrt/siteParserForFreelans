@@ -104,6 +104,7 @@ curl -fsS https://api.freematch.ru/healthz
 ### 4.1 TLS для internal services
 
 Сертификат нужен только для доверия между контейнерами `postgres` и `redis`.
+Если CA лежит не в `/home/deploy/infra/certs`, production overlay можно переключить через `INFRA_CERTS_DIR` без правки `docker-compose.ssl.yml`.
 
 ```bash
 mkdir -p /home/deploy/infra/certs
@@ -256,6 +257,7 @@ http://127.0.0.1:5050
 ## 7. Monitoring
 
 Monitoring запускается на том же VPS и тоже использует `infra_default`.
+Текущий stack включает `prometheus`, `alertmanager`, `grafana`, `redis-exporter`, `postgres-exporter` и `browser-service-exporter`.
 
 ```bash
 cd /home/deploy/app/siteParserForFreelans
@@ -284,9 +286,18 @@ Production monitoring overrides должны указывать на:
 
 Для автоматической self-check сводки на самом VPS в репозитории есть:
 - `scripts/vps_health_report.py` — собирает health/report, пишет JSON и log, шлёт Telegram только при `WARN/FAIL`;
-- `scripts/vps_ops_report.sh` — локальный операторский wrapper: по SSH обновляет report и печатает краткую сводку;
+- `scripts/vps_ops_report.sh` — локальный операторский wrapper: по SSH обновляет report из shared ops bin и печатает краткую сводку;
 - `scripts/vps_safe_docker_cleanup.sh` — безопасная cleanup-команда для ручного запуска при high disk usage;
-- `scripts/install_vps_health_report_timer.sh` + `ops/systemd/siteparser-vps-health-report.{service,timer}` — установка systemd timer.
+- `scripts/install_vps_health_report_timer.sh` + `ops/systemd/siteparser-vps-health-report.{service,timer}` — установка systemd timer или rootless crontab fallback.
+
+Installer сначала копирует runtime-файлы в стабильный shared ops bin:
+
+```text
+/home/deploy/app/.siteParserForFreelans-deploy/shared/ops/bin/vps_health_report.py
+/home/deploy/app/.siteParserForFreelans-deploy/shared/ops/bin/vps_safe_docker_cleanup.sh
+```
+
+Именно эти копии используют systemd service/timer и rootless cron job, поэтому report automation переживает release switch.
 
 Установка на VPS:
 
@@ -333,6 +344,15 @@ bash ./scripts/vps_ops_report.sh
 bash ./scripts/vps_ops_report.sh --cleanup-docker
 ```
 
+Скрипт cleanup проверяет использование root filesystem по `DISK_WARN_PERCENT` (по умолчанию `80`) и только после этого выполняет:
+
+```bash
+docker image prune -f
+docker builder prune -f
+```
+
+Он не удаляет named volumes и не трогает shared release/backups state.
+
 Опционально можно вынести Telegram для этих health-уведомлений в отдельный канал/бот:
 - `VPS_HEALTH_TELEGRAM_BOT_TOKEN`
 - `VPS_HEALTH_TELEGRAM_CHAT_ID`
@@ -345,16 +365,14 @@ bash ./scripts/vps_ops_report.sh --cleanup-docker
 
 PostgreSQL - источник истины. Redis - transient queues, его обычно не восстанавливают как полноценный state store.
 
-Рекомендуемый backup:
+Рекомендуемый VPS backup:
 
 ```bash
 cd /home/deploy/app/siteParserForFreelans
-mkdir -p /home/deploy/app/.siteParserForFreelans-deploy/shared/backups
-set -a
-. ./.env.production
-set +a
-BACKUP_DIR=/home/deploy/app/.siteParserForFreelans-deploy/shared/backups ./scripts/backup_postgres.sh
+BACKUP_DIR=/home/deploy/app/.siteParserForFreelans-deploy/shared/backups ./scripts/backup_vps_cron.sh
 ```
+
+`scripts/backup_vps_cron.sh` runs `pg_dump -Fc` via `docker exec infra-postgres-1`, stores `.dump` plus `.sha256` in shared backups, and deletes both artifacts older than 7 days by default.
 
 Restore:
 

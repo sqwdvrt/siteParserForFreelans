@@ -190,6 +190,10 @@ func (m *mockCrawlNotifRepo) DeleteNotifications(context.Context, []int64) (int6
 	return 0, nil
 }
 
+func (m *mockCrawlNotifRepo) GetFreeUsersWithPendingNotifications(context.Context) ([]int64, error) {
+	return nil, nil
+}
+
 func (m *mockCrawlNotifRepo) CancelPendingByJobIDs(_ context.Context, jobIDs []int64) (int64, error) {
 	m.cancelCalled = true
 	m.cancelledJobIDs = append(m.cancelledJobIDs, jobIDs...)

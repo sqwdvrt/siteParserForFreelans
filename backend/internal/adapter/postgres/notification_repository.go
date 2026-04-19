@@ -390,6 +390,33 @@ func (r *NotificationRepository) ReleasePendingDigestNotifications(ctx context.C
 	return err
 }
 
+// GetFreeUsersWithPendingNotifications возвращает IDs не-pro пользователей с pending-уведомлениями.
+func (r *NotificationRepository) GetFreeUsersWithPendingNotifications(ctx context.Context) ([]int64, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT DISTINCT n.user_id
+		FROM notifications n
+		JOIN users u ON u.id = n.user_id
+		WHERE n.status = 'pending'
+		  AND u.is_pro = FALSE
+		  AND (u.paused_until IS NULL OR u.paused_until <= NOW())
+		ORDER BY n.user_id
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var ids []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
 // ReclaimStaleDigestClaims returns stale digest leases back to pending after olderThan.
 func (r *NotificationRepository) ReclaimStaleDigestClaims(ctx context.Context, olderThan time.Duration) (int64, error) {
 	secs := int(olderThan.Seconds())
