@@ -14,6 +14,7 @@ class Job:
     title: str
     description: str | None
     raw_html: str
+    job_type: str = "project" # Added field for classification (vacancy/project)
     budget: str = ""
     source: str = "kwork"
     url: str = ""

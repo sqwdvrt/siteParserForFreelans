@@ -22,6 +22,7 @@ import (
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/postgres"
 	redisqueue "github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/redis"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/api"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/config"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/security"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/telemetry"
@@ -42,6 +43,7 @@ func main() {
 	} else {
 		defer func() { _ = shutdownTracer(context.Background()) }()
 	}
+	go config.StartSubscriptionConfigReloader()
 
 	isProd := security.IsProductionEnv(os.Getenv("APP_ENV"))
 
@@ -167,6 +169,7 @@ func main() {
 
 	adminHandlers := &api.AdminHandlers{
 		AdminRepo:        adminRepo,
+		UserRepo:         userRepo,
 		DebugMatchClient: &api.HTTPAdminDebugMatchClient{BaseURL: os.Getenv("AI_DEBUG_MATCH_BASE_URL")},
 		AdminToken:       adminToken,
 		Logger:           slog.Default(),
@@ -190,6 +193,7 @@ func main() {
 		FeedbackRepo:          feedbackRepo,
 		ProductEventRepo:      productEventRepo,
 		ProductMetrics:        productMetrics,
+		SubscriptionPolicy:    subscription.NewPolicy(),
 		AuthToken:             apiToken,
 		UserHMACSecret:        userHMACSecret,
 		Logger:                slog.Default(),
@@ -226,6 +230,7 @@ func main() {
 		r.Get("/users", adminHandlers.ListUsers)
 		r.Get("/users/{id}", adminHandlers.GetUser)
 		r.Delete("/users/{id}", adminHandlers.DeleteUser)
+		r.Put("/users/{id}/plan", adminHandlers.PutUserPlan)
 		r.Get("/jobs", adminHandlers.ListJobs)
 		r.Get("/debug/match", adminHandlers.GetDebugMatch)
 	})

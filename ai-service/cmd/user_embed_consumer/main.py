@@ -22,6 +22,7 @@ from ai_service.adapter.gemini import GeminiProfileParser
 from ai_service.adapter.postgres import PostgresUserRepository
 from ai_service.adapter.redis import RedisUserEmbedQueueConsumer, RedisUserRematchQueue
 from ai_service.adapter.sentence_transformers import SentenceTransformerEmbedding
+from ai_service.config.subscription import start_subscription_config_reloader
 from ai_service.tracing.setup import init_tracer
 from ai_service.usecase.process_user_embed import ProcessUserEmbedUseCase
 from ai_service.usecase.user_embed_consumer_loop import run_user_embed_consumer
@@ -190,6 +191,7 @@ def main() -> None:
     )
 
     init_tracer("site-parser-user-embed")
+    start_subscription_config_reloader()
 
     queue_name = os.getenv("USER_EMBED_QUEUE", "user-embed")
     rematch_queue_name = os.getenv("USER_REMATCH_QUEUE", "user-rematch")

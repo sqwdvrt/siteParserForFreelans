@@ -260,6 +260,7 @@ func main() {
 	} else {
 		defer func() { _ = shutdownTracer(context.Background()) }()
 	}
+	go config.StartSubscriptionConfigReloader()
 
 	pool, err := postgres.NewConfiguredPool(ctx, dbURL)
 	if err != nil {

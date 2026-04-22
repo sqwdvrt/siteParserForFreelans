@@ -7,7 +7,8 @@ import math
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Protocol
+from typing import Callable, Protocol
+from ai_service.subscription.guard import SubscriptionGuard
 
 from ai_service.domain.job import Job
 from ai_service.domain.ranked_job import RankedJob
@@ -56,10 +57,10 @@ class ProcessACBatchUseCase:
         user_repo: object,
         job_repo: object,
         pending_repo: PendingJobsRepository,
-        actor: ExplanationActor,
+        actor_factory: Callable[[User], ExplanationActor],
         notify_queue: object,
         *,
-        feedback_repo: object | None = None,
+        subscription_guard: SubscriptionGuard | None = None,        feedback_repo: object | None = None,
         rerank_threshold: float = 0.55,
         rerank_fallback_enabled: bool = True,
         max_jobs_to_send: int = 5,
@@ -67,9 +68,10 @@ class ProcessACBatchUseCase:
         self._user_repo = user_repo
         self._job_repo = job_repo
         self._pending_repo = pending_repo
-        self._actor = actor
+        self._actor_factory = actor_factory
         self._notify_queue = notify_queue
         self._feedback_repo = feedback_repo
+        self._subscription_guard = subscription_guard
         self._rerank_threshold = rerank_threshold
         self._rerank_fallback_enabled = rerank_fallback_enabled
         self._max_jobs_to_send = max_jobs_to_send
@@ -185,7 +187,9 @@ class ProcessACBatchUseCase:
             reverse=True,
         )[: self._max_jobs_to_send]
 
-        explanations = self._generate_explanations(user, ordered_jobs)
+        # Dynamically create actor based on user's plan
+        actor_instance = self._actor_factory(user)
+        explanations = self._generate_explanations(user, ordered_jobs, actor_instance)
         ranked_jobs: list[RankedJob] = []
         for index, (job, why_it_fits) in enumerate(zip(ordered_jobs, explanations, strict=True), start=1):
             ranked_jobs.append(
@@ -239,8 +243,8 @@ class ProcessACBatchUseCase:
             ],
         )
 
-    def _generate_explanations(self, user: User, jobs: list[Job]) -> list[str]:
-        explain_batch = getattr(self._actor, "explain_batch", None)
+    def _generate_explanations(self, user: User, jobs: list[Job], actor_instance: ExplanationActor) -> list[str]:
+        explain_batch = getattr(actor_instance, "explain_batch", None)
         if callable(explain_batch):
             explanations = explain_batch(user, jobs)
             if len(explanations) == len(jobs):

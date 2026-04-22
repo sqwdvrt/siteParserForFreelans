@@ -19,6 +19,7 @@ const adminMaxLimit = 200
 // AdminHandlers — HTTP handlers для /admin/* эндпоинтов.
 type AdminHandlers struct {
 	AdminRepo        port.AdminRepository
+	UserRepo         port.UserRepository // new: needed to update plans
 	DebugMatchClient AdminDebugMatchClient
 	AdminToken       string
 	Logger           *slog.Logger
@@ -109,6 +110,40 @@ func (h *AdminHandlers) GetUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, user)
+}
+
+// PutUserPlan обновляет тарифный план пользователя.
+// PUT /admin/users/{id}/plan
+type PutUserPlanRequest struct {
+	PlanID string `json:"plan_id"`
+}
+
+func (h *AdminHandlers) PutUserPlan(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizeAdmin(w, r) {
+		return
+	}
+	userID, ok := parseIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	var req PutUserPlanRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	if req.PlanID == "" {
+		http.Error(w, "plan_id is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.UserRepo.UpdatePlan(r.Context(), userID, req.PlanID); err != nil {
+		h.logger().Error("admin update user plan failed", "user_id", userID, "plan_id", req.PlanID, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+
+	h.logger().Info("admin updated user plan", "user_id", userID, "plan_id", req.PlanID)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // DeleteUser удаляет пользователя и все связанные данные (каскад).

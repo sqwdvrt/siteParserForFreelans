@@ -43,8 +43,8 @@ func (r *UserRepository) Save(ctx context.Context, telegramID int64) (int64, boo
 func (r *UserRepository) GetByID(ctx context.Context, userID int64) (*domain.User, error) {
 	var u domain.User
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, telegram_id, profile_text, is_pro, notify_hour, paused_until FROM users WHERE id = $1
-	`, userID).Scan(&u.ID, &u.TelegramID, &u.ProfileText, &u.IsPro, &u.NotifyHour, &u.PausedUntil)
+		SELECT id, telegram_id, profile_text, plan_id, notify_hour, paused_until FROM users WHERE id = $1
+	`, userID).Scan(&u.ID, &u.TelegramID, &u.ProfileText, &u.PlanID, &u.NotifyHour, &u.PausedUntil)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -58,8 +58,8 @@ func (r *UserRepository) GetByID(ctx context.Context, userID int64) (*domain.Use
 func (r *UserRepository) GetByTelegramID(ctx context.Context, telegramID int64) (*domain.User, error) {
 	var u domain.User
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, telegram_id, profile_text, is_pro, notify_hour, paused_until FROM users WHERE telegram_id = $1
-	`, telegramID).Scan(&u.ID, &u.TelegramID, &u.ProfileText, &u.IsPro, &u.NotifyHour, &u.PausedUntil)
+		SELECT id, telegram_id, profile_text, plan_id, notify_hour, paused_until FROM users WHERE telegram_id = $1
+	`, telegramID).Scan(&u.ID, &u.TelegramID, &u.ProfileText, &u.PlanID, &u.NotifyHour, &u.PausedUntil)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -205,7 +205,7 @@ func (r *UserRepository) UpdatePauseScoped(ctx context.Context, userID int64, un
 func (r *UserRepository) GetProUsersWithNotifyHour(ctx context.Context, hour int) ([]int64, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id FROM users
-		WHERE is_pro = TRUE
+		WHERE plan_id != 'free'
 		  AND notify_hour = $1
 	`, hour)
 	if err != nil {
@@ -222,6 +222,14 @@ func (r *UserRepository) GetProUsersWithNotifyHour(ctx context.Context, hour int
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// UpdatePlan обновляет тарифный план пользователя (админ-метод).
+func (r *UserRepository) UpdatePlan(ctx context.Context, userID int64, planID string) error {
+	_, err := r.pool.Exec(ctx, `
+		UPDATE users SET plan_id = $1, updated_at = NOW() WHERE id = $2
+	`, planID, userID)
+	return err
 }
 
 // UpsertPreferencesScoped обновляет user_preferences в транзакции с app.current_user_id для RLS.

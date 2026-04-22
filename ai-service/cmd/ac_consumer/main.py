@@ -31,7 +31,11 @@ from ai_service.adapter.postgres import (
     PostgresUserRepository,
 )
 from ai_service.adapter.redis import ACBatchMessage, RedisACBatchQueueConsumer, RedisMatchNotifyQueue
+from ai_service.config.subscription import start_subscription_config_reloader, get_subscription_config
 from ai_service.tracing.setup import extract_context, init_tracer
+from ai_service.subscription.guard import SubscriptionGuard
+from ai_service.domain.user import User
+from typing import Callable, Type
 from ai_service.usecase.process_ac_batch import ACBatch, ProcessACBatchUseCase
 from ai_service.util.fallback_metrics import increment_counter, set_gauge, start_metrics_server_from_env
 from ai_service.util.postgres_pool_config import load_postgres_pool_settings
@@ -303,15 +307,38 @@ def main() -> None:
 
     # LLM cache for actor
     llm_cache = _create_llm_cache(redis_url)
-    actor_primary = GeminiActorAgent(
-        api_key=gemini_api_key,
-        model=actor_model,
-        timeout_sec=actor_timeout,
-        cache=llm_cache,
-    )
-    logger.info("actor provider=gemini model_actor=%s cache=%s", actor_model, "enabled" if llm_cache else "disabled")
+
+    subscription_guard = SubscriptionGuard()
+
+    def actor_factory(user: User) -> FallbackActorAgent:
+        # Default to base Gemini model if no specific plan model is found
+        model_name = subscription_guard.get_model_for_pipeline_stage(user, "actor_critic")
+        if not model_name:
+            model_name = actor_model # Fallback to default configured model
+
+        actor_primary_instance = GeminiActorAgent(
+            api_key=gemini_api_key,
+            model=model_name,
+            timeout_sec=actor_timeout,
+            cache=llm_cache,
+        )
+        logger.debug("actor for user_id=%d using model=%s cache=%s", user.id, model_name, "enabled" if llm_cache else "disabled")
+        
+        return FallbackActorAgent(
+            primary=actor_primary_instance,
+            fallback=RuleBasedActorAgent(), # Always provide a rule-based fallback
+        )
+
+    # Replace direct actor creation with factory
+    # actor = FallbackActorAgent(
+    #     primary=actor_primary,
+    #     fallback=RuleBasedActorAgent(),
+    # )
+    # The actor will now be created dynamically inside ProcessACBatchUseCase.
+    # We pass the factory to ProcessACBatchUseCase.
 
     init_tracer("site-parser-ac")
+    start_subscription_config_reloader()
 
     user_repo = PostgresUserRepository(db_url, **pg_pool_kwargs)
     job_repo = PostgresJobRepository(db_url, **pg_pool_kwargs)
@@ -337,11 +364,12 @@ def main() -> None:
         "user_repo": user_repo,
         "job_repo": job_repo,
         "pending_repo": pending_repo,
-        "actor": actor,
+        "actor_factory": actor_factory, # Use actor factory
         "notify_queue": notify_queue,
         "feedback_repo": feedback_repo,
         "rerank_threshold": rerank_threshold,
         "max_jobs_to_send": max_jobs_to_send,
+        "subscription_guard": subscription_guard,
     }
     if _supports_constructor_kwarg(ProcessACBatchUseCase, "rerank_fallback_enabled"):
         process_batch_kwargs["rerank_fallback_enabled"] = rerank_fallback_enabled

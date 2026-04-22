@@ -23,6 +23,7 @@ import (
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/adapter/telegram"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/config"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/quota"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/security"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/telemetry"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/usecase"
@@ -159,6 +160,7 @@ func main() {
 	} else {
 		defer func() { _ = shutdownTracer(context.Background()) }()
 	}
+	go config.StartSubscriptionConfigReloader()
 
 	pool, err := postgres.NewConfiguredPool(ctx, dbURL)
 	if err != nil {
@@ -192,7 +194,9 @@ func main() {
 		BreakerOpenJitter:       breakerOpenJitter,
 	})
 	notifier.ConfigureBatchSessionStore(telegram.NewRedisBatchSessionStore(rdb), os.Getenv("BOT_REDIS_PREFIX"))
-	sendNotif := usecase.NewSendNotification(notifRepo, userRepo, jobRepo)
+	dailyCounter := quota.NewDailyCounter(rdb)
+	subscriptionPolicy := subscription.NewPolicy()
+	sendNotif := usecase.NewSendNotification(notifRepo, userRepo, jobRepo, dailyCounter, subscriptionPolicy)
 
 	dailyDigest := usecase.NewDailyDigest(userRepo, notifRepo, jobRepo, notifier, maxPerDay).
 		WithProductEventRepo(productEventRepo)

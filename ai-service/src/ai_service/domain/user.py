@@ -23,6 +23,7 @@ class User:
     id: int
     telegram_id: int
     profile_text: str | None
+    plan_id: str = "free" # default to free plan
     embedding: list[float] | None
     preferences: UserPreferences = field(default_factory=UserPreferences)
     tag_affinity: dict[str, float] = field(default_factory=dict)

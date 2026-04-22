@@ -22,11 +22,15 @@ func NewSendNotification(
 	notifRepo port.NotificationRepository,
 	userRepo port.UserRepository,
 	jobRepo port.JobRepository,
+	dailyCounter port.DailyCounter,
+	subscriptionPolicy port.SubscriptionPolicy,
 ) *SendNotification {
 	return &SendNotification{
-		notifRepo: notifRepo,
-		userRepo:  userRepo,
-		jobRepo:   jobRepo,
+		notifRepo:          notifRepo,
+		userRepo:           userRepo,
+		jobRepo:            jobRepo,
+		dailyCounter:       dailyCounter,
+		subscriptionPolicy: subscriptionPolicy,
 	}
 }
 
@@ -51,6 +55,27 @@ func (u *SendNotification) Execute(
 	}
 	if user.IsPaused(time.Now()) {
 		slog.Debug("send notification: paused user skipped", "user_id", userID)
+		return nil
+	}
+
+	if u.dailyCounter == nil || u.subscriptionPolicy == nil {
+		slog.Error("send notification: daily counter or subscription policy not configured", "user_id", userID)
+		return fmt.Errorf("daily counter or subscription policy not configured")
+	}
+
+	currentCount, err := u.dailyCounter.Get(ctx, userID)
+	if err != nil {
+		slog.Error("send notification: get daily count failed", "user_id", userID, "err", err)
+		return fmt.Errorf("get daily count: %w", err)
+	}
+	limit, err := u.subscriptionPolicy.GetOrdersPerDayLimit(user.PlanID)
+	if err != nil {
+		slog.Error("send notification: get orders per day limit failed", "user_id", userID, "plan_id", user.PlanID, "err", err)
+		return fmt.Errorf("get orders per day limit: %w", err)
+	}
+
+	if currentCount >= limit {
+		slog.Debug("send notification: daily limit exceeded, skipping", "user_id", userID, "plan_id", user.PlanID, "current_count", currentCount, "limit", limit)
 		return nil
 	}
 
@@ -92,6 +117,10 @@ func (u *SendNotification) Execute(
 		return nil
 	}
 
+	if _, err := u.dailyCounter.Increment(ctx, userID); err != nil {
+		slog.Error("send notification: increment daily counter failed", "user_id", userID, "err", err)
+		return fmt.Errorf("increment daily counter: %w", err)
+	}
 	slog.Debug("send notification: pending, deferred to accumulation cron", "user_id", userID, "job_id", jobID)
 	return nil
 }
@@ -116,6 +145,38 @@ func (u *SendNotification) ExecuteBatch(
 		slog.Debug("send batch notification: paused user skipped", "user_id", userID)
 		return nil
 	}
+
+	if u.dailyCounter == nil || u.subscriptionPolicy == nil {
+		slog.Error("send batch notification: daily counter or subscription policy not configured", "user_id", userID)
+		return fmt.Errorf("daily counter or subscription policy not configured")
+	}
+
+	currentCount, err := u.dailyCounter.Get(ctx, userID)
+	if err != nil {
+		slog.Error("send batch notification: get daily count failed", "user_id", userID, "err", err)
+		return fmt.Errorf("get daily count: %w", err)
+	}
+	limit, err := u.subscriptionPolicy.GetOrdersPerDayLimit(user.PlanID)
+	if err != nil {
+		slog.Error("send batch notification: get orders per day limit failed", "user_id", userID, "plan_id", user.PlanID, "err", err)
+		return fmt.Errorf("get orders per day limit: %w", err)
+	}
+
+	var jobsToSend []port.BatchJobItem
+	for _, item := range jobs {
+		if currentCount < limit {
+			jobsToSend = append(jobsToSend, item)
+			currentCount++ // Optimistically increment for batch processing
+		} else {
+			slog.Debug("send batch notification: daily limit exceeded for item, skipping", "user_id", userID, "plan_id", user.PlanID, "job_id", item.JobID, "current_count", currentCount, "limit", limit)
+		}
+	}
+
+	if len(jobsToSend) == 0 {
+		slog.Debug("send batch notification: all jobs skipped due to daily limit", "user_id", userID, "plan_id", user.PlanID)
+		return nil
+	}
+	jobs = jobsToSend // Update jobs slice to only include those allowed by quota
 
 	type itemMeta struct {
 		whyItFits     string
@@ -178,6 +239,10 @@ func (u *SendNotification) ExecuteBatch(
 		}
 	}
 
+	if _, err := u.dailyCounter.Increment(ctx, userID); err != nil {
+		slog.Error("send batch notification: increment daily counter failed", "user_id", userID, "err", err)
+		return fmt.Errorf("increment daily counter: %w", err)
+	}
 	slog.Debug("send batch notification: pending, deferred to accumulation cron", "user_id", userID, "jobs", len(uniqueIDs))
 	return nil
 }

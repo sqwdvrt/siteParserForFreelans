@@ -26,6 +26,7 @@ from ai_service.adapter.postgres import (
 )
 from ai_service.adapter.redis import RedisMatchNotifyQueue
 from ai_service.adapter.redis.user_rematch_queue import RedisUserRematchQueueConsumer
+from ai_service.config.subscription import start_subscription_config_reloader
 from ai_service.usecase.process_user_rematch import ProcessUserRematchUseCase
 from ai_service.util.health_server import start_health_server
 from ai_service.util.postgres_pool_config import load_postgres_pool_settings
@@ -260,6 +261,7 @@ def main() -> None:
         feedback_repo=feedback_repo,
     )
     queue = RedisUserRematchQueueConsumer(redis_url)
+    start_subscription_config_reloader()
     start_health_server(_health_port())
     _mark_ready(ready_file)
 

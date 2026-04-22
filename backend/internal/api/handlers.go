@@ -23,6 +23,7 @@ import (
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/observability"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/subscription"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/telemetry"
 )
 
@@ -103,6 +104,7 @@ type Handlers struct {
 	FeedbackRepo          port.FeedbackRepository // nil — feedback не сохраняется
 	ProductEventRepo      port.ProductEventRepository
 	ProductMetrics        *telemetry.ProductMetrics // optional: prometheus metrics for product events
+	SubscriptionPolicy    *subscription.Policy      // new: subscription policy to check user plan capabilities
 	AuthToken             string                    // обязательный bearer token для API
 	UserHMACSecret        string                    // обязательный секрет подписи user-level запросов
 	Logger                *slog.Logger              // optional structured logger; defaults to slog.Default()
@@ -233,7 +235,7 @@ type UserPreferencesResponse struct {
 	MinBudget        *float64 `json:"min_budget,omitempty"`
 	MaxBudget        *float64 `json:"max_budget,omitempty"`
 	PreferredSources []string `json:"preferred_sources"`
-	IsPro            bool     `json:"is_pro"`
+	PlanID           string   `json:"plan_id"`
 }
 
 // PutUserProfile обновляет profile_text пользователя.
@@ -391,8 +393,23 @@ func (h *Handlers) PutUserNotifyHour(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if !user.IsPro {
-		http.Error(w, "pro subscription required", http.StatusForbidden)
+	// Check if user's plan allows setting notify hour (e.g., "pro" or "pro_plus")
+	if h.SubscriptionPolicy == nil {
+		h.logger().Error("subscription policy not configured")
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	allowed, err := h.SubscriptionPolicy.CanAccessFeature(user.PlanID, "notify_hour_setting")
+	if err != nil {
+		h.logger().Error("check notify hour feature access failed", "user_id", userID, "plan_id", user.PlanID, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	if !allowed {
+		http.Error(w, "this feature requires a higher subscription plan", http.StatusForbidden)
+		if h.ProductMetrics != nil {
+			h.ProductMetrics.RecordQuotaExceeded(user.PlanID, "notify_hour_setting")
+		}
 		return
 	}
 	if err := h.UserRepo.UpdateNotifyHourScoped(r.Context(), userID, req.Hour); err != nil {
@@ -407,6 +424,9 @@ func (h *Handlers) PutUserNotifyHour(w http.ResponseWriter, r *http.Request) {
 			"notify_hour": req.Hour,
 		},
 	})
+	if h.ProductMetrics != nil {
+		h.ProductMetrics.RecordFeatureUsage(user.PlanID, "notify_hour_setting")
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -502,7 +522,7 @@ func (h *Handlers) GetUserPreferences(w http.ResponseWriter, r *http.Request) {
 		MinBudget:        prefs.MinBudget,
 		MaxBudget:        prefs.MaxBudget,
 		PreferredSources: cloneAndNormalizePreferenceValues(prefs.PreferredSources, maxPreferenceSources),
-		IsPro:            user.IsPro,
+		PlanID:           user.PlanID,
 	})
 }
 
@@ -689,6 +709,25 @@ func (h *Handlers) PostUserFeedback(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
+	// Check if user's plan allows submitting feedback
+	if h.SubscriptionPolicy == nil {
+		h.logger().Error("subscription policy not configured")
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	allowed, err := h.SubscriptionPolicy.CanAccessFeature(user.PlanID, "feedback_loop")
+	if err != nil {
+		h.logger().Error("check feedback feature access failed", "user_id", userID, "plan_id", user.PlanID, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	if !allowed {
+		http.Error(w, "this feature requires a higher subscription plan", http.StatusForbidden)
+		if h.ProductMetrics != nil {
+			h.ProductMetrics.RecordQuotaExceeded(user.PlanID, "feedback_loop")
+		}
+		return
+	}
 	if h.FeedbackRepo != nil {
 		if err := h.FeedbackRepo.Upsert(r.Context(), userID, req.JobID, fb); err != nil {
 			if errors.Is(err, port.ErrFeedbackNotAllowed) {
@@ -708,6 +747,9 @@ func (h *Handlers) PostUserFeedback(w http.ResponseWriter, r *http.Request) {
 			"feedback": string(fb),
 		},
 	})
+	if h.ProductMetrics != nil {
+		h.ProductMetrics.RecordFeatureUsage(user.PlanID, "feedback_loop")
+	}
 	h.logger().Info("feedback recorded", "user_id", userID, "job_id", req.JobID, "feedback", req.Feedback)
 	w.WriteHeader(http.StatusNoContent)
 }

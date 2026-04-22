@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Protocol
+from typing import Callable, TYPE_CHECKING, Protocol
 
 from ai_service.port.classifier import ClassificationResult
 from ai_service.port.embedding import EmbeddingService
@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from ai_service.port.match_repository import MatchCandidate
     from ai_service.port.user_repository import UserRepository
     from ai_service.usecase.accumulate_matches import AccumulateMatchesUseCase
+    from ai_service.subscription.guard import SubscriptionGuard
 
     class Reranker(Protocol):
         """Minimal protocol for query/document reranking."""
@@ -96,10 +97,11 @@ class ProcessJobUseCase:
         self,
         repo: JobRepository,
         embedding_service: EmbeddingService,
-        classifier: Classifier | None = None,
+        classifier_factory: Callable[[User], Classifier | None],
         match_repo: MatchRepository | None = None,
         accumulate_matches: AccumulateMatchesUseCase | None = None,
         reranker: Reranker | None = None,
+        notify_queue: object | None = None,
         *,
         similarity_threshold: float = 0.7,
         max_matches_per_job: int = 20,
@@ -110,13 +112,15 @@ class ProcessJobUseCase:
         feedback_repo=None,
         user_repo: UserRepository | None = None,
         filter_event_repo: FilterEventRepository | None = None,
+        subscription_guard: SubscriptionGuard | None = None,
     ) -> None:
         self._repo = repo
         self._embedding = embedding_service
-        self._classifier = classifier
+        self._classifier_factory = classifier_factory
         self._match_repo = match_repo
         self._accumulate_matches = accumulate_matches
         self._reranker = reranker
+        self._notify_queue = notify_queue
         self._threshold = similarity_threshold
         self._limit = max_matches_per_job
         self._match_max_age_days = match_max_age_days
@@ -159,14 +163,20 @@ class ProcessJobUseCase:
             text = clean_text(raw)
             embedding = self._embedding.encode(text)
 
-            metadata: dict = {
-                "model": self._embedding.model_name,
-                "text_length": len(text),
-            }
-            if self._classifier is not None:
-                classification = self._classifier.classify(text)
+            # No user context for job classification currently.
+            # The plan states "модель AI на этапе парсинга должна присваивать статус "вакансия" или "проект".
+            # This is a general classification of the job itself.
+            # User-specific model routing will happen during the matching phase, not job processing.
+            classifier_instance = self._classifier_factory(None) # Pass None for now, as no specific user context for job classification
+            if classifier_instance is not None:
+                classification = classifier_instance.classify(text)
                 if classification:
                     metadata["classification"] = classification
+                    # Update job with type (e.g., "vacancy" or "project")
+                    job_type = str(classification.get("job_type")) # Assuming classifier returns 'job_type'
+                    if job_type and job_type != job.job_type:
+                        job.job_type = job_type # Assign to job object
+                        self._repo.update_job_type(job_id, job_type) # Persist job_type
 
             self._repo.save_embedding(job_id, embedding, metadata)
             if trace_id:
@@ -183,11 +193,18 @@ class ProcessJobUseCase:
 
         if self._match_repo is not None:
             allowed_user_ids: list[int] | None = None
-            if self._user_repo is not None:
+            if self._user_repo is not None and self._subscription_guard is not None:
                 matchable_users = self._user_repo.list_matchable_users()
-                filter_result = evaluate_preference_filter(job, matchable_users, classification=classification)
+                
+                # Filter users based on 'vacancies' feature access
+                users_with_vacancy_access = []
+                for user_item in matchable_users:
+                    if self._subscription_guard.can_access_feature(user_item, "vacancies"):
+                        users_with_vacancy_access.append(user_item)
+
+                filter_result = evaluate_preference_filter(job, users_with_vacancy_access, classification=classification)
                 filtered_users = filter_result.passed
-                allowed_user_ids = [user.id for user in filtered_users]
+                allowed_user_ids = [user_item.id for user_item in filtered_users]
                 filtered_count = len(matchable_users) - len(filtered_users)
                 self._record_budget_filtered_users(
                     job_id=job_id,
@@ -250,14 +267,50 @@ class ProcessJobUseCase:
 
             if candidates:
                 why_it_fits = _build_why_it_fits(classification)
+                ac_candidates: list[MatchCandidate] = []
+                direct_candidates: list[MatchCandidate] = []
+
                 for c in candidates:
                     c.why_it_fits = why_it_fits
                     if trace_id:
                         c.trace_id = trace_id
-                if self._accumulate_matches is not None:
-                    self._accumulate_matches.execute(candidates)
+
+                    # Only Pro Plus users with 'actor_critic' feature go to the AC pipeline
+                    use_ac = False
+                    if self._user_repo and self._subscription_guard:
+                        user_obj = self._user_repo.get_by_id(c.user_id)
+                        if user_obj and self._subscription_guard.can_access_feature(user_obj, "actor_critic"):
+                            use_ac = True
+                    
+                    if use_ac:
+                        ac_candidates.append(c)
+                    else:
+                        direct_candidates.append(c)
+
+                if ac_candidates and self._accumulate_matches is not None:
+                    self._accumulate_matches.execute(ac_candidates)
+                
+                if direct_candidates and self._notify_queue is not None:
+                    self._enqueue_direct_matches(direct_candidates)
 
         return True
+
+    def _enqueue_direct_matches(self, candidates: list[MatchCandidate]) -> None:
+        """Sends match candidates directly to the notification queue, bypassing Actor-Critic."""
+        enqueue = getattr(self._notify_queue, "enqueue", None)
+        if not callable(enqueue):
+            return
+        for c in candidates:
+            enqueue(
+                user_id=c.user_id,
+                job_id=c.job_id,
+                match_score=c.match_score,
+                final_score=c.final_score,
+                ranker_version=getattr(c, "ranker_version", ""),
+                reason_codes=list(getattr(c, "reason_codes", [])),
+                why_it_fits=getattr(c, "why_it_fits", ""),
+                trace_id=c.trace_id,
+            )
 
     def _record_budget_filtered_users(
         self,

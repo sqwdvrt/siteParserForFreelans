@@ -7,7 +7,7 @@ type User struct {
 	ID          int64
 	TelegramID  int64
 	ProfileText *string
-	IsPro       bool
+	PlanID      string
 	NotifyHour  *int16
 	PausedUntil *time.Time
 }

@@ -50,6 +50,11 @@ class JobRepository(ABC):
         ...
 
     @abstractmethod
+    def update_job_type(self, job_id: int, job_type: str) -> None:
+        """Обновить тип задачи (вакансия/проект)."""
+        ...
+
+    @abstractmethod
     def has_recent_similar_title(self, job_id: int, title: str, days: int = 7) -> bool:
         """Проверить, есть ли недавняя задача с похожим нормализованным заголовком."""
         ...

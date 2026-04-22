@@ -27,13 +27,20 @@ from ai_service.adapter.postgres import (
     PostgresPendingJobsRepository,
     PostgresUserRepository,
 )
-from ai_service.adapter.redis import RedisQueueConsumer
+from ai_service.adapter.redis import RedisQueueConsumer, RedisMatchNotifyQueue
 from ai_service.adapter.sentence_transformers import CrossEncoderReranker, SentenceTransformerEmbedding
+from ai_service.config.subscription import start_subscription_config_reloader, get_subscription_config
 from ai_service.tracing.setup import init_tracer
 from ai_service.usecase.accumulate_matches import AccumulateMatchesUseCase
 from ai_service.usecase.consumer_loop import run_consumer
 from ai_service.usecase.debug_match import DebugMatchUseCase
 from ai_service.usecase.process_job import ProcessJobUseCase
+from ai_service.subscription.guard import SubscriptionGuard
+from ai_service.port.classifier import Classifier
+from ai_service.domain.user import User
+from ai_service.adapter.gemini import GeminiClassifier
+from ai_service.util.llm_cache import LLMCache
+from typing import Callable
 from ai_service.util.debug_http_server import start_debug_http_server
 from ai_service.util.fallback_metrics import start_metrics_server_from_env
 from ai_service.util.postgres_pool_config import load_postgres_pool_settings
@@ -237,9 +244,12 @@ def main() -> None:
     )
 
     gemini_api_key = os.getenv("GEMINI_API_KEY", "")
-    classifier_enabled = _classifier_enabled()
-    if classifier_enabled and not gemini_api_key:
-        logger.warning("GEMINI_API_KEY not set, classifier will be disabled")
+    # classifier_enabled is no longer directly used as classifier creation is dynamic
+    
+    llm_cache = None
+    if gemini_api_key:
+        llm_cache_redis = _create_llm_cache_redis(redis_url)
+        llm_cache = LLMCache(redis_client=llm_cache_redis) if llm_cache_redis else None
 
     queue_name = os.getenv("AI_QUEUE", "ai-process")
     model_name = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
@@ -264,6 +274,7 @@ def main() -> None:
     pending_repo = PostgresPendingJobsRepository(db_url, **pg_pool_kwargs)
     feedback_repo = PostgresFeedbackRepository(db_url, **pg_pool_kwargs)
     filter_event_repo = PostgresFilterEventRepository(db_url, **pg_pool_kwargs)
+    notify_queue = RedisMatchNotifyQueue(redis_url)
     accumulate_matches = AccumulateMatchesUseCase(pending_repo)
     embedding = SentenceTransformerEmbedding(model_name)
     reranker = None
@@ -290,11 +301,25 @@ def main() -> None:
         _warmup_embedding(embedding)
     else:
         logger.info("embedding warmup disabled by %s", WARMUP_ENABLED_ENV)
+    subscription_guard = SubscriptionGuard()
+
+    # Classifier factory to dynamically select classifier based on user plan
+    def classifier_factory(user: User | None) -> Classifier | None:
+        # If no user, or user has free plan, use keyword search / basic classification
+        if user is None or not subscription_guard.can_access_feature(user, "ai_analysis"):
+            return None # Or a rule-based/fallback classifier if available
+        
+        model_name = subscription_guard.get_model_for_pipeline_stage(user, "ai_analysis")
+        if model_name:
+            return GeminiClassifier(api_key=gemini_api_key, model=model_name, cache=llm_cache)
+        return None
+
     process_job_kwargs = {
-        "classifier": classifier,
+        "classifier_factory": classifier_factory, # Changed to factory
         "match_repo": match_repo,
         "accumulate_matches": accumulate_matches,
         "reranker": reranker,
+        "notify_queue": notify_queue,
         "similarity_threshold": threshold,
         "max_matches_per_job": max_matches,
         "rerank_threshold": rerank_threshold,
@@ -302,6 +327,7 @@ def main() -> None:
         "feedback_repo": feedback_repo,
         "user_repo": user_repo,
         "filter_event_repo": filter_event_repo,
+        "subscription_guard": subscription_guard,
     }
     if _supports_constructor_kwarg(ProcessJobUseCase, "rerank_fallback_enabled"):
         process_job_kwargs["rerank_fallback_enabled"] = rerank_fallback_enabled
@@ -327,6 +353,7 @@ def main() -> None:
     )
     debug_server_thread.start()
     init_tracer("site-parser-ai")
+    start_subscription_config_reloader()
     queue = RedisQueueConsumer(redis_url, queue_name)
     _mark_ready(ready_file)
 

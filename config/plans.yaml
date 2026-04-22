@@ -1,0 +1,75 @@
+plans:
+  free:
+    name: "Бесплатная подписка"
+    model: "Gemini flash lite"
+    quotas:
+      orders_per_day: 5
+      tokens_per_day: 2500
+    features:
+      sources:
+        - sites
+      pipeline:
+        - keyword_search
+  paid_basic:
+    name: "Платная (Poor)"
+    model: "2.0 flash"
+    quotas:
+      orders_per_day: 15
+      tokens_per_day: 10000
+    features:
+      sources:
+        - sites
+        - exchanges
+        - bots
+        - vacancies
+      pipeline:
+        - keyword_search
+        - ai_analysis
+  paid_standard:
+    name: "Платная (норм версия)"
+    model: "2.5 flash"
+    quotas:
+      orders_per_day: 30
+      tokens_per_day: 20000 # Примерное значение, можно уточнить
+    features:
+      sources:
+        - sites
+        - exchanges
+        - bots
+        - vacancies
+      pipeline:
+        - keyword_search
+        - ai_analysis
+        - vectorization
+        - creative_ranking
+  pro:
+    name: "Про"
+    model: "2.5 flash"
+    quotas:
+      orders_per_day: 50
+      tokens_per_day: 50000 # Примерное значение, можно уточнить
+    features:
+      sources:
+        - sites
+        - exchanges
+        - bots
+        - vacancies
+      pipeline:
+        - full_ai_matching
+      feedback_loop: true
+  pro_plus:
+    name: "Про плюс"
+    model: "2.5 flash"
+    quotas:
+      orders_per_day: 100
+      tokens_per_day: 130000 # Примерное значение, можно уточнить
+    features:
+      sources:
+        - sites
+        - exchanges
+        - bots
+        - vacancies
+      pipeline:
+        - full_ai_matching
+        - actor_critic
+      feedback_loop: true

@@ -35,7 +35,7 @@ class PostgresJobRepository(PooledPostgresRepository, JobRepository):
                     """
                     SELECT
                         id, source, url, title, description, COALESCE(budget, '') AS budget,
-                        raw_html, posted_at, created_at
+                        raw_html, posted_at, created_at, COALESCE(job_type, 'project') AS job_type, COALESCE(job_type, 'project') AS job_type
                     FROM jobs
                     WHERE id = %s
                     """,
@@ -52,6 +52,7 @@ class PostgresJobRepository(PooledPostgresRepository, JobRepository):
             description=row["description"],
             budget=row["budget"] or "",
             raw_html=row["raw_html"] or "",
+            job_type=row["job_type"] or "project",
             posted_at=row["posted_at"],
             created_at=row["created_at"],
         )
@@ -63,7 +64,7 @@ class PostgresJobRepository(PooledPostgresRepository, JobRepository):
                     """
                     SELECT
                         id, source, url, title, description, COALESCE(budget, '') AS budget,
-                        raw_html, posted_at, created_at
+                        raw_html, posted_at, created_at, COALESCE(job_type, 'project') AS job_type
                     FROM jobs
                     WHERE url = %s
                     ORDER BY id DESC
@@ -82,6 +83,7 @@ class PostgresJobRepository(PooledPostgresRepository, JobRepository):
             description=row["description"],
             budget=row["budget"] or "",
             raw_html=row["raw_html"] or "",
+            job_type=row["job_type"] or "project",
             posted_at=row["posted_at"],
             created_at=row["created_at"],
         )
@@ -138,6 +140,19 @@ class PostgresJobRepository(PooledPostgresRepository, JobRepository):
             embedding=list(raw_embedding) if raw_embedding is not None else [],
             metadata=metadata,
         )
+
+    def update_job_type(self, job_id: int, job_type: str) -> None:
+        """Обновить тип задачи (вакансия/проект)."""
+        with self._conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE jobs
+                    SET job_type = %s
+                    WHERE id = %s
+                    """,
+                    (job_type, job_id),
+                )
 
     def has_recent_similar_title(self, job_id: int, title: str, days: int = 7) -> bool:
         normalized_title = " ".join((title or "").strip().lower().split())

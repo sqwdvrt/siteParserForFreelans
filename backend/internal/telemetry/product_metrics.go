@@ -1,6 +1,8 @@
 package telemetry
 
 import (
+	"strconv"
+
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -11,8 +13,11 @@ const (
 
 // ProductMetrics хранит Prometheus-метрики для продуктовой аналитики.
 type ProductMetrics struct {
-	eventsTotal    *prometheus.CounterVec
-	conversionRate *prometheus.GaugeVec
+	eventsTotal            *prometheus.CounterVec
+	conversionRate         *prometheus.GaugeVec
+	featureUsageTotal      *prometheus.CounterVec // New: total feature usage by plan and feature name
+	quotaExceededTotal     *prometheus.CounterVec // New: total quota exceeded events by plan and quota type
+	llmTokenEstimateCost   *prometheus.CounterVec // New: estimated LLM token cost by model, plan, and consumed tokens
 }
 
 // NewProductMetrics создаёт метрики для отслеживания продуктовых событий.
@@ -34,7 +39,7 @@ func NewProductMetrics(reg prometheus.Registerer) *ProductMetrics {
 		),
 	}
 
-	reg.MustRegister(m.eventsTotal, m.conversionRate)
+	reg.MustRegister(m.eventsTotal, m.conversionRate, m.featureUsageTotal, m.quotaExceededTotal, m.llmTokenEstimateCost)
 
 	// Инициализируем лейблы с нулевыми значениями для visibility
 	m.eventsTotal.WithLabelValues("user_registered", "").Add(0)
@@ -49,6 +54,12 @@ func NewProductMetrics(reg prometheus.Registerer) *ProductMetrics {
 	m.conversionRate.WithLabelValues("registration_to_profile").Set(0)
 	m.conversionRate.WithLabelValues("profile_to_notification").Set(0)
 
+	// Инициализируем лейблы для новых метрик с нулевыми значениями
+	m.featureUsageTotal.WithLabelValues("free", "sites").Add(0)
+	m.featureUsageTotal.WithLabelValues("free", "keyword_search").Add(0)
+	m.quotaExceededTotal.WithLabelValues("free", "orders_per_day").Add(0)
+	m.llmTokenEstimateCost.WithLabelValues("Gemini flash lite", "free", "0").Add(0)
+
 	return m
 }
 
@@ -60,6 +71,21 @@ func (m *ProductMetrics) RecordEvent(eventType, source string) {
 // SetConversionRate устанавливает конверсию для воронки.
 func (m *ProductMetrics) SetConversionRate(funnel string, rate float64) {
 	m.conversionRate.WithLabelValues(funnel).Set(rate)
+}
+
+// RecordFeatureUsage записывает использование фичи в Prometheus.
+func (m *ProductMetrics) RecordFeatureUsage(planID, featureName string) {
+	m.featureUsageTotal.WithLabelValues(planID, featureName).Inc()
+}
+
+// RecordQuotaExceeded записывает превышение квоты в Prometheus.
+func (m *ProductMetrics) RecordQuotaExceeded(planID, quotaType string) {
+	m.quotaExceededTotal.WithLabelValues(planID, quotaType).Inc()
+}
+
+// RecordLLMTokenEstimateCost записывает оценку стоимости токенов LLM в Prometheus.
+func (m *ProductMetrics) RecordLLMTokenEstimateCost(modelID, planID string, tokensConsumed float64) {
+	m.llmTokenEstimateCost.WithLabelValues(modelID, planID, strconv.FormatFloat(tokensConsumed, 'f', 0, 64)).Add(tokensConsumed)
 }
 
 // Funnel constants
