@@ -12,18 +12,18 @@ import (
 )
 
 type mockNotifRepo struct {
-	ensurePendingFunc       func(ctx context.Context, userID, jobID int64, score float64, finalScore float64, rankerVersion string, reasonCodes []string, whyItFits string) (bool, bool, error)
-	markDispatchedFunc      func(ctx context.Context, userID, jobID int64) error
-	markSentFunc            func(ctx context.Context, userID, jobID int64) error
-	markFailedFunc          func(ctx context.Context, userID, jobID int64) error
-	markMissedFunc          func(ctx context.Context, userID, jobID int64) error
-	deleteFunc              func(ctx context.Context, userID, jobID int64) error
-	sentRecentlyFunc        func(ctx context.Context, userID int64, within time.Duration) (bool, error)
-	countTodayFunc          func(ctx context.Context, userID int64) (int, error)
-	claimPendingDigestFunc  func(ctx context.Context, userID int64, limit int) ([]port.PendingNotification, error)
-	getFreeUsersFunc        func(ctx context.Context) ([]int64, error)
-	deleteCalls             [][2]int64
-	markMissedCalls         [][2]int64
+	ensurePendingFunc      func(ctx context.Context, userID, jobID int64, score float64, finalScore float64, rankerVersion string, reasonCodes []string, whyItFits string) (bool, bool, error)
+	markDispatchedFunc     func(ctx context.Context, userID, jobID int64) error
+	markSentFunc           func(ctx context.Context, userID, jobID int64) error
+	markFailedFunc         func(ctx context.Context, userID, jobID int64) error
+	markMissedFunc         func(ctx context.Context, userID, jobID int64) error
+	deleteFunc             func(ctx context.Context, userID, jobID int64) error
+	sentRecentlyFunc       func(ctx context.Context, userID int64, within time.Duration) (bool, error)
+	countTodayFunc         func(ctx context.Context, userID int64) (int, error)
+	claimPendingDigestFunc func(ctx context.Context, userID int64, limit int) ([]port.PendingNotification, error)
+	getFreeUsersFunc       func(ctx context.Context) ([]int64, error)
+	deleteCalls            [][2]int64
+	markMissedCalls        [][2]int64
 }
 
 func (m *mockNotifRepo) EnsurePending(ctx context.Context, userID, jobID int64, score float64, finalScore float64, rankerVersion string, reasonCodes []string, whyItFits string) (bool, bool, error) {
