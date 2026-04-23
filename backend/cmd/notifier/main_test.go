@@ -279,12 +279,14 @@ func (s *captureNotifier) Send(ctx context.Context, telegramID int64, p port.Not
 }
 
 type stubNotifRepo struct {
-	ensurePending func(ctx context.Context, userID, jobID int64, matchScore float64, finalScore float64, rankerVersion string, reasonCodes []string, whyItFits string) (bool, bool, error)
-	markSent      func(ctx context.Context, userID, jobID int64) error
-	markFailed    func(ctx context.Context, userID, jobID int64) error
-	deleteFunc    func(ctx context.Context, userID, jobID int64) error
-	sentRecently  func(ctx context.Context, userID int64, within time.Duration) (bool, error)
-	countToday    func(ctx context.Context, userID int64) (int, error)
+	ensurePending          func(ctx context.Context, userID, jobID int64, matchScore float64, finalScore float64, rankerVersion string, reasonCodes []string, whyItFits string) (bool, bool, error)
+	markSent               func(ctx context.Context, userID, jobID int64) error
+	markFailed             func(ctx context.Context, userID, jobID int64) error
+	deleteFunc             func(ctx context.Context, userID, jobID int64) error
+	sentRecently           func(ctx context.Context, userID int64, within time.Duration) (bool, error)
+	countToday             func(ctx context.Context, userID int64) (int, error)
+	getFreeUsersWithPending func(ctx context.Context) ([]int64, error)
+	claimPendingDigest     func(ctx context.Context, userID int64, limit int) ([]port.PendingNotification, error)
 }
 
 func (s *stubNotifRepo) EnsurePending(ctx context.Context, userID, jobID int64, matchScore float64, finalScore float64, rankerVersion string, reasonCodes []string, whyItFits string) (bool, bool, error) {
@@ -302,6 +304,9 @@ func (s *stubNotifRepo) GetPendingForUser(ctx context.Context, userID int64) ([]
 	return nil, nil
 }
 func (s *stubNotifRepo) ClaimPendingDigestNotifications(ctx context.Context, userID int64, limit int) ([]port.PendingNotification, error) {
+	if s.claimPendingDigest != nil {
+		return s.claimPendingDigest(ctx, userID, limit)
+	}
 	return nil, nil
 }
 func (s *stubNotifRepo) ReleasePendingDigestNotifications(ctx context.Context, userID int64, jobIDs []int64) error {
@@ -362,7 +367,10 @@ func (s *stubNotifRepo) CancelPendingByJobIDs(_ context.Context, _ []int64) (int
 	return 0, nil
 }
 
-func (s *stubNotifRepo) GetFreeUsersWithPendingNotifications(_ context.Context) ([]int64, error) {
+func (s *stubNotifRepo) GetFreeUsersWithPendingNotifications(ctx context.Context) ([]int64, error) {
+	if s.getFreeUsersWithPending != nil {
+		return s.getFreeUsersWithPending(ctx)
+	}
 	return nil, nil
 }
 
@@ -427,5 +435,78 @@ func TestSendBatchNotification_CallsEnsurePendingForEachJob(t *testing.T) {
 	}
 	if ensureCalls != 2 {
 		t.Fatalf("EnsurePending calls=%d, want 2", ensureCalls)
+	}
+}
+
+// TestAccumulationDigest_CallsNotifierForFreeUsers проверяет, что
+// DailyDigest.ExecuteAccumulation вызывает notifier.Send для free-пользователей
+// с накопленными pending-уведомлениями.
+func TestAccumulationDigest_CallsNotifierForFreeUsers(t *testing.T) {
+	notified := false
+	notif := &captureNotifier{
+		send: func(_ context.Context, telegramID int64, p port.NotifyPayload) error {
+			notified = true
+			if len(p.Batch) == 0 {
+				t.Errorf("expected batch payload, telegramID=%d", telegramID)
+			}
+			return nil
+		},
+	}
+	digest := usecase.NewDailyDigest(
+		&stubUserRepo{getByID: func(_ context.Context, userID int64) (*domain.User, error) {
+			return &domain.User{ID: userID, TelegramID: 500 + userID}, nil
+		}},
+		&stubNotifRepo{
+			getFreeUsersWithPending: func(context.Context) ([]int64, error) {
+				return []int64{7}, nil
+			},
+			claimPendingDigest: func(_ context.Context, _ int64, _ int) ([]port.PendingNotification, error) {
+				return []port.PendingNotification{
+					{JobID: 1, MatchScore: 8.5, WhyItFits: "great fit"},
+				}, nil
+			},
+		},
+		&stubJobRepo{getByID: func(_ context.Context, jobID int64) (*domain.Job, error) {
+			return &domain.Job{
+				ID:         jobID,
+				Title:      "Test Job",
+				Source:     "kwork",
+				URL:        "https://kwork.ru/projects/1",
+				LastSeenAt: time.Now(),
+			}, nil
+		}},
+		notif,
+		5,
+	)
+	digest.ExecuteAccumulation(context.Background())
+	if !notified {
+		t.Fatal("expected notifier.Send to be called for free user with pending notifications")
+	}
+}
+
+// TestAccumulationDigest_SkipsWhenNoFreeUsers проверяет, что при отсутствии
+// free-пользователей нотифайер не вызывается.
+func TestAccumulationDigest_SkipsWhenNoFreeUsers(t *testing.T) {
+	notified := false
+	notif := &captureNotifier{
+		send: func(context.Context, int64, port.NotifyPayload) error {
+			notified = true
+			return nil
+		},
+	}
+	digest := usecase.NewDailyDigest(
+		&stubUserRepo{},
+		&stubNotifRepo{
+			getFreeUsersWithPending: func(context.Context) ([]int64, error) {
+				return nil, nil
+			},
+		},
+		&stubJobRepo{},
+		notif,
+		5,
+	)
+	digest.ExecuteAccumulation(context.Background())
+	if notified {
+		t.Fatal("notifier must not be called when there are no free users with pending")
 	}
 }

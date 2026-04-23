@@ -172,6 +172,10 @@ func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayl
 			return fmt.Errorf("job is nil")
 		}
 		text = formatBatchMessage(p)
+		state, _ := n.storeBatchSession(ctx, telegramID, p.Batch)
+		if state != nil {
+			keyboard = buildBatchNavigationKeyboard(state)
+		}
 	} else {
 		text = formatMessage(p)
 		keyboard = buildFeedbackKeyboard(p)

@@ -764,3 +764,169 @@ func TestFormatBatchMessage_ContainsAge(t *testing.T) {
 		t.Errorf("formatBatchMessage should contain age indicator, got:\n%s", text)
 	}
 }
+
+// TestNotifier_Send_Batch_StoresSession проверяет, что Send при batch-пейлоаде
+// сохраняет сессию в store и добавляет навигационную клавиатуру в тело запроса.
+func TestNotifier_Send_Batch_StoresSession(t *testing.T) {
+	transport := &captureTransport{status: 200}
+	n := NewNotifierWithClient("test-token", &http.Client{
+		Transport: transport,
+		Timeout:   5 * time.Second,
+	})
+	store := &captureBatchSessionStore{}
+	n.ConfigureBatchSessionStore(store, "mybot")
+
+	job := &domain.Job{
+		ID:    77,
+		Title: "Go Backend",
+		URL:   "https://kwork.ru/projects/77",
+	}
+	err := n.Send(context.Background(), 999, port.NotifyPayload{
+		Batch: []port.BatchNotifyItem{
+			{Job: job, WhyItFits: "Отлично подходит", Rank: 1, FinalScore: 0.92},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+
+	// Сессия должна быть сохранена.
+	if store.key == "" {
+		t.Fatal("batch session was not stored")
+	}
+	if !strings.HasPrefix(store.key, "mybot:batch-session:") {
+		t.Errorf("unexpected session key: %q", store.key)
+	}
+	if store.ttl != defaultBatchSessionTTL {
+		t.Errorf("ttl=%v, want %v", store.ttl, defaultBatchSessionTTL)
+	}
+	if len(store.value) == 0 {
+		t.Error("stored session value must not be empty")
+	}
+
+	// Тело запроса к Telegram должно содержать inline_keyboard (навигация).
+	if !strings.Contains(transport.lastBody, "inline_keyboard") {
+		t.Error("Telegram request body must contain inline_keyboard for batch session")
+	}
+	if !strings.Contains(transport.lastBody, "nav:p:") {
+		t.Error("keyboard must contain navigation callback data")
+	}
+}
+
+// TestNotifier_Send_Batch_NoStore проверяет, что без store сессия не сохраняется
+// и сообщение всё равно отправляется (без клавиатуры навигации).
+func TestNotifier_Send_Batch_NoStore(t *testing.T) {
+	transport := &captureTransport{status: 200}
+	n := NewNotifierWithClient("test-token", &http.Client{
+		Transport: transport,
+		Timeout:   5 * time.Second,
+	})
+	// store не настроен
+
+	job := &domain.Job{
+		ID:    55,
+		Title: "Python Dev",
+		URL:   "https://kwork.ru/projects/55",
+	}
+	err := n.Send(context.Background(), 111, port.NotifyPayload{
+		Batch: []port.BatchNotifyItem{
+			{Job: job, Rank: 1, FinalScore: 0.7},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Send without store: %v", err)
+	}
+	// Без store навигационная клавиатура не добавляется.
+	if strings.Contains(transport.lastBody, "nav:p:") {
+		t.Error("keyboard navigation must not appear when store is not configured")
+	}
+}
+
+// TestBuildBatchNavigationKeyboard_Structure проверяет структуру клавиатуры.
+func TestBuildBatchNavigationKeyboard_Structure(t *testing.T) {
+	state := &batchSessionState{
+		ID:           "abc123",
+		CurrentIndex: 0,
+		Total:        3,
+		CurrentItem:  batchSessionItem{JobID: 10, URL: "https://kwork.ru/projects/10"},
+		Prefix:       "mybot",
+		StoredKey:    "mybot:batch-session:abc123",
+	}
+	rows := buildBatchNavigationKeyboard(state)
+	if len(rows) != 3 { // row1 (nav), row2 (feedback), row3 (open link)
+		t.Fatalf("expected 3 keyboard rows, got %d", len(rows))
+	}
+	// Первая строка: ← label →
+	if len(rows[0]) != 3 {
+		t.Fatalf("nav row: want 3 buttons, got %d", len(rows[0]))
+	}
+	if rows[0][0]["text"] != "←" || rows[0][2]["text"] != "→" {
+		t.Errorf("nav buttons: %+v", rows[0])
+	}
+	// Вторая строка: 👍 👎
+	if rows[1][0]["text"] != "👍" || rows[1][1]["text"] != "👎" {
+		t.Errorf("feedback buttons: %+v", rows[1])
+	}
+}
+
+// TestBuildBatchNavigationKeyboard_NilState проверяет граничные условия.
+func TestBuildBatchNavigationKeyboard_NilState(t *testing.T) {
+	if rows := buildBatchNavigationKeyboard(nil); rows != nil {
+		t.Errorf("expected nil keyboard for nil state, got %v", rows)
+	}
+	if rows := buildBatchNavigationKeyboard(&batchSessionState{Total: 0}); rows != nil {
+		t.Errorf("expected nil keyboard for empty state, got %v", rows)
+	}
+}
+
+// TestBuildBatchSession_SkipsNilJobs проверяет, что элементы без Job игнорируются.
+func TestBuildBatchSession_SkipsNilJobs(t *testing.T) {
+	items := []port.BatchNotifyItem{
+		{Job: nil},
+		{Job: &domain.Job{ID: 1, Title: "Valid"}},
+	}
+	sess := buildBatchSession(42, items)
+	if len(sess.Items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(sess.Items))
+	}
+	if sess.Items[0].JobID != 1 {
+		t.Errorf("unexpected item: %+v", sess.Items[0])
+	}
+	if sess.TelegramID != 42 {
+		t.Errorf("telegramID=%d, want 42", sess.TelegramID)
+	}
+}
+
+// TestScorePercent_Ranges проверяет конвертацию score в проценты.
+func TestScorePercent_Ranges(t *testing.T) {
+	cases := []struct {
+		in   float64
+		want float64
+	}{
+		{-1, 0},
+		{0, 0},
+		{0.9, 90},
+		{1.0, 100},
+		{85, 85},
+	}
+	for _, c := range cases {
+		if got := scorePercent(c.in); got != c.want {
+			t.Errorf("scorePercent(%v)=%v, want %v", c.in, got, c.want)
+		}
+	}
+}
+
+// TestTimeToUnix_NilAndZero проверяет граничные случаи.
+func TestTimeToUnix_NilAndZero(t *testing.T) {
+	if got := timeToUnix(nil); got != 0 {
+		t.Errorf("nil: got %d", got)
+	}
+	z := time.Time{}
+	if got := timeToUnix(&z); got != 0 {
+		t.Errorf("zero: got %d", got)
+	}
+	now := time.Now()
+	if got := timeToUnix(&now); got == 0 {
+		t.Error("non-zero time should return non-zero unix")
+	}
+}
