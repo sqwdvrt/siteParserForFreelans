@@ -115,7 +115,7 @@ class DeployWorkflowTest(unittest.TestCase):
             workflow_text,
         )
         self.assertIn(
-            'ai-service/*|.github/workflows/deploy.yml|scripts/test_deploy_workflow.py|docs/operations.md|docs/vps_deploy.md|README.md)',
+            'ai-service/*|docker-compose.yml|docker-compose.prod.yml|.github/workflows/deploy.yml|scripts/deploy_release.sh|scripts/test_deploy_release.py|scripts/test_deploy_workflow.py|scripts/test_supply_chain_security_workflow.py|docs/operations.md|docs/vps_deploy.md|README.md)',
             workflow_text,
         )
         self.assertIn('ERROR: ai-only deploy cannot include non-AI path:', workflow_text)

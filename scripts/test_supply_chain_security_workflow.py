@@ -51,6 +51,11 @@ class SupplyChainSecurityWorkflowTest(unittest.TestCase):
         self.assertIn("Skipping local model preload", ai_dockerfile)
         self.assertIn("COPY --from=builder /opt/models /opt/models", ai_dockerfile)
 
+    def test_ai_runtime_installs_ca_certificates_for_remote_model_downloads(self) -> None:
+        ai_dockerfile = AI_DOCKERFILE_PATH.read_text(encoding="utf-8")
+
+        self.assertGreaterEqual(ai_dockerfile.count("ca-certificates"), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,6 +10,10 @@ ENV VENV_PATH=/opt/venv
 ENV PIP_NO_CACHE_DIR=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
 
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /build
 
 RUN python -m venv "${VENV_PATH}" && \
@@ -112,6 +116,7 @@ ENV VENV_PATH=/opt/venv
 ENV PATH="${VENV_PATH}/bin:${PATH}"
 
 RUN apt-get update && \
+    apt-get install -y --no-install-recommends ca-certificates && \
     apt-get upgrade -y --no-install-recommends && \
     rm -rf /var/lib/apt/lists/*
 
