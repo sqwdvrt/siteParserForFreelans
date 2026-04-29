@@ -435,7 +435,7 @@ jobs:
               while IFS= read -r changed_path; do
                 [ -n "${changed_path}" ] || continue
                 case "${changed_path}" in
-                  ai-service/*|docker-compose.yml|docker-compose.prod.yml|.github/workflows/deploy.yml|scripts/deploy_release.sh|scripts/test_deploy_release.py|scripts/test_deploy_workflow.py|scripts/test_supply_chain_security_workflow.py|docs/operations.md|docs/vps_deploy.md|README.md) ;;
+                  ai-service/*|docker-compose.yml|docker-compose.prod.yml|docker-compose.ssl.yml|.github/workflows/deploy.yml|scripts/deploy_release.sh|scripts/test_deploy_release.py|scripts/test_deploy_workflow.py|scripts/test_supply_chain_security_workflow.py|docs/operations.md|docs/vps_deploy.md|README.md) ;;
                   *)
                     echo "ERROR: ai-only deploy cannot include non-AI path: ${changed_path}" >&2
                     exit 1
@@ -618,7 +618,7 @@ jobs:
               while IFS= read -r changed_path; do
                 [ -n "${changed_path}" ] || continue
                 case "${changed_path}" in
-                  ai-service/*|docker-compose.yml|docker-compose.prod.yml|.github/workflows/deploy.yml|scripts/deploy_release.sh|scripts/test_deploy_release.py|scripts/test_deploy_workflow.py|scripts/test_supply_chain_security_workflow.py|docs/operations.md|docs/vps_deploy.md|README.md) ;;
+                  ai-service/*|docker-compose.yml|docker-compose.prod.yml|docker-compose.ssl.yml|.github/workflows/deploy.yml|scripts/deploy_release.sh|scripts/test_deploy_release.py|scripts/test_deploy_workflow.py|scripts/test_supply_chain_security_workflow.py|docs/operations.md|docs/vps_deploy.md|README.md) ;;
                   *)
                     echo "ERROR: ai-only deploy cannot include non-AI path: ${changed_path}" >&2
                     exit 1

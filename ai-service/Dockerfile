@@ -127,6 +127,7 @@ COPY --from=builder /opt/models /opt/models
 
 COPY src ./src
 COPY cmd ./cmd
+COPY docker-entrypoint.sh ./docker-entrypoint.sh
 
 RUN groupadd --system app && useradd --system --gid app --create-home --home-dir /home/app --shell /usr/sbin/nologin app && \
     rm -rf /usr/local/lib/python3.11/ensurepip \
@@ -136,6 +137,7 @@ RUN groupadd --system app && useradd --system --gid app --create-home --home-dir
       /usr/local/lib/python3.11/site-packages/setuptools/_vendor/jaraco.context-*.dist-info \
       /usr/local/lib/python3.11/site-packages/setuptools/_vendor/*.dist-info && \
     mkdir -p /tmp/hf /tmp/transformers /tmp/torch /tmp/.cache && \
+    chmod +x /app/docker-entrypoint.sh && \
     chown -R app:app /app /home/app /tmp /opt/models
 
 ENV PYTHONPATH=/app/src
@@ -152,6 +154,8 @@ ENV TORCH_HOME=/tmp/torch
 ENV XDG_CACHE_HOME=/tmp/.cache
 
 USER app:app
+
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
 
 # Default: ai-process consumer
 CMD ["python", "cmd/consumer/main.py"]

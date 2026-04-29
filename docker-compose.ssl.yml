@@ -39,24 +39,28 @@ services:
   ai-service:
     environment:
       SSL_CERT_FILE: /certs/ca.crt
+      AI_COMBINE_SSL_CERT_FILE: "1"
     volumes:
       - ${INFRA_CERTS_DIR:-/home/deploy/infra/certs}/server.crt:/certs/ca.crt:ro
 
   ai-user-embed:
     environment:
       SSL_CERT_FILE: /certs/ca.crt
+      AI_COMBINE_SSL_CERT_FILE: "1"
     volumes:
       - ${INFRA_CERTS_DIR:-/home/deploy/infra/certs}/server.crt:/certs/ca.crt:ro
 
   ai-user-rematch:
     environment:
       SSL_CERT_FILE: /certs/ca.crt
+      AI_COMBINE_SSL_CERT_FILE: "1"
     volumes:
       - ${INFRA_CERTS_DIR:-/home/deploy/infra/certs}/server.crt:/certs/ca.crt:ro
 
   ai-ac-consumer:
     environment:
       SSL_CERT_FILE: /certs/ca.crt
+      AI_COMBINE_SSL_CERT_FILE: "1"
     volumes:
       - ${INFRA_CERTS_DIR:-/home/deploy/infra/certs}/server.crt:/certs/ca.crt:ro
 

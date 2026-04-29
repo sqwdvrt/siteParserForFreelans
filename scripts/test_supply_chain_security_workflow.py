@@ -8,6 +8,8 @@ ROOT_DIR = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT_DIR / ".github" / "workflows" / "supply-chain-security.yml"
 SECURITY_SCRIPT_PATH = ROOT_DIR / "scripts" / "security_baseline_check.sh"
 AI_DOCKERFILE_PATH = ROOT_DIR / "ai-service" / "Dockerfile"
+AI_ENTRYPOINT_PATH = ROOT_DIR / "ai-service" / "docker-entrypoint.sh"
+SSL_COMPOSE_PATH = ROOT_DIR / "docker-compose.ssl.yml"
 PYTHON_BOOKWORM_IMAGE = (
     "python:3.11-slim-bookworm@"
     "sha256:9c6f90801e6b68e772b7c0ca74260cbf7af9f320acec894e26fccdaccfbe3b47"
@@ -55,6 +57,18 @@ class SupplyChainSecurityWorkflowTest(unittest.TestCase):
         ai_dockerfile = AI_DOCKERFILE_PATH.read_text(encoding="utf-8")
 
         self.assertGreaterEqual(ai_dockerfile.count("ca-certificates"), 2)
+
+    def test_ai_runtime_combines_public_and_internal_ca_bundles(self) -> None:
+        ai_dockerfile = AI_DOCKERFILE_PATH.read_text(encoding="utf-8")
+        entrypoint = AI_ENTRYPOINT_PATH.read_text(encoding="utf-8")
+        ssl_compose = SSL_COMPOSE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("COPY docker-entrypoint.sh ./docker-entrypoint.sh", ai_dockerfile)
+        self.assertIn('ENTRYPOINT ["/app/docker-entrypoint.sh"]', ai_dockerfile)
+        self.assertIn("import certifi; print(certifi.where())", entrypoint)
+        self.assertIn('export SSL_CERT_FILE="${combined_ca}"', entrypoint)
+        self.assertIn('export REQUESTS_CA_BUNDLE="${combined_ca}"', entrypoint)
+        self.assertEqual(ssl_compose.count('AI_COMBINE_SSL_CERT_FILE: "1"'), 4)
 
 
 if __name__ == "__main__":
