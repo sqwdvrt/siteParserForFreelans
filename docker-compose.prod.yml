@@ -1,3 +1,9 @@
+x-ai-cache-volumes: &ai-cache-volumes
+  - ai-hf-cache:/tmp/hf
+  - ai-transformers-cache:/tmp/transformers
+  - ai-torch-cache:/tmp/torch
+  - ai-xdg-cache:/tmp/.cache
+
 services:
   backend-migrate:
     image: ${BACKEND_IMAGE:?set_BACKEND_IMAGE_in_.env.production}
@@ -229,6 +235,7 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    volumes: *ai-cache-volumes
     tmpfs:
       - /tmp:mode=1777,size=512m
       - /home/app:mode=0700,size=64m
@@ -270,6 +277,7 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    volumes: *ai-cache-volumes
     tmpfs:
       - /tmp:mode=1777,size=512m
       - /home/app:mode=0700,size=64m
@@ -309,6 +317,7 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    volumes: *ai-cache-volumes
     tmpfs:
       - /tmp:mode=1777,size=512m
       - /home/app:mode=0700,size=64m
@@ -349,6 +358,7 @@ services:
       - ALL
     security_opt:
       - no-new-privileges:true
+    volumes: *ai-cache-volumes
     tmpfs:
       - /tmp:mode=1777,size=512m
       - /home/app:mode=0700,size=64m
@@ -444,4 +454,8 @@ services:
         max-file: "3"
 
 volumes:
+  ai-hf-cache:
+  ai-transformers-cache:
+  ai-torch-cache:
+  ai-xdg-cache:
   pgadmin_data:

@@ -115,7 +115,7 @@ class DeployWorkflowTest(unittest.TestCase):
             workflow_text,
         )
         self.assertIn(
-            'ai-service/*|docker-compose.yml|docker-compose.prod.yml|docker-compose.ssl.yml|.github/workflows/deploy.yml|scripts/deploy_release.sh|scripts/test_deploy_release.py|scripts/test_deploy_workflow.py|scripts/test_supply_chain_security_workflow.py|docs/operations.md|docs/vps_deploy.md|README.md)',
+            'ai-service/*|docker-compose.yml|docker-compose.prod.yml|docker-compose.ssl.yml|.github/workflows/deploy.yml|scripts/deploy_release.sh|scripts/post_deploy_ai_gate.sh|scripts/test_deploy_release.py|scripts/test_deploy_workflow.py|scripts/test_production_compose_ai_cache.py|scripts/test_supply_chain_security_workflow.py|docs/operations.md|docs/vps_deploy.md|README.md)',
             workflow_text,
         )
         self.assertIn('ERROR: ai-only deploy cannot include non-AI path:', workflow_text)
@@ -131,6 +131,21 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn('set -- --base-path "${BASE_PATH}" --sha "${DEPLOY_SHA}" --origin-url "${ORIGIN_URL}"', workflow_text)
         self.assertIn('[ -z "${POST_DEPLOY_GATE:-}" ] || set -- "$@" --post-deploy-gate "${POST_DEPLOY_GATE}"', workflow_text)
         self.assertIn('bash "${RUN_ROOT}/scripts/deploy_release.sh" "$@"', workflow_text)
+
+    def test_ai_only_deploy_uses_ai_post_deploy_gate(self) -> None:
+        workflow_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn('AI_POST_DEPLOY_GATE: scripts/post_deploy_ai_gate.sh', workflow_text)
+        self.assertIn(
+            'if [ "${DEPLOY_SCOPE}" = "ai-only" ]; then\n'
+            '              set -- "$@" --post-deploy-gate "${AI_POST_DEPLOY_GATE}"',
+            workflow_text,
+        )
+        self.assertIn(
+            'else\n'
+            '              [ -z "${POST_DEPLOY_GATE:-}" ] || set -- "$@" --post-deploy-gate "${POST_DEPLOY_GATE}"',
+            workflow_text,
+        )
 
     def test_ai_only_deploy_limits_compose_to_ai_services(self) -> None:
         workflow_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")

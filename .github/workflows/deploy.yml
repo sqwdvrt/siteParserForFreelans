@@ -387,6 +387,7 @@ jobs:
           BROWSER_SERVICE_IMAGE: ${{ needs.publish-runtime-images.outputs.browser_service_image }}
           TELEGRAM_BOT_IMAGE: ${{ needs.publish-runtime-images.outputs.telegram_bot_image }}
           AI_IMAGE: ${{ needs.publish-runtime-images.outputs.ai_image }}
+          AI_POST_DEPLOY_GATE: scripts/post_deploy_ai_gate.sh
           IMAGE_REGISTRY: ghcr.io
           IMAGE_REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
           IMAGE_REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
@@ -396,7 +397,7 @@ jobs:
           key: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
           script_stop: false
           command_timeout: 90m
-          envs: DEPLOY_SHA,DEPLOY_SCOPE,BASE_PATH,ORIGIN_URL,BACKEND_IMAGE,BROWSER_SERVICE_IMAGE,TELEGRAM_BOT_IMAGE,AI_IMAGE,IMAGE_REGISTRY,IMAGE_REGISTRY_USERNAME,IMAGE_REGISTRY_PASSWORD
+          envs: DEPLOY_SHA,DEPLOY_SCOPE,BASE_PATH,ORIGIN_URL,BACKEND_IMAGE,BROWSER_SERVICE_IMAGE,TELEGRAM_BOT_IMAGE,AI_IMAGE,AI_POST_DEPLOY_GATE,IMAGE_REGISTRY,IMAGE_REGISTRY_USERNAME,IMAGE_REGISTRY_PASSWORD
           script: |
             set -euo pipefail
             BASE_PATH="${BASE_PATH:?BASE_PATH is required}"
@@ -435,7 +436,7 @@ jobs:
               while IFS= read -r changed_path; do
                 [ -n "${changed_path}" ] || continue
                 case "${changed_path}" in
-                  ai-service/*|docker-compose.yml|docker-compose.prod.yml|docker-compose.ssl.yml|.github/workflows/deploy.yml|scripts/deploy_release.sh|scripts/test_deploy_release.py|scripts/test_deploy_workflow.py|scripts/test_supply_chain_security_workflow.py|docs/operations.md|docs/vps_deploy.md|README.md) ;;
+                  ai-service/*|docker-compose.yml|docker-compose.prod.yml|docker-compose.ssl.yml|.github/workflows/deploy.yml|scripts/deploy_release.sh|scripts/post_deploy_ai_gate.sh|scripts/test_deploy_release.py|scripts/test_deploy_workflow.py|scripts/test_production_compose_ai_cache.py|scripts/test_supply_chain_security_workflow.py|docs/operations.md|docs/vps_deploy.md|README.md) ;;
                   *)
                     echo "ERROR: ai-only deploy cannot include non-AI path: ${changed_path}" >&2
                     exit 1
@@ -452,9 +453,11 @@ jobs:
             fi
 
             set -- --base-path "${BASE_PATH}" --sha "${DEPLOY_SHA}" --origin-url "${ORIGIN_URL}"
-            [ -z "${POST_DEPLOY_GATE:-}" ] || set -- "$@" --post-deploy-gate "${POST_DEPLOY_GATE}"
             if [ "${DEPLOY_SCOPE}" = "ai-only" ]; then
+              set -- "$@" --post-deploy-gate "${AI_POST_DEPLOY_GATE}"
               set -- "$@" --service ai-service --service ai-user-embed --service ai-user-rematch --service ai-ac-consumer
+            else
+              [ -z "${POST_DEPLOY_GATE:-}" ] || set -- "$@" --post-deploy-gate "${POST_DEPLOY_GATE}"
             fi
             bash "${RUN_ROOT}/scripts/deploy_release.sh" "$@"
 
@@ -573,6 +576,7 @@ jobs:
           BROWSER_SERVICE_IMAGE: ${{ needs.publish-runtime-images.outputs.browser_service_image }}
           TELEGRAM_BOT_IMAGE: ${{ needs.publish-runtime-images.outputs.telegram_bot_image }}
           AI_IMAGE: ${{ needs.publish-runtime-images.outputs.ai_image }}
+          AI_POST_DEPLOY_GATE: scripts/post_deploy_ai_gate.sh
           IMAGE_REGISTRY: ghcr.io
           IMAGE_REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
           IMAGE_REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
@@ -582,7 +586,7 @@ jobs:
           key: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
           script_stop: false
           command_timeout: 90m
-          envs: DEPLOY_SHA,DEPLOY_SCOPE,BASE_PATH,POST_DEPLOY_GATE,ORIGIN_URL,BACKEND_IMAGE,BROWSER_SERVICE_IMAGE,TELEGRAM_BOT_IMAGE,AI_IMAGE,IMAGE_REGISTRY,IMAGE_REGISTRY_USERNAME,IMAGE_REGISTRY_PASSWORD
+          envs: DEPLOY_SHA,DEPLOY_SCOPE,BASE_PATH,POST_DEPLOY_GATE,ORIGIN_URL,BACKEND_IMAGE,BROWSER_SERVICE_IMAGE,TELEGRAM_BOT_IMAGE,AI_IMAGE,AI_POST_DEPLOY_GATE,IMAGE_REGISTRY,IMAGE_REGISTRY_USERNAME,IMAGE_REGISTRY_PASSWORD
           script: |
             set -euo pipefail
             BASE_PATH="${BASE_PATH:?BASE_PATH is required}"
@@ -621,7 +625,7 @@ jobs:
               while IFS= read -r changed_path; do
                 [ -n "${changed_path}" ] || continue
                 case "${changed_path}" in
-                  ai-service/*|docker-compose.yml|docker-compose.prod.yml|docker-compose.ssl.yml|.github/workflows/deploy.yml|scripts/deploy_release.sh|scripts/test_deploy_release.py|scripts/test_deploy_workflow.py|scripts/test_supply_chain_security_workflow.py|docs/operations.md|docs/vps_deploy.md|README.md) ;;
+                  ai-service/*|docker-compose.yml|docker-compose.prod.yml|docker-compose.ssl.yml|.github/workflows/deploy.yml|scripts/deploy_release.sh|scripts/post_deploy_ai_gate.sh|scripts/test_deploy_release.py|scripts/test_deploy_workflow.py|scripts/test_production_compose_ai_cache.py|scripts/test_supply_chain_security_workflow.py|docs/operations.md|docs/vps_deploy.md|README.md) ;;
                   *)
                     echo "ERROR: ai-only deploy cannot include non-AI path: ${changed_path}" >&2
                     exit 1
@@ -638,9 +642,11 @@ jobs:
             fi
 
             set -- --base-path "${BASE_PATH}" --sha "${DEPLOY_SHA}" --origin-url "${ORIGIN_URL}"
-            [ -z "${POST_DEPLOY_GATE:-}" ] || set -- "$@" --post-deploy-gate "${POST_DEPLOY_GATE}"
             if [ "${DEPLOY_SCOPE}" = "ai-only" ]; then
+              set -- "$@" --post-deploy-gate "${AI_POST_DEPLOY_GATE}"
               set -- "$@" --service ai-service --service ai-user-embed --service ai-user-rematch --service ai-ac-consumer
+            else
+              [ -z "${POST_DEPLOY_GATE:-}" ] || set -- "$@" --post-deploy-gate "${POST_DEPLOY_GATE}"
             fi
             bash "${RUN_ROOT}/scripts/deploy_release.sh" "$@"
 
