@@ -145,7 +145,10 @@ def _extract_desired_budget_min(text: str) -> float | None:
     if rate_match is None:
         return None
     candidate = rate_match.group(1)
-    if "не указывать" in candidate.lower():
+    lowered = candidate.lower()
+    if "не указывать" in lowered:
+        return None
+    if "до" in lowered and "от" not in lowered:
         return None
     number_match = _RATE_MIN_RE.search(candidate)
     if number_match is None:
