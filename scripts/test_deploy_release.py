@@ -68,7 +68,7 @@ class DeployReleaseScriptTest(unittest.TestCase):
         self.assertIn('[[ "$available_service" = "backend-migrate" ]] && continue', script_text)
         self.assertIn('docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args_ref[@]}" ps -q "$available_service"', script_text)
         self.assertIn('die "compose service did not create a container: ${available_service}"', script_text)
-        self.assertIn('assert_compose_services_created compose_args available_services', script_text)
+        self.assertIn('assert_compose_services_created compose_args services_to_assert', script_text)
 
     def test_deploy_runs_safe_docker_cleanup_before_pulling_images(self) -> None:
         script_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
@@ -78,6 +78,15 @@ class DeployReleaseScriptTest(unittest.TestCase):
             script_text.index('run_safe_docker_cleanup'),
             script_text.index('run_with_heartbeat "docker compose pull"'),
         )
+
+    def test_deploy_can_limit_compose_to_selected_services(self) -> None:
+        script_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn('TARGET_SERVICES=()', script_text)
+        self.assertIn('--service)', script_text)
+        self.assertIn('TARGET_SERVICES+=("$2")', script_text)
+        self.assertIn('"${TARGET_SERVICES[@]}"', script_text)
+        self.assertIn('services_to_assert=("${TARGET_SERVICES[@]}")', script_text)
 
 
 if __name__ == "__main__":

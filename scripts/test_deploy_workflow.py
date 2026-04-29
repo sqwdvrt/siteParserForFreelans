@@ -132,6 +132,12 @@ class DeployWorkflowTest(unittest.TestCase):
         self.assertIn('[ -z "${POST_DEPLOY_GATE:-}" ] || set -- "$@" --post-deploy-gate "${POST_DEPLOY_GATE}"', workflow_text)
         self.assertIn('bash "${RUN_ROOT}/scripts/deploy_release.sh" "$@"', workflow_text)
 
+    def test_ai_only_deploy_limits_compose_to_ai_services(self) -> None:
+        workflow_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
+
+        self.assertIn('if [ "${DEPLOY_SCOPE}" = "ai-only" ]; then', workflow_text)
+        self.assertIn('set -- "$@" --service ai-service --service ai-user-embed --service ai-user-rematch --service ai-ac-consumer', workflow_text)
+
     def test_deploy_jobs_disable_drone_script_stop_for_multiline_shell(self) -> None:
         for job_name in ("deploy-staging", "staging-smoke-e2e-gate", "deploy-production"):
             job_block = self.job_block(job_name)

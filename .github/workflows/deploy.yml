@@ -453,6 +453,9 @@ jobs:
 
             set -- --base-path "${BASE_PATH}" --sha "${DEPLOY_SHA}" --origin-url "${ORIGIN_URL}"
             [ -z "${POST_DEPLOY_GATE:-}" ] || set -- "$@" --post-deploy-gate "${POST_DEPLOY_GATE}"
+            if [ "${DEPLOY_SCOPE}" = "ai-only" ]; then
+              set -- "$@" --service ai-service --service ai-user-embed --service ai-user-rematch --service ai-ac-consumer
+            fi
             bash "${RUN_ROOT}/scripts/deploy_release.sh" "$@"
 
       - name: Staging health check
@@ -636,6 +639,9 @@ jobs:
 
             set -- --base-path "${BASE_PATH}" --sha "${DEPLOY_SHA}" --origin-url "${ORIGIN_URL}"
             [ -z "${POST_DEPLOY_GATE:-}" ] || set -- "$@" --post-deploy-gate "${POST_DEPLOY_GATE}"
+            if [ "${DEPLOY_SCOPE}" = "ai-only" ]; then
+              set -- "$@" --service ai-service --service ai-user-embed --service ai-user-rematch --service ai-ac-consumer
+            fi
             bash "${RUN_ROOT}/scripts/deploy_release.sh" "$@"
 
       - name: Production health check

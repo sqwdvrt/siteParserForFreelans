@@ -8,6 +8,7 @@ ORIGIN_URL=""
 POST_DEPLOY_GATE=""
 COMPOSE_FILES=("docker-compose.prod.yml" "docker-compose.ssl.yml" "docker-compose.monitoring.yml")
 COMPOSE_PROFILES=("monitoring")
+TARGET_SERVICES=()
 RUNTIME_IMAGE_VARS=("BACKEND_IMAGE" "BROWSER_SERVICE_IMAGE" "TELEGRAM_BOT_IMAGE" "AI_IMAGE")
 MONITORING_SERVICES=("prometheus" "alertmanager" "redis-exporter" "postgres-exporter" "grafana")
 
@@ -21,6 +22,7 @@ Options:
   --env-file NAME          Shared env file name inside releases (default: .env.production).
   --compose-file FILE      Compose file to pass to docker compose. Repeatable.
   --compose-profile NAME   Compose profile to enable. Repeatable.
+  --service NAME           Limit pull/up/assertion to a compose service. Repeatable.
   --origin-url URL         Optional git origin for first-time repo cache bootstrap.
   --post-deploy-gate PATH  Optional post-deploy gate script to run from the live symlink path.
   --help                   Show this help text.
@@ -151,6 +153,11 @@ parse_args() {
           compose_profiles_set=1
         fi
         COMPOSE_PROFILES+=("$2")
+        shift 2
+        ;;
+      --service)
+        [[ $# -ge 2 ]] || die "--service requires a value"
+        TARGET_SERVICES+=("$2")
         shift 2
         ;;
       --origin-url)
@@ -330,6 +337,7 @@ compose_release() {
   local compose_file
   local compose_profile
   local available_services=()
+  local services_to_assert=()
   local monitoring_services_to_recreate=()
   local monitoring_service
   local available_service
@@ -347,25 +355,32 @@ compose_release() {
     bash ./scripts/validate-env-production.sh "$ENV_FILE"
     run_safe_docker_cleanup
     run_with_heartbeat "docker compose pull" \
-      docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" pull
+      docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" pull "${TARGET_SERVICES[@]}"
     run_with_heartbeat "docker compose up" \
-      docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" up -d --no-build
+      docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" up -d --no-build "${TARGET_SERVICES[@]}"
     mapfile -t available_services < <(
       docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" config --services
     )
-    assert_compose_services_created compose_args available_services
-    for monitoring_service in "${MONITORING_SERVICES[@]}"; do
-      for available_service in "${available_services[@]}"; do
-        if [[ "$available_service" = "$monitoring_service" ]]; then
-          monitoring_services_to_recreate+=("$monitoring_service")
-          break
-        fi
+    if [[ "${#TARGET_SERVICES[@]}" -gt 0 ]]; then
+      services_to_assert=("${TARGET_SERVICES[@]}")
+    else
+      services_to_assert=("${available_services[@]}")
+    fi
+    assert_compose_services_created compose_args services_to_assert
+    if [[ "${#TARGET_SERVICES[@]}" -eq 0 ]]; then
+      for monitoring_service in "${MONITORING_SERVICES[@]}"; do
+        for available_service in "${available_services[@]}"; do
+          if [[ "$available_service" = "$monitoring_service" ]]; then
+            monitoring_services_to_recreate+=("$monitoring_service")
+            break
+          fi
+        done
       done
-    done
-    if [[ "${#monitoring_services_to_recreate[@]}" -gt 0 ]]; then
-      run_with_heartbeat "docker compose monitoring recreate" \
-        docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" \
-        up -d --no-build --force-recreate "${monitoring_services_to_recreate[@]}"
+      if [[ "${#monitoring_services_to_recreate[@]}" -gt 0 ]]; then
+        run_with_heartbeat "docker compose monitoring recreate" \
+          docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" \
+          up -d --no-build --force-recreate "${monitoring_services_to_recreate[@]}"
+      fi
     fi
     docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" ps
   )
