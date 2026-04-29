@@ -255,6 +255,7 @@ services:
       dockerfile: Dockerfile
       args:
         EMBEDDING_MODEL: ${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
+        PRELOAD_LOCAL_MODELS: ${PRELOAD_LOCAL_MODELS:-1}
     command: ["python", "cmd/consumer/main.py"]
     env_file: .env
     environment:

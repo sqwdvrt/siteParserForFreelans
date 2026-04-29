@@ -88,6 +88,12 @@ class DeployWorkflowTest(unittest.TestCase):
             job_block,
         )
 
+    def test_ai_runtime_publish_builds_slim_image_without_bundled_models(self) -> None:
+        job_block = self.job_block("publish-runtime-images")
+
+        self.assertIn("Build and push AI runtime image", job_block)
+        self.assertIn("PRELOAD_LOCAL_MODELS=0", job_block)
+
     def test_remote_deploy_branch_reuses_current_non_ai_images_for_ai_only(self) -> None:
         workflow_text = DEPLOY_WORKFLOW.read_text(encoding="utf-8")
 

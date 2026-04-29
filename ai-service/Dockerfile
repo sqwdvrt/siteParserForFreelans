@@ -5,6 +5,7 @@ FROM python:3.11-slim-bookworm@sha256:9c6f90801e6b68e772b7c0ca74260cbf7af9f320ac
 ARG TORCH_VERSION=2.8.0
 ARG EMBEDDING_MODEL=all-MiniLM-L6-v2
 ARG RERANK_MODEL=BAAI/bge-reranker-base
+ARG PRELOAD_LOCAL_MODELS=0
 ENV VENV_PATH=/opt/venv
 ENV PIP_NO_CACHE_DIR=1
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1
@@ -39,16 +40,25 @@ RUN find "${VENV_PATH}/lib" -type d -path '*/site-packages/*.dist-info/sboms' -p
       -path '*/site-packages/setuptools/_vendor/wheel-*.dist-info' \
     \) -prune -exec rm -rf {} +
 
-# Preload default embedding and rerank models into image to avoid runtime cold-start downloads.
-# Use isolated HF cache in build step to avoid stale lock waits across interrupted builds.
-RUN rm -rf /tmp/hf-build && mkdir -p /tmp/hf-build && \
-    HF_HOME=/tmp/hf-build \
-    HF_HUB_DISABLE_XET=1 \
-    TRANSFORMERS_CACHE=/tmp/hf-build/transformers \
-    SENTENCE_TRANSFORMERS_HOME=/tmp/hf-build/sentence-transformers \
-    EMBEDDING_MODEL="${EMBEDDING_MODEL}" \
-    RERANK_MODEL="${RERANK_MODEL}" \
-    "${VENV_PATH}/bin/python" -u - <<'PY'
+# Production deploys keep the runtime image small and allow model downloads at
+# startup. Set PRELOAD_LOCAL_MODELS=1 when an offline image is explicitly needed.
+RUN <<'SH'
+set -eu
+mkdir -p /opt/models
+if [ "${PRELOAD_LOCAL_MODELS}" != "1" ]; then
+  echo "Skipping local model preload; set PRELOAD_LOCAL_MODELS=1 to bundle models"
+  exit 0
+fi
+
+rm -rf /tmp/hf-build
+mkdir -p /tmp/hf-build
+HF_HOME=/tmp/hf-build \
+HF_HUB_DISABLE_XET=1 \
+TRANSFORMERS_CACHE=/tmp/hf-build/transformers \
+SENTENCE_TRANSFORMERS_HOME=/tmp/hf-build/sentence-transformers \
+EMBEDDING_MODEL="${EMBEDDING_MODEL}" \
+RERANK_MODEL="${RERANK_MODEL}" \
+"${VENV_PATH}/bin/python" -u - <<'PY'
 import os
 from pathlib import Path
 from huggingface_hub import snapshot_download
@@ -93,6 +103,7 @@ preload_repo(
     ),
 )
 PY
+SH
 
 # Runtime stage: copy prebuilt venv with runtime deps only.
 FROM python:3.11-slim-bookworm@sha256:9c6f90801e6b68e772b7c0ca74260cbf7af9f320acec894e26fccdaccfbe3b47

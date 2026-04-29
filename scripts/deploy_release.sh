@@ -298,6 +298,33 @@ COMPOSE_PROFILES=$(IFS=,; printf '%s' "${COMPOSE_PROFILES[*]}")
 EOF
 }
 
+assert_compose_services_created() {
+  local -n compose_args_ref="$1"
+  local -n available_services_ref="$2"
+  local available_service
+  local container_id
+
+  for available_service in "${available_services_ref[@]}"; do
+    [[ "$available_service" = "backend-migrate" ]] && continue
+
+    container_id="$(
+      docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args_ref[@]}" ps -q "$available_service" | head -n1
+    )"
+    [[ -n "$container_id" ]] || die "compose service did not create a container: ${available_service}"
+  done
+}
+
+run_safe_docker_cleanup() {
+  if [[ ! -f "./scripts/vps_safe_docker_cleanup.sh" ]]; then
+    log "safe Docker cleanup script is missing; skipping pre-pull cleanup"
+    return
+  fi
+
+  log "running safe Docker cleanup before pulling images"
+  DISK_WARN_PERCENT="${DEPLOY_DOCKER_CLEANUP_WARN_PERCENT:-0}" \
+    bash ./scripts/vps_safe_docker_cleanup.sh
+}
+
 compose_release() {
   local compose_args=()
   local compose_file
@@ -318,6 +345,7 @@ compose_release() {
   (
     cd "$RELEASE_DIR"
     bash ./scripts/validate-env-production.sh "$ENV_FILE"
+    run_safe_docker_cleanup
     run_with_heartbeat "docker compose pull" \
       docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" pull
     run_with_heartbeat "docker compose up" \
@@ -325,6 +353,7 @@ compose_release() {
     mapfile -t available_services < <(
       docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" config --services
     )
+    assert_compose_services_created compose_args available_services
     for monitoring_service in "${MONITORING_SERVICES[@]}"; do
       for available_service in "${available_services[@]}"; do
         if [[ "$available_service" = "$monitoring_service" ]]; then

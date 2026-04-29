@@ -342,6 +342,7 @@ jobs:
           tags: ${{ steps.image-repos.outputs.ai_repo }}:${{ needs.resolve-target.outputs.deploy_sha }}
           build-args: |
             EMBEDDING_MODEL=all-MiniLM-L6-v2
+            PRELOAD_LOCAL_MODELS=0
 
       - name: Export published image refs
         id: image-refs

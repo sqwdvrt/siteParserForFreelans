@@ -61,6 +61,24 @@ class DeployReleaseScriptTest(unittest.TestCase):
         self.assertIn('if [[ "${#monitoring_services_to_recreate[@]}" -gt 0 ]]; then', script_text)
         self.assertIn('up -d --no-build --force-recreate "${monitoring_services_to_recreate[@]}"', script_text)
 
+    def test_deploy_fails_when_expected_service_container_is_missing(self) -> None:
+        script_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("assert_compose_services_created()", script_text)
+        self.assertIn('[[ "$available_service" = "backend-migrate" ]] && continue', script_text)
+        self.assertIn('docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args_ref[@]}" ps -q "$available_service"', script_text)
+        self.assertIn('die "compose service did not create a container: ${available_service}"', script_text)
+        self.assertIn('assert_compose_services_created compose_args available_services', script_text)
+
+    def test_deploy_runs_safe_docker_cleanup_before_pulling_images(self) -> None:
+        script_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("run_safe_docker_cleanup()", script_text)
+        self.assertLess(
+            script_text.index('run_safe_docker_cleanup'),
+            script_text.index('run_with_heartbeat "docker compose pull"'),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

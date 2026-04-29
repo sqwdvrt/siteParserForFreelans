@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT_DIR = Path(__file__).resolve().parents[1]
 WORKFLOW_PATH = ROOT_DIR / ".github" / "workflows" / "supply-chain-security.yml"
 SECURITY_SCRIPT_PATH = ROOT_DIR / "scripts" / "security_baseline_check.sh"
+AI_DOCKERFILE_PATH = ROOT_DIR / "ai-service" / "Dockerfile"
 PYTHON_BOOKWORM_IMAGE = (
     "python:3.11-slim-bookworm@"
     "sha256:9c6f90801e6b68e772b7c0ca74260cbf7af9f320acec894e26fccdaccfbe3b47"
@@ -36,11 +37,19 @@ class SupplyChainSecurityWorkflowTest(unittest.TestCase):
         self.assertIn('python -m pip_audit --no-deps -r /repo/telegram-bot/requirements.txt', text)
 
     def test_python_services_pin_bookworm_runtime_base(self) -> None:
-        ai_dockerfile = (ROOT_DIR / "ai-service" / "Dockerfile").read_text(encoding="utf-8")
+        ai_dockerfile = AI_DOCKERFILE_PATH.read_text(encoding="utf-8")
         bot_dockerfile = (ROOT_DIR / "telegram-bot" / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn(f"FROM {PYTHON_BOOKWORM_IMAGE} AS builder", ai_dockerfile)
         self.assertIn(f"FROM {PYTHON_BOOKWORM_IMAGE}\n", ai_dockerfile)
         self.assertIn(f"FROM {PYTHON_BOOKWORM_IMAGE}", bot_dockerfile)
+
+    def test_ai_runtime_model_preload_is_opt_in(self) -> None:
+        ai_dockerfile = AI_DOCKERFILE_PATH.read_text(encoding="utf-8")
+
+        self.assertIn("ARG PRELOAD_LOCAL_MODELS=0", ai_dockerfile)
+        self.assertIn('if [ "${PRELOAD_LOCAL_MODELS}" != "1" ]; then', ai_dockerfile)
+        self.assertIn("Skipping local model preload", ai_dockerfile)
+        self.assertIn("COPY --from=builder /opt/models /opt/models", ai_dockerfile)
 
 
 if __name__ == "__main__":
