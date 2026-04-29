@@ -89,6 +89,102 @@ class VpsHealthReportTest(unittest.TestCase):
         self.assertEqual(report["overall_status"], "WARN")
         self.assertEqual(report["metrics"]["queues"]["ai-process"], 0)
 
+    def test_collect_report_falls_back_to_live_health_checks_for_mixed_topology(self) -> None:
+        module = load_module()
+
+        def fake_run_command(args, **kwargs):
+            command = args[0]
+            if command == "uptime":
+                return subprocess.CompletedProcess(args, 0, " 19:41:01 up 31 days,  7:14, 10 users,  load average: 1.63, 0.75, 0.55\n", "")
+            if command == "df":
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 50331648 30000000 20331648 60% /\n",
+                    "",
+                )
+            if command == "free":
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    "               total        used        free      shared  buff/cache   available\nMem:            3915        1754         237         142        2358        1534\nSwap:           2047         654        1393\n",
+                    "",
+                )
+            if command == "bash":
+                return subprocess.CompletedProcess(
+                    args,
+                    1,
+                    "",
+                    "ERROR: container for service 'backend-api' not found\n",
+                )
+            if command == "docker" and args[1:3] == ["ps", "--format"]:
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    "current-backend-api-1\tUp 12 days (healthy)\n"
+                    "current-backend-crawler-1\tUp 12 days (healthy)\n"
+                    "current-backend-notifier-1\tUp 12 days (healthy)\n"
+                    "current-telegram-bot-1\tUp 12 days (healthy)\n"
+                    "siteparserforfreelans-ai-service-1\tUp 6 minutes (healthy)\n",
+                    "",
+                )
+            if command == "docker" and args[1] == "inspect":
+                return subprocess.CompletedProcess(args, 0, "restart_count=0 started=2026-04-15T19:40:43Z\n", "")
+            if command == "curl":
+                url = args[-1]
+                if url.endswith("/healthz"):
+                    return subprocess.CompletedProcess(args, 0, "200", "")
+                if url.endswith("/readyz"):
+                    return subprocess.CompletedProcess(args, 0, "200", "")
+                if url == "https://example.invalid/webhook":
+                    return subprocess.CompletedProcess(args, 0, "400", "")
+                raise AssertionError(f"unexpected curl url: {url}")
+            raise AssertionError(f"unexpected command: {args}")
+
+        def fake_load_json_from_url(base_url, path, query=None):
+            if path == "/api/v1/alerts":
+                return {"data": {"alerts": []}}
+            if path == "/api/v1/targets":
+                return {"data": {"activeTargets": [{"labels": {"job": "backend-api"}, "scrapePool": "backend-api", "health": "up"}]}}
+            if path == "/api/v1/query":
+                return {
+                    "data": {
+                        "result": [
+                            {"metric": {"key": "ai-process"}, "value": [0, "0"]},
+                            {"metric": {"key": "ai-process:processing"}, "value": [0, "1"]},
+                            {"metric": {"key": "ai-process:dlq"}, "value": [0, "0"]},
+                        ]
+                    }
+                }
+            raise AssertionError(f"unexpected path: {path}")
+
+        module.run_command = fake_run_command
+        module.load_json_from_url = fake_load_json_from_url
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            (repo_root / ".env.production").write_text(
+                "API_PORT=8443\nWEBHOOK_URL=https://example.invalid/webhook\nWEBHOOK_SECRET_TOKEN=test-token\n",
+                encoding="utf-8",
+            )
+            args = Namespace(
+                repo_root=str(repo_root),
+                env_file=".env.production",
+                prometheus_url="http://127.0.0.1:9090",
+                disk_warn_percent=80,
+                disk_fail_percent=90,
+                swap_warn_mb=512,
+                memory_available_warn_mb=1024,
+            )
+
+            report = module.collect_report(args)
+
+        checks = {check["name"]: check for check in report["checks"]}
+        self.assertEqual(checks["production_gate"]["status"], "OK")
+        self.assertIn("mixed live topology", checks["production_gate"]["summary"])
+        self.assertEqual(checks["backend_notifier"]["status"], "OK")
+        self.assertEqual(report["overall_status"], "WARN")
+
     def test_derive_overall_status_prefers_fail_then_warn(self) -> None:
         module = load_module()
 

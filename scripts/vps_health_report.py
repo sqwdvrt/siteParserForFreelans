@@ -172,6 +172,116 @@ def parse_queue_query(payload: dict[str, Any]) -> dict[str, int]:
     return queues
 
 
+def parse_docker_ps_output(output: str) -> list[dict[str, str]]:
+    containers: list[dict[str, str]] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        name, _, status = stripped.partition("\t")
+        containers.append({"name": name, "status": status})
+    return containers
+
+
+def list_running_containers() -> list[dict[str, str]]:
+    completed = run_command(["docker", "ps", "--format", "{{.Names}}\t{{.Status}}"], check=False)
+    if completed.returncode != 0:
+        return []
+    return parse_docker_ps_output(completed.stdout)
+
+
+def find_container_by_suffix(containers: list[dict[str, str]], suffix: str) -> dict[str, str] | None:
+    for container in containers:
+        if container["name"].endswith(suffix):
+            return container
+    return None
+
+
+def is_mixed_live_topology(containers: list[dict[str, str]]) -> bool:
+    return find_container_by_suffix(containers, "backend-api-1") is not None and any(
+        container["name"].startswith("current-") for container in containers
+    )
+
+
+def should_fallback_to_live_gate(gate: subprocess.CompletedProcess[str], containers: list[dict[str, str]]) -> bool:
+    details = f"{gate.stdout}\n{gate.stderr}".lower()
+    return gate.returncode != 0 and "container for service" in details and "not found" in details and is_mixed_live_topology(containers)
+
+
+def curl_http_code(
+    url: str,
+    *,
+    method: str,
+    timeout_sec: int,
+    insecure: bool = False,
+    headers: list[str] | None = None,
+    data: str | None = None,
+) -> str:
+    curl_env = os.environ.copy()
+    for key in ("SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE"):
+        curl_env.pop(key, None)
+    args = [
+        "curl",
+        "--silent",
+        "--show-error",
+        "--output",
+        "/dev/null",
+        "--write-out",
+        "%{http_code}",
+        "--request",
+        method,
+        "--max-time",
+        str(timeout_sec),
+    ]
+    if insecure:
+        args.append("--insecure")
+    for header in headers or []:
+        args.extend(["--header", header])
+    if data is not None:
+        args.extend(["--data", data])
+    args.append(url)
+    return run_command(args, check=False, env=curl_env).stdout.strip()
+
+
+def evaluate_live_production_gate(env: dict[str, str], containers: list[dict[str, str]]) -> tuple[bool, str, dict[str, str]]:
+    api_port = env.get("API_PORT", "8443")
+    webhook_url = env.get("WEBHOOK_URL", "")
+    webhook_secret = env.get("WEBHOOK_SECRET_TOKEN", "")
+    healthz = curl_http_code(
+        f"https://127.0.0.1:{api_port}/healthz",
+        method="GET",
+        timeout_sec=15,
+        insecure=True,
+    )
+    readyz = curl_http_code(
+        f"https://127.0.0.1:{api_port}/readyz",
+        method="GET",
+        timeout_sec=15,
+        insecure=True,
+    )
+    webhook = ""
+    if webhook_url and webhook_secret:
+        webhook = curl_http_code(
+            webhook_url,
+            method="POST",
+            timeout_sec=15,
+            headers=[
+                f"X-Telegram-Bot-Api-Secret-Token: {webhook_secret}",
+                "Content-Type: application/json",
+            ],
+            data="",
+        )
+    details = {
+        "mode": "mixed live topology",
+        "api_container": find_container_by_suffix(containers, "backend-api-1")["name"],
+        "healthz": healthz,
+        "readyz": readyz,
+        "webhook": webhook or "skipped",
+    }
+    ok = healthz == "200" and readyz == "200" and webhook == "400"
+    return ok, "mixed live topology fallback passed" if ok else "mixed live topology fallback failed", details
+
+
 def derive_overall_status(report: dict[str, Any]) -> str:
     highest = "OK"
     for check in report.get("checks", []):
@@ -291,6 +401,7 @@ def collect_report(args: argparse.Namespace) -> dict[str, Any]:
     uptime = parse_uptime_output(run_command(["uptime"]).stdout)
     disk_root = parse_df_output(run_command(["df", "-Pk", "/"]).stdout)
     memory = parse_free_output(run_command(["free", "-m"]).stdout)
+    containers = list_running_containers()
 
     gate = run_command(
         ["bash", str(repo_root / "scripts" / "post_deploy_production_gate.sh")],
@@ -298,12 +409,24 @@ def collect_report(args: argparse.Namespace) -> dict[str, Any]:
         env=command_env,
         check=False,
     )
+    gate_status = "OK" if gate.returncode == 0 else "FAIL"
+    gate_summary = "post-deploy production gate passed" if gate.returncode == 0 else "post-deploy production gate failed"
+    gate_details: str | dict[str, Any] = (gate.stdout + gate.stderr).strip()[-4000:]
+    if should_fallback_to_live_gate(gate, containers):
+        live_ok, live_summary, live_details = evaluate_live_production_gate(command_env, containers)
+        if live_ok:
+            gate_status = "OK"
+            gate_summary = live_summary
+            gate_details = {
+                "compose_gate_error": (gate.stdout + gate.stderr).strip()[-4000:],
+                **live_details,
+            }
     checks.append(
         {
             "name": "production_gate",
-            "status": "OK" if gate.returncode == 0 else "FAIL",
-            "summary": "post-deploy production gate passed" if gate.returncode == 0 else "post-deploy production gate failed",
-            "details": (gate.stdout + gate.stderr).strip()[-4000:],
+            "status": gate_status,
+            "summary": gate_summary,
+            "details": gate_details,
         }
     )
 
@@ -406,13 +529,14 @@ def collect_report(args: argparse.Namespace) -> dict[str, Any]:
         }
     )
 
+    notifier_container = find_container_by_suffix(containers, "backend-notifier-1")
     notifier_inspect = run_command(
         [
             "docker",
             "inspect",
             "--format",
             "restart_count={{.RestartCount}} started={{.State.StartedAt}}",
-            "siteparserforfreelans-backend-notifier-1",
+            notifier_container["name"] if notifier_container else "siteparserforfreelans-backend-notifier-1",
         ],
         check=False,
     )
