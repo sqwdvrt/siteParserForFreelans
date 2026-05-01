@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from ai_service.domain.ranked_job import RankedJob
 from ai_service.port.match_notify_queue import MatchNotifyQueue
 from ai_service.port.match_repository import MatchRepository
 from ai_service.port.repository import JobRepository
@@ -80,6 +81,19 @@ class ProcessUserRematchUseCase:
         if len(candidates) > self._max_jobs:
             candidates = candidates[: self._max_jobs]
 
+        enqueue_batch = getattr(self._match_notify_queue, "enqueue_batch", None)
+        if callable(enqueue_batch):
+            ranked_jobs = self._build_ranked_jobs(candidates)
+            if ranked_jobs:
+                enqueue_batch(
+                    user_id=user_id,
+                    ranked_jobs=ranked_jobs,
+                    source="rematch",
+                    batch_score=self._batch_score(ranked_jobs),
+                )
+            logger.info("rematch: user_id=%s enqueued batch jobs=%d", user_id, len(ranked_jobs))
+            return len(ranked_jobs)
+
         enqueue_many = getattr(self._match_notify_queue, "enqueue_many", None)
         if callable(enqueue_many):
             enqueue_many(candidates)
@@ -89,6 +103,40 @@ class ProcessUserRematchUseCase:
             self._match_notify_queue.enqueue(candidate)
 
         return len(candidates)
+
+    def _build_ranked_jobs(self, candidates: list[MatchCandidate]) -> list[RankedJob]:
+        ranked_jobs: list[RankedJob] = []
+        for candidate in candidates:
+            job = self._job_repo.get(candidate.job_id)
+            if job is None:
+                logger.warning(
+                    "rematch: skip missing job_id=%s while building batch for user_id=%s",
+                    candidate.job_id,
+                    candidate.user_id,
+                )
+                continue
+            ranked_jobs.append(
+                RankedJob(
+                    job_id=candidate.job_id,
+                    title=job.title,
+                    why_it_fits=candidate.why_it_fits,
+                    rank=len(ranked_jobs) + 1,
+                    actor_confidence=candidate.match_score,
+                    final_score=candidate.final_score if candidate.final_score > 0 else candidate.match_score,
+                    ranker_version=candidate.ranker_version,
+                    reason_codes=tuple(candidate.reason_codes),
+                )
+            )
+        return ranked_jobs
+
+    @staticmethod
+    def _batch_score(ranked_jobs: list[RankedJob]) -> float:
+        if not ranked_jobs:
+            return 0.0
+        total = 0.0
+        for item in ranked_jobs:
+            total += item.final_score
+        return round(total / len(ranked_jobs) * 10.0, 2)
 
     def _apply_preference_filter(self, user_id: int, candidates: list[MatchCandidate]) -> list[MatchCandidate]:
         if not candidates:

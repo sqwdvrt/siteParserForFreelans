@@ -6,15 +6,27 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 )
 
-// SendNotification проверяет валидность пары (user, job), обеспечивает дедупликацию
-// через EnsurePending и возвращает управление — доставка происходит через cron-дайджест.
+type batchItemMeta struct {
+	job           *domain.Job
+	whyItFits     string
+	finalScore    float64
+	rankerVersion string
+	reasonCodes   []string
+}
+
+// SendNotification проверяет валидность пары (user, job) и управляет доставкой
+// через notifications dedup state; batch-path при наличии notifier отправляет сразу.
 type SendNotification struct {
 	notifRepo port.NotificationRepository
 	userRepo  port.UserRepository
 	jobRepo   port.JobRepository
+	notifier  port.Notifier
+	eventRepo port.ProductEventRepository
+	maxPerDay int
 }
 
 // NewSendNotification создаёт usecase.
@@ -27,7 +39,25 @@ func NewSendNotification(
 		notifRepo: notifRepo,
 		userRepo:  userRepo,
 		jobRepo:   jobRepo,
+		maxPerDay: defaultMaxPerDay,
 	}
+}
+
+func (u *SendNotification) WithNotifier(notifier port.Notifier) *SendNotification {
+	u.notifier = notifier
+	return u
+}
+
+func (u *SendNotification) WithProductEventRepo(repo port.ProductEventRepository) *SendNotification {
+	u.eventRepo = repo
+	return u
+}
+
+func (u *SendNotification) WithMaxPerDay(maxPerDay int) *SendNotification {
+	if maxPerDay > 0 {
+		u.maxPerDay = maxPerDay
+	}
+	return u
 }
 
 // Execute обрабатывает одиночного кандидата: проверяет пользователя и задание,
@@ -97,12 +127,13 @@ func (u *SendNotification) Execute(
 }
 
 // ExecuteBatch обрабатывает batch кандидатов: дедупликация через EnsurePending для каждого job,
-// проверка свежести; доставка происходит через cron-дайджест.
+// проверка свежести и немедленная batch-отправка, если configured notifier доступен.
 func (u *SendNotification) ExecuteBatch(
 	ctx context.Context,
 	userID int64,
 	jobs []port.BatchJobItem,
 	batchScore float64,
+	source string,
 ) error {
 	user, err := u.userRepo.GetByID(ctx, userID)
 	if err != nil {
@@ -117,13 +148,7 @@ func (u *SendNotification) ExecuteBatch(
 		return nil
 	}
 
-	type itemMeta struct {
-		whyItFits     string
-		finalScore    float64
-		rankerVersion string
-		reasonCodes   []string
-	}
-	metaByID := make(map[int64]itemMeta, len(jobs))
+	metaByID := make(map[int64]batchItemMeta, len(jobs))
 	uniqueIDs := make([]int64, 0, len(jobs))
 	for _, item := range jobs {
 		if item.JobID <= 0 {
@@ -131,7 +156,7 @@ func (u *SendNotification) ExecuteBatch(
 		}
 		current, dup := metaByID[item.JobID]
 		if !dup || item.FinalScore > current.finalScore {
-			metaByID[item.JobID] = itemMeta{
+			metaByID[item.JobID] = batchItemMeta{
 				whyItFits:     item.WhyItFits,
 				finalScore:    item.FinalScore,
 				rankerVersion: item.RankerVersion,
@@ -148,6 +173,7 @@ func (u *SendNotification) ExecuteBatch(
 		return fmt.Errorf("get jobs by ids: %w", err)
 	}
 
+	deliverable := make([]batchItemMeta, 0, len(uniqueIDs))
 	for _, jobID := range uniqueIDs {
 		job, ok := jobsMap[jobID]
 		if !ok {
@@ -175,9 +201,136 @@ func (u *SendNotification) ExecuteBatch(
 			if delErr := u.notifRepo.Delete(ctx, userID, jobID); delErr != nil {
 				slog.Error("send batch notification: delete stale notification failed", "user_id", userID, "job_id", jobID, "err", delErr)
 			}
+			continue
+		}
+		meta.job = job
+		deliverable = append(deliverable, meta)
+	}
+
+	if len(deliverable) == 0 {
+		return nil
+	}
+
+	if u.notifier == nil {
+		slog.Debug("send batch notification: pending, deferred to accumulation cron", "user_id", userID, "jobs", len(deliverable))
+		return nil
+	}
+
+	selected, err := u.selectBatchWithinDailyCap(ctx, userID, deliverable)
+	if err != nil {
+		return err
+	}
+	if len(selected) == 0 {
+		slog.Info("send batch notification: daily cap reached, batch moved to missed", "user_id", userID, "source", source)
+		return nil
+	}
+
+	payloadItems := make([]port.BatchNotifyItem, 0, len(selected))
+	for index, meta := range selected {
+		payloadItems = append(payloadItems, port.BatchNotifyItem{
+			Job:           meta.job,
+			WhyItFits:     meta.whyItFits,
+			Rank:          index + 1,
+			FinalScore:    meta.finalScore,
+			RankerVersion: meta.rankerVersion,
+			ReasonCodes:   meta.reasonCodes,
+		})
+	}
+
+	dispatched := make([]batchItemMeta, 0, len(selected))
+	for _, meta := range selected {
+		if err := u.notifRepo.MarkDispatched(ctx, userID, meta.job.ID); err != nil {
+			for _, dispatchedItem := range dispatched {
+				if markErr := u.notifRepo.MarkFailed(ctx, userID, dispatchedItem.job.ID); markErr != nil {
+					slog.Error("send batch notification: rollback dispatched status failed", "user_id", userID, "job_id", dispatchedItem.job.ID, "err", markErr)
+				}
+			}
+			return err
+		}
+		dispatched = append(dispatched, meta)
+	}
+
+	payload := port.NotifyPayload{
+		Source:     source,
+		Batch:      payloadItems,
+		BatchScore: batchScore,
+	}
+	if err := u.notifier.Send(ctx, user.TelegramID, payload); err != nil {
+		for _, meta := range selected {
+			if markErr := u.notifRepo.MarkFailed(ctx, userID, meta.job.ID); markErr != nil {
+				slog.Error("send batch notification: mark failed after telegram error", "user_id", userID, "job_id", meta.job.ID, "err", markErr)
+			}
+		}
+		return err
+	}
+
+	for _, meta := range selected {
+		if err := u.notifRepo.MarkSent(ctx, userID, meta.job.ID); err != nil {
+			slog.Error("send batch notification: mark sent failed", "user_id", userID, "job_id", meta.job.ID, "err", err)
+			continue
+		}
+		if err := u.recordNotificationSent(ctx, userID, meta.job, source); err != nil {
+			slog.Warn("send batch notification: record product event failed", "user_id", userID, "job_id", meta.job.ID, "err", err)
 		}
 	}
 
-	slog.Debug("send batch notification: pending, deferred to accumulation cron", "user_id", userID, "jobs", len(uniqueIDs))
+	slog.Info("send batch notification: sent", "user_id", userID, "source", source, "jobs", len(selected))
 	return nil
+}
+
+func (u *SendNotification) selectBatchWithinDailyCap(
+	ctx context.Context,
+	userID int64,
+	items []batchItemMeta,
+) ([]batchItemMeta, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	if u.maxPerDay <= 0 {
+		return items, nil
+	}
+
+	countToday, err := u.notifRepo.CountToday(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	remaining := u.maxPerDay - countToday
+	if remaining <= 0 {
+		for _, item := range items {
+			if err := u.notifRepo.MarkMissed(ctx, userID, item.job.ID); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	}
+	if len(items) <= remaining {
+		return items, nil
+	}
+
+	for _, item := range items[remaining:] {
+		if err := u.notifRepo.MarkMissed(ctx, userID, item.job.ID); err != nil {
+			return nil, err
+		}
+	}
+	return items[:remaining], nil
+}
+
+func (u *SendNotification) recordNotificationSent(
+	ctx context.Context,
+	userID int64,
+	job *domain.Job,
+	deliveryMode string,
+) error {
+	if u.eventRepo == nil || job == nil {
+		return nil
+	}
+	return u.eventRepo.Record(ctx, port.ProductEvent{
+		Type:   port.ProductEventNotificationSent,
+		UserID: userID,
+		JobID:  job.ID,
+		Source: job.Source,
+		Properties: map[string]any{
+			"delivery_mode": deliveryMode,
+		},
+	})
 }

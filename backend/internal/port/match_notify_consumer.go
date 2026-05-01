@@ -16,6 +16,7 @@ type BatchJobItem struct {
 // MatchNotifyPayload — сообщение из очереди match-notify.
 type MatchNotifyPayload struct {
 	UserID        int64          `json:"user_id"`
+	Source        string         `json:"source,omitempty"`
 	JobID         int64          `json:"job_id"`
 	MatchScore    float64        `json:"match_score"`
 	FinalScore    float64        `json:"final_score,omitempty"`

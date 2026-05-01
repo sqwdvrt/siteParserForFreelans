@@ -391,6 +391,7 @@ class ProcessACBatchUseCase:
             enqueue_batch(
                 user_id=user_id,
                 ranked_jobs=ranked_jobs,
+                source="ac",
                 batch_score=batch_score,
                 trace_id=get_trace_id(),
             )

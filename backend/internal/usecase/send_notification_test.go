@@ -209,6 +209,17 @@ func (m *mockNotifier) Send(ctx context.Context, telegramID int64, p port.Notify
 	return nil
 }
 
+type mockProductEventRepo struct {
+	recordFunc func(ctx context.Context, event port.ProductEvent) error
+}
+
+func (m *mockProductEventRepo) Record(ctx context.Context, event port.ProductEvent) error {
+	if m.recordFunc != nil {
+		return m.recordFunc(ctx, event)
+	}
+	return nil
+}
+
 // --- Execute tests ---
 
 func TestSendNotification_Execute_Deferred_DoesNotSend(t *testing.T) {
@@ -373,29 +384,63 @@ func TestSendNotification_Execute_StaleKworkJobDeletesPendingAndSkips(t *testing
 
 // --- ExecuteBatch tests ---
 
-func TestSendNotification_ExecuteBatch_Deferred_DoesNotSend(t *testing.T) {
+func TestSendNotification_ExecuteBatch_SendsSingleTelegramBatch(t *testing.T) {
 	ensureCalls := 0
+	markDispatchedCalls := 0
+	markSentCalls := 0
+	sendCalls := 0
 	uc := NewSendNotification(
 		&mockNotifRepo{
 			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
 				ensureCalls++
 				return true, true, nil
 			},
+			markDispatchedFunc: func(context.Context, int64, int64) error {
+				markDispatchedCalls++
+				return nil
+			},
+			markSentFunc: func(context.Context, int64, int64) error {
+				markSentCalls++
+				return nil
+			},
 		},
 		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
 			return &domain.User{ID: 1, TelegramID: 888}, nil
 		}},
 		&mockJobRepo{},
-	)
+	).
+		WithNotifier(&mockNotifier{sendFunc: func(_ context.Context, telegramID int64, p port.NotifyPayload) error {
+			sendCalls++
+			if telegramID != 888 {
+				t.Fatalf("telegramID = %d, want 888", telegramID)
+			}
+			if len(p.Batch) != 2 {
+				t.Fatalf("batch len = %d, want 2", len(p.Batch))
+			}
+			if p.Source != "ac" {
+				t.Fatalf("source = %q, want ac", p.Source)
+			}
+			return nil
+		}}).
+		WithMaxPerDay(5)
 	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{
 		{JobID: 10, Rank: 1},
 		{JobID: 20, Rank: 2},
-	}, 7.2)
+	}, 7.2, "ac")
 	if err != nil {
 		t.Fatalf("ExecuteBatch: %v", err)
 	}
 	if ensureCalls != 2 {
 		t.Fatalf("EnsurePending calls=%d, want 2", ensureCalls)
+	}
+	if sendCalls != 1 {
+		t.Fatalf("send calls=%d, want 1", sendCalls)
+	}
+	if markDispatchedCalls != 2 {
+		t.Fatalf("MarkDispatched calls=%d, want 2", markDispatchedCalls)
+	}
+	if markSentCalls != 2 {
+		t.Fatalf("MarkSent calls=%d, want 2", markSentCalls)
 	}
 }
 
@@ -414,7 +459,7 @@ func TestSendNotification_ExecuteBatch_PausedUserSkipped(t *testing.T) {
 		}},
 		&mockJobRepo{},
 	)
-	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{{JobID: 10}}, 7.0)
+	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{{JobID: 10}}, 7.0, "ac")
 	if err != nil {
 		t.Fatalf("ExecuteBatch: %v", err)
 	}
@@ -447,7 +492,7 @@ func TestSendNotification_ExecuteBatch_SingleJobsQuery(t *testing.T) {
 	)
 	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{
 		{JobID: 10}, {JobID: 20}, {JobID: 30}, {JobID: 40}, {JobID: 50},
-	}, 7.0)
+	}, 7.0, "ac")
 	if err != nil {
 		t.Fatalf("ExecuteBatch: %v", err)
 	}
@@ -479,7 +524,7 @@ func TestSendNotification_ExecuteBatch_DeletesStaleKworkJobs(t *testing.T) {
 	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{
 		{JobID: 10, Rank: 1, FinalScore: 0.91},
 		{JobID: 20, Rank: 2, FinalScore: 0.82},
-	}, 8.4)
+	}, 8.4, "ac")
 	if err != nil {
 		t.Fatalf("ExecuteBatch: %v", err)
 	}
@@ -503,7 +548,7 @@ func TestSendNotification_ExecuteBatch_DeduplicatesDuplicateJobIDs(t *testing.T)
 	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{
 		{JobID: 42, FinalScore: 0.5, Rank: 2},
 		{JobID: 42, FinalScore: 0.9, Rank: 1}, // same job, higher score — must NOT append ID again
-	}, 0.9)
+	}, 0.9, "ac")
 	if err != nil {
 		t.Fatalf("ExecuteBatch: %v", err)
 	}

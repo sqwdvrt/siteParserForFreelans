@@ -61,9 +61,10 @@ func TestNotifierMetrics_CollectsNotificationAndQueueMetrics(t *testing.T) {
 	reg := prometheus.NewRegistry()
 	m := NewNotifierMetrics(reg, "match-notify")
 
-	m.ObserveSent()
-	m.ObserveSent()
-	m.ObserveFailed()
+	m.ObserveSent("ac", 2)
+	m.ObserveSent("ac", 1)
+	m.ObserveFailed("rematch", 1)
+	m.ObserveLegacySingleFallback("rematch")
 	m.SetQueueDepth(8, 3, 2)
 
 	families, err := reg.Gather()
@@ -75,13 +76,21 @@ func TestNotifierMetrics_CollectsNotificationAndQueueMetrics(t *testing.T) {
 	assertCounterLabelValue(
 		t,
 		notifications.GetMetric(),
-		map[string]string{"status": notifierNotificationStatusSent},
+		map[string]string{"status": notifierNotificationStatusSent, "source": "ac"},
 		2,
 	)
 	assertCounterLabelValue(
 		t,
 		notifications.GetMetric(),
-		map[string]string{"status": notifierNotificationStatusFailed},
+		map[string]string{"status": notifierNotificationStatusFailed, "source": "rematch"},
+		1,
+	)
+
+	fallbacks := findMetricFamily(t, families, notifierFallbacksMetricName)
+	assertCounterLabelValue(
+		t,
+		fallbacks.GetMetric(),
+		map[string]string{"source": "rematch"},
 		1,
 	)
 

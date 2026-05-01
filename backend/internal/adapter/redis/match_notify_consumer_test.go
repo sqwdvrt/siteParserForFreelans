@@ -125,7 +125,7 @@ func TestMatchNotifyConsumer_Pop_BatchPayload(t *testing.T) {
 	client.LPush(
 		context.Background(),
 		"match-notify",
-		`{"user_id":10,"critic_score":8.2,"jobs":[{"job_id":101,"title":"Backend","why_it_fits":"Django","rank":1}]}`,
+		`{"user_id":10,"source":"ac","critic_score":8.2,"jobs":[{"job_id":101,"title":"Backend","why_it_fits":"Django","rank":1}]}`,
 	)
 
 	consumer := NewMatchNotifyConsumer(client, "match-notify")
@@ -146,6 +146,9 @@ func TestMatchNotifyConsumer_Pop_BatchPayload(t *testing.T) {
 	}
 	if msg.Payload.Jobs[0].JobID != 101 {
 		t.Fatalf("want jobs[0].job_id=101, got %d", msg.Payload.Jobs[0].JobID)
+	}
+	if msg.Payload.Source != "ac" {
+		t.Fatalf("want source=ac, got %q", msg.Payload.Source)
 	}
 }
 

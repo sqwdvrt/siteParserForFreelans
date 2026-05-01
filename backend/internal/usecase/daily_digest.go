@@ -158,7 +158,10 @@ func (d *DailyDigest) sendDigestForUser(ctx context.Context, userID int64) error
 		return nil
 	}
 
-	payload := port.NotifyPayload{Batch: items}
+	payload := port.NotifyPayload{
+		Source: "digest",
+		Batch:  items,
+	}
 	for _, jobID := range delivered {
 		if err := d.notifRepo.MarkDispatched(ctx, userID, jobID); err != nil {
 			slog.Error("daily digest: mark dispatched failed", "user_id", userID, "job_id", jobID, "err", err)

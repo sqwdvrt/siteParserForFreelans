@@ -18,6 +18,7 @@ type BatchNotifyItem struct {
 
 // NotifyPayload — данные для уведомления о проекте.
 type NotifyPayload struct {
+	Source        string
 	Job           *domain.Job
 	Score         float64
 	FinalScore    float64

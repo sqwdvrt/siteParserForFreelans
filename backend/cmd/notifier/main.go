@@ -192,7 +192,10 @@ func main() {
 		BreakerOpenJitter:       breakerOpenJitter,
 	})
 	notifier.ConfigureBatchSessionStore(telegram.NewRedisBatchSessionStore(rdb), os.Getenv("BOT_REDIS_PREFIX"))
-	sendNotif := usecase.NewSendNotification(notifRepo, userRepo, jobRepo)
+	sendNotif := usecase.NewSendNotification(notifRepo, userRepo, jobRepo).
+		WithNotifier(notifier).
+		WithProductEventRepo(productEventRepo).
+		WithMaxPerDay(maxPerDay)
 
 	dailyDigest := usecase.NewDailyDigest(userRepo, notifRepo, jobRepo, notifier, maxPerDay).
 		WithProductEventRepo(productEventRepo)
@@ -384,35 +387,26 @@ func main() {
 			if msg == nil {
 				continue
 			}
-			p := msg.Payload
+			p, legacySingleFallback := normalizeMatchNotifyPayload(msg.Payload)
+			if legacySingleFallback {
+				notifierMetrics.ObserveLegacySingleFallback(p.Source)
+				slog.Warn("normalized legacy single match payload into batch delivery", "user_id", p.UserID, "job_id", p.JobID, "source", p.Source)
+			}
 			msgCtx := ctx
 			if p.Traceparent != "" {
 				carrier := redisadapter.MapCarrier{"traceparent": p.Traceparent}
 				msgCtx = otel.GetTextMapPropagator().Extract(ctx, carrier)
 			}
 			msgCtx, span := otel.Tracer("site-parser-notifier").Start(msgCtx, "notifier.send")
-			var sendErr error
-			if len(p.Jobs) > 0 {
-				sendErr = sendBatchNotification(msgCtx, sendNotif, p)
-			} else {
-				sendErr = sendNotif.Execute(
-					msgCtx,
-					p.UserID,
-					p.JobID,
-					p.MatchScore,
-					p.FinalScore,
-					p.RankerVersion,
-					p.ReasonCodes,
-					p.WhyItFits,
-				)
-			}
+			sendErr := sendBatchNotification(msgCtx, sendNotif, p)
 			span.End()
 			if sendErr != nil {
-				notifierMetrics.ObserveFailed()
+				notifierMetrics.ObserveFailed(p.Source, len(p.Jobs))
 				slog.Error(
 					"send notification failed",
 					"user_id", p.UserID,
 					"job_id", p.JobID,
+					"source", p.Source,
 					"batch_jobs", len(p.Jobs),
 					"trace_id", p.TraceID,
 					"err", sendErr,
@@ -457,7 +451,7 @@ func main() {
 				}
 				continue
 			}
-			notifierMetrics.ObserveSent()
+			notifierMetrics.ObserveSent(p.Source, len(p.Jobs))
 			if ackErr := consumer.Ack(ctx, msg); ackErr != nil {
 				slog.Error("ack failed", "user_id", p.UserID, "job_id", p.JobID, "trace_id", p.TraceID, "err", ackErr)
 			}
@@ -473,7 +467,33 @@ func sendBatchNotification(
 	if sendNotif == nil {
 		return fmt.Errorf("send notification usecase is nil")
 	}
-	return sendNotif.ExecuteBatch(ctx, p.UserID, p.Jobs, p.EffectiveBatchScore())
+	return sendNotif.ExecuteBatch(ctx, p.UserID, p.Jobs, p.EffectiveBatchScore(), p.Source)
+}
+
+func normalizeMatchNotifyPayload(p port.MatchNotifyPayload) (port.MatchNotifyPayload, bool) {
+	if len(p.Jobs) > 0 {
+		return p, false
+	}
+	if p.JobID <= 0 {
+		return p, false
+	}
+
+	score := p.FinalScore
+	if score <= 0 {
+		score = p.MatchScore
+	}
+	p.Jobs = []port.BatchJobItem{
+		{
+			JobID:         p.JobID,
+			WhyItFits:     p.WhyItFits,
+			Rank:          1,
+			FinalScore:    score,
+			RankerVersion: p.RankerVersion,
+			ReasonCodes:   p.ReasonCodes,
+		},
+	}
+	p.BatchScore = score * 10.0
+	return p, true
 }
 
 func nextPopErrorBackoff(current time.Duration) time.Duration {

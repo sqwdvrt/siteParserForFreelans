@@ -14,6 +14,8 @@ const (
 	crawlerJobsFilteredTotalMetricName = "siteparser_crawler_jobs_filtered_total"
 	crawlerQueueDepthMetricName        = "siteparser_crawler_queue_depth"
 	notifierNotificationsMetricName    = "siteparser_notifier_notifications_total"
+	notifierBatchSizeMetricName        = "siteparser_notifier_batch_jobs"
+	notifierFallbacksMetricName        = "siteparser_notifier_legacy_single_fallback_total"
 	notifierQueueDepthMetricName       = "siteparser_notifier_queue_depth"
 	queueStateReady                    = "ready"
 	queueStateProcessing               = "processing"
@@ -130,6 +132,8 @@ func (m *CrawlerMetrics) SetQueueDepth(ready int64, processing int64, dlq int64)
 type NotifierMetrics struct {
 	queueName     string
 	notifications *prometheus.CounterVec
+	batchSize     *prometheus.HistogramVec
+	fallbacks     *prometheus.CounterVec
 	queueDepth    *prometheus.GaugeVec
 }
 
@@ -144,7 +148,22 @@ func NewNotifierMetrics(reg prometheus.Registerer, queueName string) *NotifierMe
 				Name: notifierNotificationsMetricName,
 				Help: "Total notifier delivery attempts by status.",
 			},
-			[]string{"status"},
+			[]string{"status", "source"},
+		),
+		batchSize: prometheus.NewHistogramVec(
+			prometheus.HistogramOpts{
+				Name:    notifierBatchSizeMetricName,
+				Help:    "Number of jobs included in one notifier message by source.",
+				Buckets: []float64{1, 2, 3, 5, 10, 20},
+			},
+			[]string{"source"},
+		),
+		fallbacks: prometheus.NewCounterVec(
+			prometheus.CounterOpts{
+				Name: notifierFallbacksMetricName,
+				Help: "Total number of legacy single payloads normalized into batch sends.",
+			},
+			[]string{"source"},
 		),
 		queueDepth: prometheus.NewGaugeVec(
 			prometheus.GaugeOpts{
@@ -155,25 +174,45 @@ func NewNotifierMetrics(reg prometheus.Registerer, queueName string) *NotifierMe
 		),
 	}
 
-	reg.MustRegister(m.notifications, m.queueDepth)
-	m.notifications.WithLabelValues(notifierNotificationStatusSent).Add(0)
-	m.notifications.WithLabelValues(notifierNotificationStatusFailed).Add(0)
+	reg.MustRegister(m.notifications, m.batchSize, m.fallbacks, m.queueDepth)
+	m.notifications.WithLabelValues(notifierNotificationStatusSent, "unknown").Add(0)
+	m.notifications.WithLabelValues(notifierNotificationStatusFailed, "unknown").Add(0)
+	m.fallbacks.WithLabelValues("unknown").Add(0)
 	m.queueDepth.WithLabelValues(m.queueName, queueStateReady).Set(0)
 	m.queueDepth.WithLabelValues(m.queueName, queueStateProcessing).Set(0)
 	m.queueDepth.WithLabelValues(m.queueName, queueStateDLQ).Set(0)
 	return m
 }
 
-func (m *NotifierMetrics) ObserveSent() {
-	m.notifications.WithLabelValues(notifierNotificationStatusSent).Inc()
+func (m *NotifierMetrics) ObserveSent(source string, jobs int) {
+	source = normalizeNotifierSource(source)
+	m.notifications.WithLabelValues(notifierNotificationStatusSent, source).Inc()
+	if jobs > 0 {
+		m.batchSize.WithLabelValues(source).Observe(float64(jobs))
+	}
 }
 
-func (m *NotifierMetrics) ObserveFailed() {
-	m.notifications.WithLabelValues(notifierNotificationStatusFailed).Inc()
+func (m *NotifierMetrics) ObserveFailed(source string, jobs int) {
+	source = normalizeNotifierSource(source)
+	m.notifications.WithLabelValues(notifierNotificationStatusFailed, source).Inc()
+	if jobs > 0 {
+		m.batchSize.WithLabelValues(source).Observe(float64(jobs))
+	}
+}
+
+func (m *NotifierMetrics) ObserveLegacySingleFallback(source string) {
+	m.fallbacks.WithLabelValues(normalizeNotifierSource(source)).Inc()
 }
 
 func (m *NotifierMetrics) SetQueueDepth(ready int64, processing int64, dlq int64) {
 	m.queueDepth.WithLabelValues(m.queueName, queueStateReady).Set(float64(ready))
 	m.queueDepth.WithLabelValues(m.queueName, queueStateProcessing).Set(float64(processing))
 	m.queueDepth.WithLabelValues(m.queueName, queueStateDLQ).Set(float64(dlq))
+}
+
+func normalizeNotifierSource(source string) string {
+	if source == "" {
+		return "unknown"
+	}
+	return source
 }

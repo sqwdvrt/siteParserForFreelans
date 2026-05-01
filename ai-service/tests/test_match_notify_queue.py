@@ -33,6 +33,7 @@ def test_serialize_uses_context_trace_id_when_candidate_missing() -> None:
 def test_serialize_batch_includes_ranked_jobs_and_score() -> None:
     payload = RedisMatchNotifyQueue._serialize_batch(
         user_id=10,
+        source="ac",
         ranked_jobs=[
             RankedJob(
                 job_id=1,
@@ -46,6 +47,7 @@ def test_serialize_batch_includes_ranked_jobs_and_score() -> None:
     )
     data = json.loads(payload)
     assert data["user_id"] == 10
+    assert data["source"] == "ac"
     assert data["batch_score"] == 8.24
     assert "critic_score" not in data
     assert len(data["jobs"]) == 1
@@ -58,6 +60,7 @@ def test_serialize_batch_uses_explicit_trace_id() -> None:
     try:
         payload = RedisMatchNotifyQueue._serialize_batch(
             user_id=10,
+            source="rematch",
             ranked_jobs=[
                 RankedJob(
                     job_id=1,
@@ -79,6 +82,7 @@ def test_serialize_batch_uses_explicit_trace_id() -> None:
 def test_serialize_batch_accepts_legacy_critic_score_alias() -> None:
     payload = RedisMatchNotifyQueue._serialize_batch(
         user_id=10,
+        source="ac",
         ranked_jobs=[
             RankedJob(
                 job_id=1,

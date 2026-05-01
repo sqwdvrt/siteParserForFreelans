@@ -438,6 +438,35 @@ func TestSendBatchNotification_CallsEnsurePendingForEachJob(t *testing.T) {
 	}
 }
 
+func TestNormalizeMatchNotifyPayload_ConvertsLegacySingleIntoBatch(t *testing.T) {
+	got, fallback := normalizeMatchNotifyPayload(port.MatchNotifyPayload{
+		UserID:        1,
+		JobID:         10,
+		MatchScore:    0.82,
+		WhyItFits:     "Strong fit",
+		TraceID:       "trace-1",
+		Source:        "rematch",
+		RankerVersion: "v2",
+		ReasonCodes:   []string{"reason"},
+	})
+
+	if !fallback {
+		t.Fatal("expected legacy single payload to be marked as fallback")
+	}
+	if len(got.Jobs) != 1 {
+		t.Fatalf("expected 1 normalized batch item, got %d", len(got.Jobs))
+	}
+	if got.Jobs[0].JobID != 10 {
+		t.Fatalf("normalized job_id = %d, want 10", got.Jobs[0].JobID)
+	}
+	if got.BatchScore != 8.2 {
+		t.Fatalf("normalized batch score = %.1f, want 8.2", got.BatchScore)
+	}
+	if got.Source != "rematch" {
+		t.Fatalf("normalized source = %q, want rematch", got.Source)
+	}
+}
+
 // TestAccumulationDigest_CallsNotifierForFreeUsers проверяет, что
 // DailyDigest.ExecuteAccumulation вызывает notifier.Send для free-пользователей
 // с накопленными pending-уведомлениями.

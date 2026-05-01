@@ -87,7 +87,14 @@ def test_execute_enqueues_all_candidates_without_feedback_repo() -> None:
     uc, _, _, queue = _make_use_case(candidates=candidates, feedback_repo=None)
     result = uc.execute(1)
     assert result == 2
-    queue.enqueue_many.assert_called_once_with(candidates)
+    queue.enqueue_batch.assert_called_once()
+    kwargs = queue.enqueue_batch.call_args.kwargs
+    assert kwargs["user_id"] == 1
+    assert kwargs["source"] == "rematch"
+    assert kwargs["batch_score"] == 7.75
+    assert [item.job_id for item in kwargs["ranked_jobs"]] == [10, 11]
+    assert [item.rank for item in kwargs["ranked_jobs"]] == [1, 2]
+    queue.enqueue_many.assert_not_called()
     queue.enqueue.assert_not_called()
 
 
@@ -109,10 +116,10 @@ def test_execute_applies_feedback_adjustment() -> None:
     result = uc.execute(1)
     # Both have net=0.8 → boost → both above threshold, both enqueued
     assert result == 2
-    queue.enqueue_many.assert_called_once()
-    enqueued = queue.enqueue_many.call_args.args[0]
-    assert len(enqueued) == 2
-    assert all(item.match_score > 0.75 for item in enqueued)
+    queue.enqueue_batch.assert_called_once()
+    ranked_jobs = queue.enqueue_batch.call_args.kwargs["ranked_jobs"]
+    assert len(ranked_jobs) == 2
+    assert queue.enqueue_batch.call_args.kwargs["batch_score"] > 7.5
 
 
 def test_execute_filters_candidate_below_threshold_after_feedback() -> None:
@@ -150,7 +157,11 @@ def test_execute_uses_single_enqueue_for_one_candidate() -> None:
     result = uc.execute(1)
 
     assert result == 1
-    queue.enqueue_many.assert_called_once_with(candidates)
+    queue.enqueue_batch.assert_called_once()
+    kwargs = queue.enqueue_batch.call_args.kwargs
+    assert kwargs["source"] == "rematch"
+    assert kwargs["batch_score"] == 8.0
+    assert [item.job_id for item in kwargs["ranked_jobs"]] == [10]
     queue.enqueue.assert_not_called()
 
 
@@ -185,7 +196,8 @@ def test_execute_applies_preference_filter_before_enqueue() -> None:
 
     assert result == 0
     match_repo.find_jobs_for_user.assert_called_once_with([0.1] * 384, 1, 0.7, 50, 7)
-    queue.enqueue_many.assert_called_once_with([])
+    queue.enqueue_batch.assert_not_called()
+    queue.enqueue_many.assert_not_called()
     queue.enqueue.assert_not_called()
 
 
@@ -225,5 +237,8 @@ def test_execute_keeps_preference_matched_candidate() -> None:
     result = uc.execute(1)
 
     assert result == 1
-    queue.enqueue_many.assert_called_once_with([candidate])
+    queue.enqueue_batch.assert_called_once()
+    kwargs = queue.enqueue_batch.call_args.kwargs
+    assert kwargs["source"] == "rematch"
+    assert [item.job_id for item in kwargs["ranked_jobs"]] == [10]
     queue.enqueue.assert_not_called()

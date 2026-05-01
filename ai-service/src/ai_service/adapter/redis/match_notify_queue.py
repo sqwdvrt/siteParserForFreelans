@@ -42,6 +42,7 @@ class RedisMatchNotifyQueue(MatchNotifyQueue):
         *,
         user_id: int,
         ranked_jobs: list[RankedJob],
+        source: str,
         batch_score: float | None = None,
         critic_score: float | None = None,
         trace_id: str = "",
@@ -51,6 +52,7 @@ class RedisMatchNotifyQueue(MatchNotifyQueue):
         payload = self._serialize_batch(
             user_id=user_id,
             ranked_jobs=ranked_jobs,
+            source=source,
             batch_score=batch_score,
             critic_score=critic_score,
             trace_id=trace_id,
@@ -79,6 +81,7 @@ class RedisMatchNotifyQueue(MatchNotifyQueue):
         *,
         user_id: int,
         ranked_jobs: list[RankedJob],
+        source: str,
         batch_score: float | None = None,
         critic_score: float | None = None,
         trace_id: str = "",
@@ -90,6 +93,7 @@ class RedisMatchNotifyQueue(MatchNotifyQueue):
         normalized_trace = (trace_id or get_trace_id()).strip()[:128]
         payload: dict = {
             "user_id": user_id,
+            "source": source,
             "batch_score": round(float(batch_score), 2),
             "jobs": [
                 {
