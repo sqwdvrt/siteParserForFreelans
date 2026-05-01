@@ -209,17 +209,6 @@ func (m *mockNotifier) Send(ctx context.Context, telegramID int64, p port.Notify
 	return nil
 }
 
-type mockProductEventRepo struct {
-	recordFunc func(ctx context.Context, event port.ProductEvent) error
-}
-
-func (m *mockProductEventRepo) Record(ctx context.Context, event port.ProductEvent) error {
-	if m.recordFunc != nil {
-		return m.recordFunc(ctx, event)
-	}
-	return nil
-}
-
 // --- Execute tests ---
 
 func TestSendNotification_Execute_Deferred_DoesNotSend(t *testing.T) {
