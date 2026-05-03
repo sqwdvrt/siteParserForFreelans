@@ -237,7 +237,7 @@ func TestNewDailyDigestUsesDefaultMaxPerDay(t *testing.T) {
 
 func TestDailyDigestSendDigestForUserSuccess(t *testing.T) {
 	notifRepo := &digestNotifRepo{
-		countTodayFunc: func(context.Context, int64) (int, error) { return 1, nil },
+		countTodayFunc: func(context.Context, int64) (int, error) { return 0, nil },
 		claimPendingFunc: func(context.Context, int64, int) ([]port.PendingNotification, error) {
 			return []port.PendingNotification{
 				{JobID: 1, MatchScore: 8.1, WhyItFits: "Go"},
@@ -369,9 +369,9 @@ func TestDailyDigestSendDigestForUserSkipsOnLimitsAndEmptyData(t *testing.T) {
 	uc = NewDailyDigest(
 		&digestUserRepo{},
 		&digestNotifRepo{
-			countTodayFunc: func(context.Context, int64) (int, error) { return 5, nil },
+			countTodayFunc: func(context.Context, int64) (int, error) { return 1, nil },
 			claimPendingFunc: func(context.Context, int64, int) ([]port.PendingNotification, error) {
-				t.Fatal("ClaimPendingDigestNotifications should not be called when limit is reached")
+				t.Fatal("ClaimPendingDigestNotifications should not be called when digest was already sent today")
 				return nil, nil
 			},
 		},
@@ -399,7 +399,7 @@ func TestDailyDigestSendDigestForUserSkipsOnLimitsAndEmptyData(t *testing.T) {
 
 func TestDailyDigestSendDigestForUser_ConvertsMissedBeforeClaim(t *testing.T) {
 	notifRepo := &digestNotifRepo{
-		countTodayFunc: func(context.Context, int64) (int, error) { return 1, nil },
+		countTodayFunc: func(context.Context, int64) (int, error) { return 0, nil },
 		getMissedFunc: func(context.Context, int64) ([]port.MissedNotification, error) {
 			return []port.MissedNotification{
 				{ID: 11, JobID: 101, FinalScore: 9.2, JobStatus: "active", JobCreatedAt: time.Now().Add(-2 * time.Hour)},

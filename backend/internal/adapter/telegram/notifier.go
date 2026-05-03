@@ -172,10 +172,6 @@ func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayl
 			return fmt.Errorf("job is nil")
 		}
 		text = formatBatchMessage(p)
-		state, _ := n.storeBatchSession(ctx, telegramID, p.Batch)
-		if state != nil {
-			keyboard = buildBatchNavigationKeyboard(state)
-		}
 	} else {
 		text = formatMessage(p)
 		keyboard = buildFeedbackKeyboard(p)
@@ -677,45 +673,20 @@ func formatBatchMessage(p port.NotifyPayload) string {
 	items := sortedBatchItems(p.Batch)
 	var b strings.Builder
 
-	score := p.EffectiveBatchScore()
-	if score < 0 {
-		score = 0
-	}
-	if score > 10 {
-		score = 10
-	}
-
-	b.WriteString("🎯 <b>Подборка для вас</b> (оценка: ")
-	fmt.Fprintf(&b, "%.1f/10", score)
-	b.WriteString(")")
-
-	links := make([]string, 0, len(items))
+	b.WriteString("<b>Подходящие вакансии и заказы</b>")
 	for idx, item := range items {
 		job := item.Job
 		title := strings.TrimSpace(job.Title)
 		if title == "" {
 			title = "Проект"
 		}
-		b.WriteString("\n\n<b>")
-		fmt.Fprintf(&b, "%d. ", idx+1)
-		b.WriteString(escapeHTML(title))
-		b.WriteString("</b>")
-		if age := formatJobAge(job, time.Now()); age != "" {
-			b.WriteString(" · ")
-			b.WriteString(age)
-		}
-
-		why := strings.TrimSpace(item.WhyItFits)
-		if why != "" {
-			b.WriteString("\n💡 ")
-			b.WriteString(escapeHTML(truncateRunes(why, 280)))
-		}
-		links = append(links, formatProjectLinkWithLabel(job.URL, fmt.Sprintf("Открыть #%d", idx+1)))
-	}
-
-	if len(links) > 0 {
 		b.WriteString("\n\n")
-		b.WriteString(strings.Join(links, " | "))
+		fmt.Fprintf(&b, "%d. ", idx+1)
+		if isValidJobURL(job.URL) {
+			b.WriteString(formatProjectLinkWithLabel(job.URL, title))
+			continue
+		}
+		b.WriteString(escapeHTML(title))
 	}
 	return b.String()
 }

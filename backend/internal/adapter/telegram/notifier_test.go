@@ -165,15 +165,16 @@ func TestNotifier_Send_BatchPayload_UsesListFormat(t *testing.T) {
 		t.Fatalf("decode request body: %v", err)
 	}
 	text, _ := body["text"].(string)
-	// formatBatchMessage renders a compact numbered list
-	if !strings.Contains(text, "Подборка для вас") {
+	// formatBatchMessage renders a compact numbered list with direct links.
+	if !strings.Contains(text, "Подходящие вакансии и заказы") {
 		t.Fatalf("batch text missing header: %q", text)
 	}
-	if !strings.Contains(text, "<b>1. First</b>") || !strings.Contains(text, "<b>2. Second</b>") {
+	if !strings.Contains(text, `1. <a href="https://kwork.ru/projects/1">First</a>`) ||
+		!strings.Contains(text, `2. <a href="https://kwork.ru/projects/2">Second</a>`) {
 		t.Fatalf("batch text missing numbered items: %q", text)
 	}
-	if !strings.Contains(text, "First reason") || !strings.Contains(text, "Second reason") {
-		t.Fatalf("batch text missing why_it_fits: %q", text)
+	if strings.Contains(text, "First reason") || strings.Contains(text, "Second reason") {
+		t.Fatalf("batch text must not contain why_it_fits copy: %q", text)
 	}
 	if previewDisabled, ok := body["disable_web_page_preview"].(bool); !ok || !previewDisabled {
 		t.Fatalf("disable_web_page_preview must be true, got: %#v", body["disable_web_page_preview"])
@@ -216,10 +217,10 @@ func TestNotifier_Send_BatchPayload_SingleItem_RendersListMessage(t *testing.T) 
 		t.Fatalf("decode request body: %v", err)
 	}
 	text, _ := body["text"].(string)
-	if !strings.Contains(text, "Подборка для вас") {
+	if !strings.Contains(text, "Подходящие вакансии и заказы") {
 		t.Fatalf("batch text missing header: %q", text)
 	}
-	if !strings.Contains(text, "Storage first") {
+	if !strings.Contains(text, `1. <a href="https://kwork.ru/projects/99">Storage first</a>`) {
 		t.Fatalf("batch text missing job title: %q", text)
 	}
 	if _, hasMarkup := body["reply_markup"]; hasMarkup {
@@ -285,11 +286,11 @@ func TestFormatBatchMessage_SortsByRank(t *testing.T) {
 		},
 		CriticScore: 7.7,
 	})
-	if !strings.Contains(msg, "🎯 <b>Подборка для вас</b> (оценка: 7.7/10)") {
+	if !strings.Contains(msg, "<b>Подходящие вакансии и заказы</b>") {
 		t.Fatalf("batch header not found: %q", msg)
 	}
-	firstIdx := strings.Index(msg, "<b>1. Earlier</b>")
-	secondIdx := strings.Index(msg, "<b>2. Later</b>")
+	firstIdx := strings.Index(msg, `1. <a href="https://kwork.ru/projects/1">Earlier</a>`)
+	secondIdx := strings.Index(msg, `2. <a href="https://kwork.ru/projects/2">Later</a>`)
 	if firstIdx == -1 || secondIdx == -1 {
 		t.Fatalf("sorted items not found: %q", msg)
 	}
@@ -745,7 +746,7 @@ func TestFormatMessage_ContainsAge(t *testing.T) {
 	}
 }
 
-func TestFormatBatchMessage_ContainsAge(t *testing.T) {
+func TestFormatBatchMessage_RendersPlainLinkedList(t *testing.T) {
 	now := time.Now()
 	posted := now.Add(-2 * time.Hour)
 	job := &domain.Job{
@@ -760,14 +761,17 @@ func TestFormatBatchMessage_ContainsAge(t *testing.T) {
 			{Job: job, WhyItFits: "Отличное совпадение", Rank: 1},
 		},
 	})
-	if !strings.Contains(text, "🟡") || !strings.Contains(text, "ч назад") {
-		t.Errorf("formatBatchMessage should contain age indicator, got:\n%s", text)
+	if !strings.Contains(text, `1. <a href="https://kwork.ru/projects/1">Go разработчик</a>`) {
+		t.Errorf("formatBatchMessage should contain a linked item, got:\n%s", text)
+	}
+	if strings.Contains(text, "Отличное совпадение") || strings.Contains(text, "ч назад") {
+		t.Errorf("formatBatchMessage must stay plain, got:\n%s", text)
 	}
 }
 
-// TestNotifier_Send_Batch_StoresSession проверяет, что Send при batch-пейлоаде
-// сохраняет сессию в store и добавляет навигационную клавиатуру в тело запроса.
-func TestNotifier_Send_Batch_StoresSession(t *testing.T) {
+// TestNotifier_Send_Batch_IgnoresSessionStore verifies that batch digests stay plain
+// even when a session store is configured for legacy navigation features.
+func TestNotifier_Send_Batch_IgnoresSessionStore(t *testing.T) {
 	transport := &captureTransport{status: 200}
 	n := NewNotifierWithClient("test-token", &http.Client{
 		Transport: transport,
@@ -790,26 +794,11 @@ func TestNotifier_Send_Batch_StoresSession(t *testing.T) {
 		t.Fatalf("Send: %v", err)
 	}
 
-	// Сессия должна быть сохранена.
-	if store.key == "" {
-		t.Fatal("batch session was not stored")
+	if store.key != "" || len(store.value) != 0 {
+		t.Fatalf("batch session store must not be used for plain digests, key=%q value=%q", store.key, store.value)
 	}
-	if !strings.HasPrefix(store.key, "mybot:batch-session:") {
-		t.Errorf("unexpected session key: %q", store.key)
-	}
-	if store.ttl != defaultBatchSessionTTL {
-		t.Errorf("ttl=%v, want %v", store.ttl, defaultBatchSessionTTL)
-	}
-	if len(store.value) == 0 {
-		t.Error("stored session value must not be empty")
-	}
-
-	// Тело запроса к Telegram должно содержать inline_keyboard (навигация).
-	if !strings.Contains(transport.lastBody, "inline_keyboard") {
-		t.Error("Telegram request body must contain inline_keyboard for batch session")
-	}
-	if !strings.Contains(transport.lastBody, "nav:p:") {
-		t.Error("keyboard must contain navigation callback data")
+	if strings.Contains(transport.lastBody, "inline_keyboard") || strings.Contains(transport.lastBody, "nav:p:") {
+		t.Error("plain batch digest must not include navigation keyboard")
 	}
 }
 

@@ -373,24 +373,14 @@ func TestSendNotification_Execute_StaleKworkJobDeletesPendingAndSkips(t *testing
 
 // --- ExecuteBatch tests ---
 
-func TestSendNotification_ExecuteBatch_SendsSingleTelegramBatch(t *testing.T) {
+func TestSendNotification_ExecuteBatch_DefersDeliveryToDigest(t *testing.T) {
 	ensureCalls := 0
-	markDispatchedCalls := 0
-	markSentCalls := 0
 	sendCalls := 0
 	uc := NewSendNotification(
 		&mockNotifRepo{
 			ensurePendingFunc: func(context.Context, int64, int64, float64, float64, string, []string, string) (bool, bool, error) {
 				ensureCalls++
 				return true, true, nil
-			},
-			markDispatchedFunc: func(context.Context, int64, int64) error {
-				markDispatchedCalls++
-				return nil
-			},
-			markSentFunc: func(context.Context, int64, int64) error {
-				markSentCalls++
-				return nil
 			},
 		},
 		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
@@ -422,14 +412,8 @@ func TestSendNotification_ExecuteBatch_SendsSingleTelegramBatch(t *testing.T) {
 	if ensureCalls != 2 {
 		t.Fatalf("EnsurePending calls=%d, want 2", ensureCalls)
 	}
-	if sendCalls != 1 {
-		t.Fatalf("send calls=%d, want 1", sendCalls)
-	}
-	if markDispatchedCalls != 2 {
-		t.Fatalf("MarkDispatched calls=%d, want 2", markDispatchedCalls)
-	}
-	if markSentCalls != 2 {
-		t.Fatalf("MarkSent calls=%d, want 2", markSentCalls)
+	if sendCalls != 0 {
+		t.Fatalf("send calls=%d, want 0", sendCalls)
 	}
 }
 

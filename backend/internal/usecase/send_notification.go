@@ -127,7 +127,7 @@ func (u *SendNotification) Execute(
 }
 
 // ExecuteBatch обрабатывает batch кандидатов: дедупликация через EnsurePending для каждого job,
-// проверка свежести и немедленная batch-отправка, если configured notifier доступен.
+// проверка свежести и отложенная доставка через суточный digest.
 func (u *SendNotification) ExecuteBatch(
 	ctx context.Context,
 	userID int64,
@@ -211,70 +211,15 @@ func (u *SendNotification) ExecuteBatch(
 		return nil
 	}
 
-	if u.notifier == nil {
-		slog.Debug("send batch notification: pending, deferred to accumulation cron", "user_id", userID, "jobs", len(deliverable))
-		return nil
-	}
-
-	selected, err := u.selectBatchWithinDailyCap(ctx, userID, deliverable)
-	if err != nil {
-		return err
-	}
-	if len(selected) == 0 {
-		slog.Info("send batch notification: daily cap reached, batch moved to missed", "user_id", userID, "source", source)
-		return nil
-	}
-
-	payloadItems := make([]port.BatchNotifyItem, 0, len(selected))
-	for index, meta := range selected {
-		payloadItems = append(payloadItems, port.BatchNotifyItem{
-			Job:           meta.job,
-			WhyItFits:     meta.whyItFits,
-			Rank:          index + 1,
-			FinalScore:    meta.finalScore,
-			RankerVersion: meta.rankerVersion,
-			ReasonCodes:   meta.reasonCodes,
-		})
-	}
-
-	dispatched := make([]batchItemMeta, 0, len(selected))
-	for _, meta := range selected {
-		if err := u.notifRepo.MarkDispatched(ctx, userID, meta.job.ID); err != nil {
-			for _, dispatchedItem := range dispatched {
-				if markErr := u.notifRepo.MarkFailed(ctx, userID, dispatchedItem.job.ID); markErr != nil {
-					slog.Error("send batch notification: rollback dispatched status failed", "user_id", userID, "job_id", dispatchedItem.job.ID, "err", markErr)
-				}
-			}
-			return err
-		}
-		dispatched = append(dispatched, meta)
-	}
-
-	payload := port.NotifyPayload{
-		Source:     source,
-		Batch:      payloadItems,
-		BatchScore: batchScore,
-	}
-	if err := u.notifier.Send(ctx, user.TelegramID, payload); err != nil {
-		for _, meta := range selected {
-			if markErr := u.notifRepo.MarkFailed(ctx, userID, meta.job.ID); markErr != nil {
-				slog.Error("send batch notification: mark failed after telegram error", "user_id", userID, "job_id", meta.job.ID, "err", markErr)
-			}
-		}
-		return err
-	}
-
-	for _, meta := range selected {
-		if err := u.notifRepo.MarkSent(ctx, userID, meta.job.ID); err != nil {
-			slog.Error("send batch notification: mark sent failed", "user_id", userID, "job_id", meta.job.ID, "err", err)
-			continue
-		}
-		if err := u.recordNotificationSent(ctx, userID, meta.job, source); err != nil {
-			slog.Warn("send batch notification: record product event failed", "user_id", userID, "job_id", meta.job.ID, "err", err)
-		}
-	}
-
-	slog.Info("send batch notification: sent", "user_id", userID, "source", source, "jobs", len(selected))
+	// Batch notifications are accumulated in `notifications` and emitted by the
+	// digest path so users receive one clean list instead of multiple ad-hoc sends.
+	slog.Info(
+		"send batch notification: deferred to digest",
+		"user_id", userID,
+		"source", source,
+		"jobs", len(deliverable),
+		"batch_score", batchScore,
+	)
 	return nil
 }
 

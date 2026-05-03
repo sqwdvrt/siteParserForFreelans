@@ -101,9 +101,13 @@ func (d *DailyDigest) sendDigestForUser(ctx context.Context, userID int64) error
 	if err != nil {
 		return err
 	}
-	remaining := d.maxPerDay - countToday
+	if countToday > 0 {
+		slog.Debug("daily digest: already sent today", "user_id", userID, "sent_jobs", countToday)
+		return nil
+	}
+	remaining := d.maxPerDay
 	if remaining <= 0 {
-		slog.Debug("daily digest: daily limit already reached", "user_id", userID)
+		slog.Debug("daily digest: daily batch size is zero", "user_id", userID)
 		return nil
 	}
 	if recoverErr := d.recoverMissedNotifications(ctx, userID, remaining); recoverErr != nil {
@@ -159,8 +163,9 @@ func (d *DailyDigest) sendDigestForUser(ctx context.Context, userID int64) error
 	}
 
 	payload := port.NotifyPayload{
-		Source: "digest",
-		Batch:  items,
+		Source:     "digest",
+		Batch:      items,
+		BatchScore: batchScoreFromDigestItems(items),
 	}
 	for _, jobID := range delivered {
 		if err := d.notifRepo.MarkDispatched(ctx, userID, jobID); err != nil {
@@ -266,4 +271,19 @@ func (d *DailyDigest) recordNotificationSent(ctx context.Context, userID int64, 
 			"delivery_mode": deliveryMode,
 		},
 	})
+}
+
+func batchScoreFromDigestItems(items []port.BatchNotifyItem) float64 {
+	if len(items) == 0 {
+		return 0
+	}
+	total := 0.0
+	for _, item := range items {
+		score := item.FinalScore
+		if score <= 1 {
+			score *= 10.0
+		}
+		total += score
+	}
+	return total / float64(len(items))
 }
