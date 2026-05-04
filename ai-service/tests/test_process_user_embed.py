@@ -54,9 +54,20 @@ def test_execute_saves_embedding_and_enqueues_rematch() -> None:
     assert uc.execute(1) is True
     embedding.encode.assert_called_once()
     encoded_text = embedding.encode.call_args.args[0]
-    assert "Тип работы: web" in encoded_text
-    assert "Опыт (лет): 6.0" in encoded_text
-    assert "Стек: python, postgresql" in encoded_text
+    user_repo.upsert_structured_profile.assert_called_once_with(
+        1,
+        stack=("python", "postgresql"),
+        specialization="backend",
+        level="senior",
+    )
+    user_repo.backfill_preferences_from_profile_parse.assert_called_once_with(
+        1,
+        include_keywords=("python", "postgresql"),
+        min_budget_hint=None,
+    )
+    assert "Технологии и стек: python, postgresql" in encoded_text
+    assert "Специализация: backend" in encoded_text
+    assert "Уровень: senior" in encoded_text
     user_repo.save_embedding.assert_called_once_with(1, [0.1] * 384)
     rematch_queue.enqueue.assert_called_once_with(1)
 
@@ -109,12 +120,12 @@ def test_execute_enriches_profile_and_backfills_preferences() -> None:
     assert "Senior Python backend developer" in encoded_text
 
 
-def test_execute_continues_with_plain_embedding_when_profile_parse_fails() -> None:
+def test_execute_falls_back_to_local_structured_enrichment_when_profile_parse_fails() -> None:
     user_repo = MagicMock()
     user_repo.get_by_id.return_value = User(
         id=9,
         telegram_id=999,
-        profile_text="Python developer with Django",
+        profile_text="Специализация: Backend-разработка. Уровень опыта: Lead / Architect. Навыки: Python, Go.",
         embedding=None,
     )
     embedding = MagicMock()
@@ -132,8 +143,60 @@ def test_execute_continues_with_plain_embedding_when_profile_parse_fails() -> No
 
     assert uc.execute(9) is True
 
-    user_repo.upsert_structured_profile.assert_not_called()
-    user_repo.backfill_preferences_from_profile_parse.assert_not_called()
+    user_repo.upsert_structured_profile.assert_called_once_with(
+        9,
+        stack=("python", "go"),
+        specialization="backend",
+        level="senior",
+    )
+    user_repo.backfill_preferences_from_profile_parse.assert_called_once_with(
+        9,
+        include_keywords=("python", "go"),
+        min_budget_hint=None,
+    )
     encoded_text = embedding.encode.call_args.args[0]
-    assert "Python developer with Django" in encoded_text
-    assert "Технологии и стек:" not in encoded_text
+    assert "Технологии и стек: python, go" in encoded_text
+    assert "Специализация: backend" in encoded_text
+    assert "Уровень: senior" in encoded_text
+
+
+def test_execute_overrides_parser_specialization_when_mobile_signals_are_obvious() -> None:
+    user_repo = MagicMock()
+    user_repo.get_by_id.return_value = User(
+        id=11,
+        telegram_id=777,
+        profile_text=(
+            "Разработчик мобильных приложений. "
+            "Работаю с Flutter, Kotlin и Android SDK."
+        ),
+        embedding=None,
+    )
+    embedding = MagicMock()
+    embedding.encode.return_value = [0.4] * 384
+    rematch_queue = MagicMock()
+    parser = MagicMock()
+    parser.parse.return_value = {
+        "stack": ["flutter", "kotlin"],
+        "specialization": "backend",
+        "level": "middle",
+        "preferred_work_type": "remote",
+        "min_budget_hint": None,
+    }
+
+    uc = ProcessUserEmbedUseCase(
+        user_repo,
+        embedding,
+        rematch_queue,
+        profile_parser=parser,
+    )
+
+    assert uc.execute(11) is True
+
+    user_repo.upsert_structured_profile.assert_called_once_with(
+        11,
+        stack=("flutter", "kotlin"),
+        specialization="mobile",
+        level="middle",
+    )
+    encoded_text = embedding.encode.call_args.args[0]
+    assert "Специализация: mobile" in encoded_text

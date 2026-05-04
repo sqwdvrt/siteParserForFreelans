@@ -214,6 +214,7 @@ func main() {
 	r.Get("/readyz", readyz(pool, redisHealth))
 	r.Handle("/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 	r.Post("/users", handlers.PostUsers)
+	r.Get("/users/{id}", handlers.GetUser)
 	r.Put("/users/{id}/profile", handlers.PutUserProfile)
 	r.Put("/users/{id}/notify-hour", handlers.PutUserNotifyHour)
 	r.Put("/users/{id}/pause", handlers.PutUserPause)

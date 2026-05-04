@@ -147,6 +147,15 @@ ONBOARDING_RATE: dict[str, str] = {
 }
 
 _ONBOARDING_MIN_PROFILE_LEN = 80
+_PROFILE_MIN_TEXT_LEN = 50
+_PROFILE_MIN_WORD_COUNT = 5
+_PROFILE_PLACEHOLDER_MARKERS = (
+    "test profile",
+    "test freelancer",
+    "placeholder",
+    "profile check",
+    "example profile",
+)
 
 
 def _read_positive_int_env(name: str, default: int) -> int:
@@ -2087,6 +2096,17 @@ def _maybe_send_profile_quality_hint(token: str, chat_id: int, profile_text: str
         )
 
 
+def _profile_text_fails_local_validation(profile_text: str) -> bool:
+    trimmed = str(profile_text or "").strip()
+    if len(trimmed) < _PROFILE_MIN_TEXT_LEN:
+        return True
+    word_count = sum(1 for part in trimmed.split() if len(part) >= 2)
+    if word_count < _PROFILE_MIN_WORD_COUNT:
+        return True
+    lower = trimmed.lower()
+    return any(marker in lower for marker in _PROFILE_PLACEHOLDER_MARKERS)
+
+
 def _onboarding_handle_callback(
     data: str,
     token: str,
@@ -2242,6 +2262,15 @@ def _onboarding_handle_callback(
     elif data == "ob:confirm":
         ob = _parse_onboarding_state(_get_conversation_state(telegram_id)) or ob
         profile_text = _build_onboarding_profile_text(ob)
+        if _profile_text_fails_local_validation(profile_text):
+            _record_command("onboarding", "invalid_profile")
+            send_message(
+                token,
+                chat_id,
+                "Профиль получился слишком коротким или похож на тестовую заглушку. "
+                "Добавьте стек, опыт и тип задач, которые вам интересны.",
+            )
+            return
         user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
         if user_id is None:
             _record_command("onboarding", "resolve_failed")
@@ -3538,6 +3567,15 @@ def _handle_profile_submission(
     api_auth_token: str,
     api_user_hmac_secret: str,
 ) -> bool:
+    if _profile_text_fails_local_validation(profile_text):
+        _record_command("profile", "invalid")
+        send_message(
+            token,
+            chat_id,
+            "Профиль слишком короткий или похож на тестовую заглушку. "
+            "Опишите навыки, стек, опыт и типы задач, которые вам интересны.",
+        )
+        return True
     user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
     if user_id is None:
         _record_command("profile", "resolve_failed")

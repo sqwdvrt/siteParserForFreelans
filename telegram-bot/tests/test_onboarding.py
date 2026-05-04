@@ -591,6 +591,41 @@ def test_ob_confirm_sends_invalid_profile_message_on_400(bot, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# _handle_profile_submission — local validation before backend call
+# ---------------------------------------------------------------------------
+
+def test_handle_profile_submission_rejects_short_profile_without_backend_call(bot, monkeypatch):
+    send_calls: list[str] = []
+
+    monkeypatch.setattr(bot, "_resolve_user_id", lambda *a, **kw: 7)
+    monkeypatch.setattr(
+        bot,
+        "put_user_profile_status",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("backend call must be skipped for invalid profile")),
+    )
+    monkeypatch.setattr(
+        bot,
+        "send_message",
+        lambda token, chat_id, text, **kw: send_calls.append(text),
+    )
+    monkeypatch.setattr(bot, "_record_command", lambda *a: None)
+
+    result = bot._handle_profile_submission(
+        "bot-token",
+        100,
+        42,
+        "Flutter mobile",
+        "https://api.example.com",
+        "tok",
+        "h" * 32,
+    )
+
+    assert result is True
+    assert len(send_calls) == 1
+    assert "короткий" in send_calls[0].lower()
+
+
+# ---------------------------------------------------------------------------
 # ob:edit callback — switch to manual text entry
 # ---------------------------------------------------------------------------
 

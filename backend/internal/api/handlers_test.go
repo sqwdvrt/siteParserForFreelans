@@ -491,6 +491,72 @@ func TestHandlers_PutUserProfile_RecordsCompletionForFirstProfile(t *testing.T) 
 	}
 }
 
+func TestHandlers_GetUserProfile_Success(t *testing.T) {
+	profileText := "Flutter/Kotlin mobile developer with Android and cross-platform projects."
+	hour := int16(9)
+	repo := &mockUserRepo{
+		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+			return &domain.User{
+				ID:         userID,
+				TelegramID: 123456789,
+				ProfileText: &profileText,
+				IsPro:      true,
+				NotifyHour: &hour,
+			}, nil
+		},
+	}
+	h := &Handlers{UserRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+
+	req := newJSONRequest(
+		http.MethodGet,
+		"/users/1",
+		nil,
+		newAuthHeadersWithUserSign(http.MethodGet, "/users/1", 123456789, nil),
+	)
+	req = attachRouteUserID(req, "1")
+	rr := httptest.NewRecorder()
+
+	h.GetUser(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := resp["profile_text"]; got != profileText {
+		t.Fatalf("profile_text = %v, want %q", got, profileText)
+	}
+	if got := resp["is_pro"]; got != true {
+		t.Fatalf("is_pro = %v, want true", got)
+	}
+}
+
+func TestHandlers_GetUserProfile_NotFound(t *testing.T) {
+	repo := &mockUserRepo{
+		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+			return nil, nil
+		},
+	}
+	h := &Handlers{UserRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+
+	req := newJSONRequest(
+		http.MethodGet,
+		"/users/404",
+		nil,
+		newAuthHeadersWithUserSign(http.MethodGet, "/users/404", 123456789, nil),
+	)
+	req = attachRouteUserID(req, "404")
+	rr := httptest.NewRecorder()
+
+	h.GetUser(rr, req)
+
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rr.Code)
+	}
+}
+
 func TestHandlers_PutUserProfile_InvalidID(t *testing.T) {
 	h := &Handlers{UserRepo: &mockUserRepo{}, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
 

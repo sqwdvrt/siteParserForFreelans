@@ -236,6 +236,45 @@ type UserPreferencesResponse struct {
 	IsPro            bool     `json:"is_pro"`
 }
 
+// UserResponse — ответ GET /users/:id.
+type UserResponse struct {
+	ProfileText string     `json:"profile_text"`
+	IsPro       bool       `json:"is_pro"`
+	NotifyHour  *int16     `json:"notify_hour,omitempty"`
+	PausedUntil *time.Time `json:"paused_until,omitempty"`
+}
+
+// GetUser возвращает профиль пользователя для owner-scoped запросов.
+func (h *Handlers) GetUser(w http.ResponseWriter, r *http.Request) {
+	if !h.authorize(w, r) {
+		return
+	}
+	userID, callerTelegramID, ok := h.authorizeOwnedUserRequest(w, r, nil)
+	if !ok {
+		return
+	}
+	user, err := h.UserRepo.GetByID(r.Context(), userID)
+	if err != nil {
+		h.logger().Error("get user failed", "user_id", userID, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	if user == nil {
+		http.Error(w, "user not found", http.StatusNotFound)
+		return
+	}
+	if user.TelegramID != callerTelegramID {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	writeJSON(w, UserResponse{
+		ProfileText: strings.TrimSpace(derefString(user.ProfileText)),
+		IsPro:       user.IsPro,
+		NotifyHour:  user.NotifyHour,
+		PausedUntil: user.PausedUntil,
+	})
+}
+
 // PutUserProfile обновляет profile_text пользователя.
 func (h *Handlers) PutUserProfile(w http.ResponseWriter, r *http.Request) {
 	if !h.authorize(w, r) {
@@ -780,6 +819,13 @@ func cloneAndNormalizePreferenceValues(values []string, maxItems int) []string {
 		}
 	}
 	return out
+}
+
+func derefString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func (h *Handlers) authorize(w http.ResponseWriter, r *http.Request) bool {
