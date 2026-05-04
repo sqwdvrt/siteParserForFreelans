@@ -497,11 +497,11 @@ func TestHandlers_GetUserProfile_Success(t *testing.T) {
 	repo := &mockUserRepo{
 		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
 			return &domain.User{
-				ID:         userID,
-				TelegramID: 123456789,
+				ID:          userID,
+				TelegramID:  123456789,
 				ProfileText: &profileText,
-				IsPro:      true,
-				NotifyHour: &hour,
+				IsPro:       true,
+				NotifyHour:  &hour,
 			}, nil
 		},
 	}

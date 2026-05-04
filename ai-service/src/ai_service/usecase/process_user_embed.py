@@ -107,7 +107,12 @@ class ProcessUserEmbedUseCase:
 
 def _fallback_structured_profile(profile_text: str) -> dict[str, object] | None:
     structured = extract_structured_profile(profile_text)
-    if not structured.stack and structured.experience_years is None and structured.desired_budget_min is None and structured.work_type is None:
+    if (
+        not structured.stack
+        and structured.experience_years is None
+        and structured.desired_budget_min is None
+        and structured.work_type is None
+    ):
         return None
 
     lower = str(profile_text or "").lower()
