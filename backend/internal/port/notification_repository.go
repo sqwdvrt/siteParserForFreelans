@@ -63,6 +63,9 @@ type NotificationRepository interface {
 	// (status='dispatched'/'sent') за текущие сутки (UTC).
 	CountToday(ctx context.Context, userID int64) (int, error)
 
+	// CountMissedToday returns notifications hidden by daily cap in current UTC day.
+	CountMissedToday(ctx context.Context, userID int64) (int, error)
+
 	// GetPendingForUser возвращает все pending-записи пользователя для дайджеста.
 	GetPendingForUser(ctx context.Context, userID int64) ([]PendingNotification, error)
 

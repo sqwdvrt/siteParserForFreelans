@@ -24,4 +24,6 @@ type UserRepository interface {
 	UpsertPreferencesScoped(ctx context.Context, userID int64, prefs domain.UserPreferences) error
 	// GetProUsersWithNotifyHour возвращает IDs pro-пользователей с заданным notify_hour (Europe/Moscow).
 	GetProUsersWithNotifyHour(ctx context.Context, hour int) ([]int64, error)
+	// GetUsersWithProExpiryBetween returns users whose pro_expires_at falls into [from, to).
+	GetUsersWithProExpiryBetween(ctx context.Context, from, to time.Time) ([]*domain.User, error)
 }

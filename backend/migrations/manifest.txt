@@ -30,3 +30,4 @@
 029_ann_metadata_filtering.sql
 030_notifications_missed.sql
 031_user_profile_structured.sql
+032_users_pro_expiry.sql

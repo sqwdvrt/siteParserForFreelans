@@ -326,10 +326,10 @@ BRPOP match-notify
     ────────────────────────────
     backend-notifier (cron, каждый час)
         → MSK hour = time.Now().In(Moscow).Hour()
-        → SELECT users WHERE is_pro AND notify_hour = MSK_hour
+        → SELECT users WHERE is_pro AND pro_expires_at > NOW() AND notify_hour = MSK_hour
         → для каждого пользователя:
             pending = GetPendingForUser (статус 'pending')
-            ограничить до remaining = maxPerDay - CountToday
+            ограничить до remaining = planDailyCap - CountToday
             загрузить jobs (GetByIDs)
             Telegram: batch sendMessage
             MarkSent
@@ -365,6 +365,13 @@ BRPOP match-notify
 - `notify_hour_updated`
 - `feedback_submitted`
 - `notification_sent`
+- `pro_upgrade_requested`
+- `pro_activated`
+- `pro_renewed`
+- `pro_expired`
+- `pro_renewal_reminder_sent`
+- `free_cap_hit`
+- `free_hidden_by_cap`
 
 Ключевые поля события:
 
@@ -407,6 +414,7 @@ id            BIGSERIAL PK
 telegram_id   BIGINT UNIQUE
 profile_text  TEXT
 is_pro        BOOLEAN DEFAULT FALSE
+pro_expires_at TIMESTAMPTZ   -- active Pro только пока is_pro=true и срок в будущем
 notify_hour   SMALLINT       -- 0-23 (МСК), NULL = не задан
 created_at    TIMESTAMPTZ
 updated_at    TIMESTAMPTZ
@@ -575,6 +583,8 @@ signature = HMAC-SHA256(
 | GET    | `/admin/stats`      | Статистика системы   |
 | GET    | `/admin/users`      | Список пользователей |
 | GET    | `/admin/users/{id}` | Данные пользователя  |
+| PUT    | `/admin/users/{id}/pro` | Включить/продлить/выключить Pro по user id |
+| PUT    | `/admin/telegram-users/{telegram_id}/pro` | Включить/продлить/выключить Pro по Telegram id |
 | DELETE | `/admin/users/{id}` | Удалить пользователя |
 | GET    | `/admin/jobs`       | Список проектов      |
 
@@ -666,8 +676,11 @@ signature = HMAC-SHA256(
 | `TELEGRAM_BOT_TOKEN`                 | —              | ✓ (≥20 chars)                    |
 | `MATCH_NOTIFY_QUEUE`                 | `match-notify` | Имя очереди                      |
 | `NOTIFY_RATE_LIMIT_SEC`              | `300`          | 5 мин между уведомлениями (free) |
-| `NOTIFY_PRO_MAX_PER_DAY`             | `5`            | Лимит в сутки (pro дайджест)     |
+| `NOTIFY_FREE_MAX_PER_DAY`            | `5`            | Лимит в сутки для Free           |
+| `NOTIFY_PRO_MAX_PER_DAY`             | `25`           | Лимит в сутки для Pro            |
+| `NOTIFY_MAX_PER_DAY`                 | `5`            | Legacy fallback для лимитов      |
 | `DIGEST_CRON`                        | `0 * * * `*    | Расписание дайджеста             |
+| `PRO_RENEWAL_CRON`                   | `15 9 * * *`   | Расписание renewal reminder      |
 | `NOTIFIER_MAX_RETRIES`               | `3`            | Retry Telegram                   |
 | `NOTIFIER_BREAKER_FAILURE_THRESHOLD` | `3`            | Circuit breaker порог            |
 | `NOTIFIER_BREAKER_OPEN_INTERVAL`     | `30s`          | Circuit breaker cooldown         |
@@ -831,10 +844,23 @@ $PROD_COMPOSE up -d --no-build
 
 ### Активация Pro для пользователя
 
-Платёжный шлюз не интегрирован — Pro устанавливается вручную через БД:
+Платёжный шлюз в v1 не интегрирован. Pro включается вручную администратором на 30 дней:
+
+```text
+/admin_pro 123456789 on 30
+/admin_pro 123456789 off
+```
+
+Команда доступна только `ADMIN_TELEGRAM_ID` и вызывает admin API с `ADMIN_AUTH_TOKEN`.
+В пользовательском UX self-serve path идёт через Telegram: `/pro`, renewal reminders и cap-hit сообщения показывают кнопку `Хочу Pro`, а backend записывает `pro_upgrade_requested` в `product_events`.
+
+Emergency fallback через SQL:
 
 ```sql
-UPDATE users SET is_pro = TRUE WHERE telegram_id = 123456789;
+UPDATE users
+SET is_pro = TRUE,
+    pro_expires_at = NOW() + INTERVAL '30 days'
+WHERE telegram_id = 123456789;
 ```
 
 ---
@@ -921,11 +947,11 @@ docker compose --env-file .env.production \
 - Проект никогда не отправится одному пользователю дважды
 - `EnsurePending`: INSERT ... ON CONFLICT DO NOTHING → wasInserted=false, shouldSend=false → пропустить
 
-### Rate limiting (Free пользователи)
+### Rate limiting
 
 ```
-SentRecently(5 мин) → да → пропустить (удалить pending)
-CountToday ≥ 5      → да → пропустить (удалить pending)
+Free: CountToday ≥ 5   → лишнее в missed
+Pro:  CountToday ≥ 25  → лишнее в missed
 ```
 
 Pending-запись удаляется, чтобы не накапливать «просроченные» уведомления.
@@ -935,7 +961,7 @@ Pending-запись удаляется, чтобы не накапливать 
 ```
 Каждый час (cron):
   MSK_hour = now().In("Europe/Moscow").Hour()
-  users = SELECT id FROM users WHERE is_pro AND notify_hour = MSK_hour
+  users = SELECT id FROM users WHERE is_pro AND pro_expires_at > NOW() AND notify_hour = MSK_hour
 
   для каждого user:
     already_sent = CountToday(user)

@@ -146,6 +146,26 @@ def test_put_user_pause_status_returns_status_code(bot, monkeypatch):
     assert status == 204
 
 
+def test_post_pro_upgrade_intent_returns_status_code(bot, monkeypatch):
+    calls = []
+    monkeypatch.setattr(bot, "_http_post", lambda url, payload, **kwargs: calls.append((url, payload, kwargs)) or (204, None))
+
+    status = bot.post_pro_upgrade_intent(
+        "https://api.example.com",
+        7,
+        123,
+        "telegram_pro_screen",
+        "tok",
+        "hmac",
+    )
+
+    assert status == 204
+    assert len(calls) == 1
+    assert calls[0][0] == "https://api.example.com/users/7/pro-upgrade-intent"
+    assert calls[0][1] == {"source": "telegram_pro_screen"}
+    assert "Authorization" in calls[0][2]["headers"]
+
+
 def test_debug_match_helper_formats_payload(bot):
     from handlers.debug import format_debug_match_message
 

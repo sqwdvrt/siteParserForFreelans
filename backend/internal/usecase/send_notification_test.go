@@ -20,6 +20,7 @@ type mockNotifRepo struct {
 	deleteFunc             func(ctx context.Context, userID, jobID int64) error
 	sentRecentlyFunc       func(ctx context.Context, userID int64, within time.Duration) (bool, error)
 	countTodayFunc         func(ctx context.Context, userID int64) (int, error)
+	countMissedTodayFunc   func(ctx context.Context, userID int64) (int, error)
 	claimPendingDigestFunc func(ctx context.Context, userID int64, limit int) ([]port.PendingNotification, error)
 	getFreeUsersFunc       func(ctx context.Context) ([]int64, error)
 	deleteCalls            [][2]int64
@@ -114,6 +115,13 @@ func (m *mockNotifRepo) CountToday(ctx context.Context, userID int64) (int, erro
 	return 0, nil
 }
 
+func (m *mockNotifRepo) CountMissedToday(ctx context.Context, userID int64) (int, error) {
+	if m.countMissedTodayFunc != nil {
+		return m.countMissedTodayFunc(ctx, userID)
+	}
+	return 0, nil
+}
+
 func (m *mockNotifRepo) CancelPendingByJobIDs(ctx context.Context, jobIDs []int64) (int64, error) {
 	_ = ctx
 	_ = jobIDs
@@ -158,6 +166,9 @@ func (m *mockUserRepo) UpsertPreferencesScoped(ctx context.Context, userID int64
 func (m *mockUserRepo) GetProUsersWithNotifyHour(ctx context.Context, hour int) ([]int64, error) {
 	return nil, nil
 }
+func (m *mockUserRepo) GetUsersWithProExpiryBetween(ctx context.Context, from, to time.Time) ([]*domain.User, error) {
+	return nil, nil
+}
 
 type mockJobRepo struct {
 	getByIDFunc  func(ctx context.Context, id int64) (*domain.Job, error)
@@ -200,13 +211,32 @@ func (m *mockJobRepo) ExpireByURL(ctx context.Context, url string) ([]int64, err
 
 type mockNotifier struct {
 	sendFunc func(ctx context.Context, telegramID int64, p port.NotifyPayload) error
+	payloads []port.NotifyPayload
 }
 
 func (m *mockNotifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayload) error {
+	m.payloads = append(m.payloads, p)
 	if m.sendFunc != nil {
 		return m.sendFunc(ctx, telegramID, p)
 	}
 	return nil
+}
+
+type mockEventRepo struct {
+	recorded   []port.ProductEvent
+	existsFunc func(ctx context.Context, userID int64, eventType port.ProductEventType, since time.Time, propertyKey, propertyValue string) (bool, error)
+}
+
+func (m *mockEventRepo) Record(ctx context.Context, event port.ProductEvent) error {
+	m.recorded = append(m.recorded, event)
+	return nil
+}
+
+func (m *mockEventRepo) ExistsSince(ctx context.Context, userID int64, eventType port.ProductEventType, since time.Time, propertyKey, propertyValue string) (bool, error) {
+	if m.existsFunc != nil {
+		return m.existsFunc(ctx, userID, eventType, since, propertyKey, propertyValue)
+	}
+	return false, nil
 }
 
 // --- Execute tests ---
@@ -430,6 +460,149 @@ func TestSendNotification_ExecuteBatch_SendsSingleTelegramBatch(t *testing.T) {
 	}
 	if markSentCalls != 2 {
 		t.Fatalf("MarkSent calls=%d, want 2", markSentCalls)
+	}
+}
+
+func TestSendNotification_ExecuteBatch_UsesFreeDailyCap(t *testing.T) {
+	var sent int
+	notifRepo := &mockNotifRepo{
+		countTodayFunc: func(context.Context, int64) (int, error) { return 4, nil },
+		markSentFunc: func(context.Context, int64, int64) error {
+			sent++
+			return nil
+		},
+	}
+	uc := NewSendNotification(
+		notifRepo,
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 888, IsPro: false}, nil
+		}},
+		&mockJobRepo{},
+	).
+		WithNotifier(&mockNotifier{}).
+		WithDailyCaps(5, 25)
+
+	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{
+		{JobID: 10, Rank: 1},
+		{JobID: 20, Rank: 2},
+	}, 7.2, "ac")
+	if err != nil {
+		t.Fatalf("ExecuteBatch: %v", err)
+	}
+	if sent != 1 {
+		t.Fatalf("sent=%d, want 1 under free cap", sent)
+	}
+	if len(notifRepo.markMissedCalls) != 1 || notifRepo.markMissedCalls[0][1] != 20 {
+		t.Fatalf("missed calls=%v, want job 20 missed", notifRepo.markMissedCalls)
+	}
+}
+
+func TestSendNotification_ExecuteBatch_UsesActiveProDailyCap(t *testing.T) {
+	expiresAt := time.Now().UTC().Add(24 * time.Hour)
+	var sent int
+	notifRepo := &mockNotifRepo{
+		countTodayFunc: func(context.Context, int64) (int, error) { return 24, nil },
+		markSentFunc: func(context.Context, int64, int64) error {
+			sent++
+			return nil
+		},
+	}
+	uc := NewSendNotification(
+		notifRepo,
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 888, IsPro: true, ProExpiresAt: &expiresAt}, nil
+		}},
+		&mockJobRepo{},
+	).
+		WithNotifier(&mockNotifier{}).
+		WithDailyCaps(5, 25)
+
+	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{
+		{JobID: 10, Rank: 1},
+		{JobID: 20, Rank: 2},
+	}, 7.2, "ac")
+	if err != nil {
+		t.Fatalf("ExecuteBatch: %v", err)
+	}
+	if sent != 1 {
+		t.Fatalf("sent=%d, want 1 remaining under Pro cap", sent)
+	}
+	if len(notifRepo.markMissedCalls) != 1 || notifRepo.markMissedCalls[0][1] != 20 {
+		t.Fatalf("missed calls=%v, want job 20 missed", notifRepo.markMissedCalls)
+	}
+}
+
+func TestSendNotification_ExecuteBatch_ExpiredProFallsBackToFreeDailyCap(t *testing.T) {
+	expiresAt := time.Now().UTC().Add(-time.Minute)
+	notifRepo := &mockNotifRepo{
+		countTodayFunc:       func(context.Context, int64) (int, error) { return 5, nil },
+		countMissedTodayFunc: func(context.Context, int64) (int, error) { return 1, nil },
+	}
+	notifier := &mockNotifier{}
+	uc := NewSendNotification(
+		notifRepo,
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 1, TelegramID: 888, IsPro: true, ProExpiresAt: &expiresAt}, nil
+		}},
+		&mockJobRepo{},
+	).
+		WithNotifier(notifier).
+		WithDailyCaps(5, 25)
+
+	err := uc.ExecuteBatch(context.Background(), 1, []port.BatchJobItem{{JobID: 10, Rank: 1}}, 7.2, "ac")
+	if err != nil {
+		t.Fatalf("ExecuteBatch: %v", err)
+	}
+	if len(notifier.payloads) != 1 {
+		t.Fatalf("payloads=%d want 1 cap-hit nudge", len(notifier.payloads))
+	}
+	if len(notifier.payloads[0].Batch) != 0 || notifier.payloads[0].Job != nil {
+		t.Fatal("expired Pro must not receive over-cap job delivery")
+	}
+	if len(notifRepo.markMissedCalls) != 1 {
+		t.Fatalf("missed calls=%v, want one missed notification", notifRepo.markMissedCalls)
+	}
+}
+
+func TestSendNotification_ExecuteBatch_SendsCapHitUpgradeNudgeForFreeUser(t *testing.T) {
+	notifRepo := &mockNotifRepo{
+		countTodayFunc:       func(context.Context, int64) (int, error) { return 5, nil },
+		countMissedTodayFunc: func(context.Context, int64) (int, error) { return 3, nil },
+	}
+	notifier := &mockNotifier{}
+	eventRepo := &mockEventRepo{}
+	uc := NewSendNotification(
+		notifRepo,
+		&mockUserRepo{getByIDFunc: func(context.Context, int64) (*domain.User, error) {
+			return &domain.User{ID: 42, TelegramID: 777}, nil
+		}},
+		&mockJobRepo{},
+	).
+		WithNotifier(notifier).
+		WithProductEventRepo(eventRepo).
+		WithDailyCaps(5, 25)
+
+	err := uc.ExecuteBatch(context.Background(), 42, []port.BatchJobItem{
+		{JobID: 1, FinalScore: 0.9, WhyItFits: "Go"},
+		{JobID: 2, FinalScore: 0.8, WhyItFits: "Postgres"},
+	}, 0.88, "ai")
+	if err != nil {
+		t.Fatalf("ExecuteBatch err=%v", err)
+	}
+	if len(notifier.payloads) != 1 {
+		t.Fatalf("notifier payloads=%d want 1", len(notifier.payloads))
+	}
+	if !strings.Contains(notifier.payloads[0].Text, "Лимит Free") {
+		t.Fatalf("cap hit text=%q", notifier.payloads[0].Text)
+	}
+	if len(eventRepo.recorded) != 2 {
+		t.Fatalf("events=%d want 2", len(eventRepo.recorded))
+	}
+	if eventRepo.recorded[0].Type != port.ProductEventFreeHiddenByCap {
+		t.Fatalf("first event=%q want %q", eventRepo.recorded[0].Type, port.ProductEventFreeHiddenByCap)
+	}
+	if eventRepo.recorded[1].Type != port.ProductEventFreeCapHit {
+		t.Fatalf("second event=%q want %q", eventRepo.recorded[1].Type, port.ProductEventFreeCapHit)
 	}
 }
 

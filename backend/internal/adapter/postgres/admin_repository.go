@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -142,6 +143,8 @@ func (r *AdminRepository) ListUsers(ctx context.Context, limit, offset int) ([]p
 		SELECT
 			u.id,
 			u.telegram_id,
+			u.is_pro AND COALESCE(u.pro_expires_at > NOW(), FALSE) AS is_pro,
+			u.pro_expires_at,
 			u.profile_text IS NOT NULL AND u.profile_text <> ''  AS has_profile,
 			u.embedding IS NOT NULL                               AS has_embedding,
 			u.created_at,
@@ -166,6 +169,7 @@ func (r *AdminRepository) ListUsers(ctx context.Context, limit, offset int) ([]p
 		var profileText *string
 		if err := rows.Scan(
 			&u.ID, &u.TelegramID,
+			&u.IsPro, &u.ProExpiresAt,
 			&u.HasProfile, &u.HasEmbedding,
 			&u.CreatedAt, &u.UpdatedAt,
 			&profileText,
@@ -183,6 +187,14 @@ func (r *AdminRepository) ListUsers(ctx context.Context, limit, offset int) ([]p
 
 // GetUser возвращает одного пользователя по id. nil если не найден.
 func (r *AdminRepository) GetUser(ctx context.Context, userID int64) (*port.AdminUser, error) {
+	return r.getUserByColumn(ctx, "u.id", userID)
+}
+
+func (r *AdminRepository) GetUserByTelegramID(ctx context.Context, telegramID int64) (*port.AdminUser, error) {
+	return r.getUserByColumn(ctx, "u.telegram_id", telegramID)
+}
+
+func (r *AdminRepository) getUserByColumn(ctx context.Context, column string, value int64) (*port.AdminUser, error) {
 	var u port.AdminUser
 	var profileText *string
 
@@ -190,6 +202,8 @@ func (r *AdminRepository) GetUser(ctx context.Context, userID int64) (*port.Admi
 		SELECT
 			u.id,
 			u.telegram_id,
+			u.is_pro AND COALESCE(u.pro_expires_at > NOW(), FALSE) AS is_pro,
+			u.pro_expires_at,
 			u.profile_text IS NOT NULL AND u.profile_text <> ''  AS has_profile,
 			u.embedding IS NOT NULL                               AS has_embedding,
 			u.created_at,
@@ -200,9 +214,10 @@ func (r *AdminRepository) GetUser(ctx context.Context, userID int64) (*port.Admi
 				 WHERE n.user_id = u.id AND n.status IN ('dispatched', 'sent')), 0
 			) AS notifications_sent
 		FROM users u
-		WHERE u.id = $1
-	`, userID).Scan(
+		WHERE `+column+` = $1
+	`, value).Scan(
 		&u.ID, &u.TelegramID,
+		&u.IsPro, &u.ProExpiresAt,
 		&u.HasProfile, &u.HasEmbedding,
 		&u.CreatedAt, &u.UpdatedAt,
 		&profileText,
@@ -218,6 +233,54 @@ func (r *AdminRepository) GetUser(ctx context.Context, userID int64) (*port.Admi
 		u.ProfileSnippet = truncateString(*profileText, adminProfileSnippetLen)
 	}
 	return &u, nil
+}
+
+func (r *AdminRepository) SetUserPro(ctx context.Context, userID int64, enabled bool, days int) (bool, *time.Time, error) {
+	return r.setUserPro(ctx, "id", userID, enabled, days)
+}
+
+func (r *AdminRepository) SetUserProByTelegramID(ctx context.Context, telegramID int64, enabled bool, days int) (bool, *time.Time, error) {
+	return r.setUserPro(ctx, "telegram_id", telegramID, enabled, days)
+}
+
+func (r *AdminRepository) setUserPro(ctx context.Context, column string, value int64, enabled bool, days int) (bool, *time.Time, error) {
+	if !enabled {
+		var id int64
+		err := r.pool.QueryRow(ctx, `
+			UPDATE users
+			SET is_pro = FALSE,
+			    pro_expires_at = NULL,
+			    updated_at = NOW()
+			WHERE `+column+` = $1
+			RETURNING id
+		`, value).Scan(&id)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, nil, nil
+		}
+		if err != nil {
+			return false, nil, err
+		}
+		return true, nil, nil
+	}
+	if days <= 0 {
+		days = 30
+	}
+	var expiresAt time.Time
+	err := r.pool.QueryRow(ctx, `
+		UPDATE users
+		SET is_pro = TRUE,
+		    pro_expires_at = GREATEST(COALESCE(pro_expires_at, NOW()), NOW()) + ($2::int * INTERVAL '1 day'),
+		    updated_at = NOW()
+		WHERE `+column+` = $1
+		RETURNING pro_expires_at
+	`, value, days).Scan(&expiresAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil, nil
+	}
+	if err != nil {
+		return false, nil, err
+	}
+	return true, &expiresAt, nil
 }
 
 // DeleteUser удаляет пользователя по id. bool=true если запись была найдена и удалена.

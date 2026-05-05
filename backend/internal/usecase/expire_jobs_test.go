@@ -61,6 +61,9 @@ func (m *mockExpireNotifRepo) SentRecently(_ context.Context, _ int64, _ time.Du
 	return false, nil
 }
 func (m *mockExpireNotifRepo) CountToday(_ context.Context, _ int64) (int, error) { return 0, nil }
+func (m *mockExpireNotifRepo) CountMissedToday(_ context.Context, _ int64) (int, error) {
+	return 0, nil
+}
 func (m *mockExpireNotifRepo) GetPendingForUser(_ context.Context, _ int64) ([]port.PendingNotification, error) {
 	return nil, nil
 }

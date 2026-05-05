@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
@@ -34,6 +35,31 @@ func (r *ProductEventRepository) Record(ctx context.Context, event port.ProductE
 		VALUES ($1, NULLIF($2, 0), NULLIF($3, 0), NULLIF($4, ''), $5::jsonb)
 	`, string(event.Type), event.UserID, event.JobID, event.Source, payload)
 	return err
+}
+
+func (r *ProductEventRepository) ExistsSince(
+	ctx context.Context,
+	userID int64,
+	eventType port.ProductEventType,
+	since time.Time,
+	propertyKey,
+	propertyValue string,
+) (bool, error) {
+	var exists bool
+	err := r.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM product_events
+			WHERE user_id = $1
+			  AND event_type = $2
+			  AND created_at >= $3
+			  AND (
+				NULLIF($4, '') IS NULL
+				OR COALESCE(properties ->> $4, '') = $5
+			  )
+		)
+	`, userID, string(eventType), since, propertyKey, propertyValue).Scan(&exists)
+	return exists, err
 }
 
 var _ port.ProductEventRepository = (*ProductEventRepository)(nil)

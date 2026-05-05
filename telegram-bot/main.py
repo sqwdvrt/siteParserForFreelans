@@ -1133,6 +1133,21 @@ def put_user_notify_hour(
     )
 
 
+def put_admin_user_pro_by_telegram_id(
+    api_url: str,
+    telegram_id: int,
+    enabled: bool,
+    days: int | None,
+    admin_auth_token: str,
+) -> int:
+    """PUT /admin/telegram-users/:telegram_id/pro. Returns status code."""
+    url = f"{api_url.rstrip('/')}/admin/telegram-users/{telegram_id}/pro"
+    payload: dict[str, object] = {"enabled": bool(enabled)}
+    if enabled and days is not None:
+        payload["days"] = int(days)
+    return _http_put(url, payload, headers={"Authorization": f"Bearer {admin_auth_token}"})
+
+
 def put_user_pause_status(
     api_url: str,
     user_id: int,
@@ -1151,6 +1166,26 @@ def put_user_pause_status(
             api_auth_token, api_user_hmac_secret, "PUT", url, telegram_id, _json_body(payload)
         ),
     )
+
+
+def post_pro_upgrade_intent(
+    api_url: str,
+    user_id: int,
+    telegram_id: int,
+    source: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> int:
+    """POST /users/:id/pro-upgrade-intent. Returns status code."""
+    url = f"{api_url.rstrip('/')}/users/{user_id}/pro-upgrade-intent"
+    payload = {"source": source}
+    body = _json_body(payload)
+    status, _ = _http_post(
+        url,
+        payload,
+        headers=_signed_user_headers(api_auth_token, api_user_hmac_secret, "POST", url, telegram_id, body),
+    )
+    return status
 
 
 def get_user_preferences(
@@ -1216,6 +1251,20 @@ def get_user_profile_text(
     api_user_hmac_secret: str,
 ) -> str | None:
     """GET /users/:id — returns profile_text string or None on error."""
+    data = get_user_profile(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
+    if not isinstance(data, dict):
+        return None
+    return data.get("profile_text") or ""
+
+
+def get_user_profile(
+    api_url: str,
+    user_id: int,
+    telegram_id: int,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> dict | None:
+    """GET /users/:id — returns full user payload or None on error."""
     url = f"{api_url.rstrip('/')}/users/{user_id}"
     data = _http_get(
         url,
@@ -1224,7 +1273,7 @@ def get_user_profile_text(
     )
     if not isinstance(data, dict):
         return None
-    return data.get("profile_text") or ""
+    return data
 
 
 def get_user_stats(
@@ -2471,7 +2520,7 @@ def _menu_handle_callback(
             return
         is_pro = get_user_is_pro(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
         if is_pro is False:
-            send_message(token, chat_id, "⛔ Выбор часа доступен только Pro-пользователям.")
+            send_message(token, chat_id, "⛔ Выбор часа доступен в Pro.")
             return
         _set_conversation_state(telegram_id, "await_notify_hour")
         _record_command("notify_hour", "prompt")
@@ -2815,7 +2864,18 @@ def _format_status_text(stats: dict) -> str:
     projects_shown = max(0, _to_int_or_default(stats.get("projects_shown"), 0))
     filtered_other = max(0, _to_int_or_default(stats.get("projects_filtered_other"), 0))
     filtered_by_budget = max(0, _to_int_or_default(stats.get("projects_filtered_by_budget"), 0))
+    hidden_by_cap = max(0, _to_int_or_default(stats.get("projects_hidden_by_cap"), 0))
     budget_filter_active = bool(stats.get("budget_filter_active"))
+    plan = str(stats.get("plan") or "free")
+    daily_cap = max(0, _to_int_or_default(stats.get("daily_cap"), 5))
+    plan_label = "Pro" if plan == "pro" else "Free"
+    if plan == "expired_pro":
+        plan_label = "Free (срок Pro закончился)"
+    plan_lines = [f"План: {plan_label}, до {daily_cap} уведомлений в день."]
+    if stats.get("pro_expires_at"):
+        plan_lines.append(f"Срок Pro: {html.escape(str(stats['pro_expires_at'])[:10])}.")
+    if stats.get("notify_hour") is not None:
+        plan_lines.append(f"Час дайджеста: {int(stats['notify_hour']):02d}:00 МСК.")
     budget_line = (
         f"• Бюджетный фильтр отсеял: {filtered_by_budget}"
         if budget_filter_active
@@ -2823,32 +2883,45 @@ def _format_status_text(stats: dict) -> str:
     )
     return (
         "📊 Статус подбора\n\n"
+        + "\n".join(plan_lines)
+        + "\n\n"
         f"За последние {period_days} дней:\n"
         f"• Найдено проектов: {projects_found}\n"
         f"• Отправлено тебе: {projects_shown}\n"
-        f"• Не дошло до тебя: {filtered_other}\n"
+        f"• Отфильтровано вне выдачи: {filtered_other}\n"
         f"{budget_line}\n\n"
-        "Ты ничего не теряешь молча: этот экран показывает, сколько проектов осталось за пределами выдачи."
+        f"• Скрыто дневным лимитом: {hidden_by_cap}\n\n"
+        "Здесь видно, сколько проектов нашлось, сколько дошло до тебя и сколько осталось за пределами выдачи."
     )
 
 
-def _format_pro_overview_text(is_pro: bool | None) -> str:
+def _format_pro_overview_text(user_payload: dict | None) -> str:
+    is_pro = bool(user_payload.get("is_pro")) if isinstance(user_payload, dict) else False
     plan_line = "Текущий план: Pro" if is_pro else "Текущий план: Free"
+    expires_line = ""
+    if isinstance(user_payload, dict) and user_payload.get("pro_expires_at"):
+        expires_line = f"\nСрок действия: до {html.escape(str(user_payload['pro_expires_at'])[:10])}"
+    notify_line = ""
+    if isinstance(user_payload, dict) and user_payload.get("notify_hour") is not None:
+        notify_line = f"\nЧас дайджеста: {int(user_payload['notify_hour']):02d}:00 МСК"
     return (
         "💎 Pro-доступ\n\n"
-        f"{plan_line}\n\n"
+        f"{plan_line}{expires_line}{notify_line}\n\n"
         "Free:\n"
         "✅ До 5 уведомлений в день\n"
         "✅ Все основные источники\n"
         "✅ Базовый подбор\n\n"
         "Pro:\n"
-        "🚀 Без дневного лимита уведомлений\n"
-        "⏰ Выбор часа дайджеста\n"
-        "📊 Более удобный контроль потока\n"
-        "🎯 Приоритетный режим доставки\n\n"
-        "Как получить Pro:\n"
-        "Оплата и полноценный Pro-флоу будут вынесены отдельным шагом."
+        "🚀 До 25 уведомлений в день\n"
+        "⚡ Быстрые уведомления по подходящим лидам\n"
+        "⏰ Выбор часа ежедневного дайджеста\n"
+        "📊 Удобная сводка за день\n\n"
+        "Оставь запрос на Pro прямо здесь. После подтверждения доступ включается на 30 дней."
     )
+
+
+def _build_pro_overview_keyboard() -> list[list[dict]]:
+    return [[{"text": "Хочу Pro", "callback_data": "pro:upgrade"}]]
 
 
 def _format_pause_overview_text() -> str:
@@ -3017,9 +3090,36 @@ def _send_pro_overview(
     if user_id is None:
         send_message(token, chat_id, "Сначала отправьте /start")
         return True
-    is_pro = get_user_is_pro(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
-    send_with_reply_keyboard(token, chat_id, _format_pro_overview_text(is_pro))
-    return True
+    user_payload = get_user_profile(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
+    if not isinstance(user_payload, dict):
+        user_payload = {"is_pro": get_user_is_pro(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)}
+    return send_keyboard(token, chat_id, _format_pro_overview_text(user_payload), _build_pro_overview_keyboard()) is not None
+
+
+def _handle_pro_upgrade_callback(
+    token: str,
+    chat_id: int,
+    telegram_id: int,
+    api_url: str,
+    api_auth_token: str,
+    api_user_hmac_secret: str,
+) -> None:
+    user_id = _resolve_user_id(api_url, telegram_id, api_auth_token, api_user_hmac_secret)
+    if user_id is None:
+        send_message(token, chat_id, "Сначала отправьте /start")
+        return
+    status = post_pro_upgrade_intent(
+        api_url,
+        user_id,
+        telegram_id,
+        "telegram_pro_screen",
+        api_auth_token,
+        api_user_hmac_secret,
+    )
+    if status == 204:
+        send_message(token, chat_id, "Запрос на Pro отправлен. Подтвержу его вручную и напишу сюда.")
+        return
+    send_message(token, chat_id, "Не удалось сохранить запрос на Pro. Попробуйте позже.")
 
 
 def _handle_batch_nav_callback(
@@ -3377,6 +3477,18 @@ def handle_callback(
                     data, token, cb_chat_id, telegram_id,
                     api_url, api_auth_token, api_user_hmac_secret,
                 )
+        elif data.startswith("pro:") and telegram_id is not None:
+            msg = callback.get("message") or {}
+            cb_chat_id = msg.get("chat", {}).get("id") or from_user.get("id")
+            if cb_chat_id and data == "pro:upgrade":
+                _handle_pro_upgrade_callback(
+                    token,
+                    cb_chat_id,
+                    telegram_id,
+                    api_url,
+                    api_auth_token,
+                    api_user_hmac_secret,
+                )
         elif data.startswith("flt:") and telegram_id is not None:
             msg = callback.get("message") or {}
             cb_chat_id = msg.get("chat", {}).get("id") or from_user.get("id")
@@ -3491,14 +3603,29 @@ def _profile_empty_message() -> str:
     )
 
 
-def _format_profile_overview_text(profile_text: str | None) -> str:
+def _format_profile_overview_text(profile_text: str | None, user_payload: dict | None = None) -> str:
     normalized = (profile_text or "").strip()
     if not normalized:
         profile_body = "Профиль пока не заполнен."
     else:
         profile_body = f"<i>{html.escape(normalized)}</i>"
+    plan_lines: list[str] = []
+    if isinstance(user_payload, dict):
+        if bool(user_payload.get("is_pro")):
+            expires_raw = user_payload.get("pro_expires_at")
+            if expires_raw:
+                plan_lines.append(f"План: Pro до {html.escape(str(expires_raw)[:10])}.")
+            else:
+                plan_lines.append("План: Pro.")
+        else:
+            plan_lines.append("План: Free, до 5 уведомлений в день.")
+        notify_hour = user_payload.get("notify_hour")
+        if notify_hour is not None:
+            plan_lines.append(f"Дайджест: {int(notify_hour):02d}:00 МСК.")
+    plan_block = ("\n".join(plan_lines) + "\n\n") if plan_lines else ""
     return (
         "👤 Твой профиль:\n\n"
+        f"{plan_block}"
         f"{profile_body}\n\n"
         "Если стек, опыт или интересующие проекты изменились, обнови профиль для более точного матчинга."
     )
@@ -3546,11 +3673,11 @@ def _send_profile_overview(
     if user_id is None:
         send_message(token, chat_id, "Сначала отправьте /start")
         return True
-    profile_text = get_user_profile_text(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
-    if profile_text is None:
+    user_payload = get_user_profile(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
+    if user_payload is None:
         send_message(token, chat_id, "Не удалось загрузить профиль. Попробуйте позже.")
         return True
-    text = _format_profile_overview_text(profile_text)
+    text = _format_profile_overview_text(user_payload.get("profile_text") or "", user_payload)
     keyboard = _build_profile_overview_keyboard()
     if edit_message_id is not None:
         edit_message_text(token, chat_id, edit_message_id, text, keyboard)
@@ -3635,10 +3762,72 @@ def _handle_notify_hour_submission(
     elif status == 403:
         _clear_conversation_state(telegram_id)
         _record_command("notify_hour", "forbidden")
-        send_message(token, chat_id, "⛔ Выбор часа доступен только Pro-пользователям.")
+        send_message(token, chat_id, "⛔ Выбор часа доступен в Pro.")
     else:
         _record_command("notify_hour", "error")
         send_message(token, chat_id, "Ошибка обновления. Попробуйте позже.")
+    return True
+
+
+def _handle_admin_pro_command(
+    token: str,
+    chat_id: int,
+    telegram_id: int,
+    text: str,
+    api_url: str,
+) -> bool:
+    if not is_debug_admin(telegram_id, os.getenv("ADMIN_TELEGRAM_ID")):
+        send_message(token, chat_id, "Эта команда доступна только администратору.")
+        return True
+    admin_auth_token = (os.getenv("ADMIN_AUTH_TOKEN") or "").strip()
+    if not admin_auth_token:
+        send_message(token, chat_id, "Admin API не настроен.")
+        return True
+
+    parts = text.split()
+    if len(parts) < 3:
+        send_message(token, chat_id, "Использование: /admin_pro <telegram_id> on [days] или /admin_pro <telegram_id> off")
+        return True
+    try:
+        target_telegram_id = int(parts[1])
+    except ValueError:
+        send_message(token, chat_id, "telegram_id должен быть числом.")
+        return True
+    if target_telegram_id <= 0:
+        send_message(token, chat_id, "telegram_id должен быть положительным.")
+        return True
+
+    action = parts[2].lower()
+    if action == "on":
+        days = 30
+        if len(parts) >= 4:
+            try:
+                days = int(parts[3])
+            except ValueError:
+                send_message(token, chat_id, "days должен быть числом.")
+                return True
+        if days <= 0:
+            send_message(token, chat_id, "days должен быть больше нуля.")
+            return True
+        status = put_admin_user_pro_by_telegram_id(api_url, target_telegram_id, True, days, admin_auth_token)
+        if status == 204:
+            send_message(token, chat_id, f"Pro включён на {days} дней для {target_telegram_id}.")
+        elif status == 404:
+            send_message(token, chat_id, "Пользователь не найден. Сначала он должен отправить /start.")
+        else:
+            send_message(token, chat_id, f"Не удалось включить Pro: HTTP {status}.")
+        return True
+    if action == "off":
+        status = put_admin_user_pro_by_telegram_id(api_url, target_telegram_id, False, None, admin_auth_token)
+        if status == 204:
+            send_message(token, chat_id, f"Pro выключен для {target_telegram_id}.")
+        elif status == 404:
+            send_message(token, chat_id, "Пользователь не найден.")
+        else:
+            send_message(token, chat_id, f"Не удалось выключить Pro: HTTP {status}.")
+        return True
+
+    send_message(token, chat_id, "Использование: /admin_pro <telegram_id> on [days] или /admin_pro <telegram_id> off")
     return True
 
 
@@ -3785,6 +3974,11 @@ def _handle_update(
             api_user_hmac_secret,
         )
 
+    if text == "/admin_pro" or text.startswith("/admin_pro "):
+        _clear_conversation_state(telegram_id)
+        _record_command("admin_pro", "ok")
+        return _handle_admin_pro_command(token, chat_id, telegram_id, text, api_url)
+
     if text in {"/pause", "/pause@"} or text.startswith("/pause@"):
         _clear_conversation_state(telegram_id)
         _record_command("pause", "ok")
@@ -3826,7 +4020,7 @@ def _handle_update(
             if is_pro is False:
                 _clear_conversation_state(telegram_id)
                 _record_command("notify_hour", "forbidden")
-                send_message(token, chat_id, "⛔ Выбор часа доступен только Pro-пользователям.")
+                send_message(token, chat_id, "⛔ Выбор часа доступен в Pro.")
                 return True
             _set_conversation_state(telegram_id, "await_notify_hour")
             _record_command("notify_hour", "prompt")

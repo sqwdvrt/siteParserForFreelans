@@ -160,14 +160,16 @@ func clampJitter(v float64) float64 {
 
 // Send отправляет уведомление о проекте в Telegram.
 func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayload) error {
-	if len(p.Batch) == 0 && p.Job == nil {
+	if len(p.Batch) == 0 && p.Job == nil && strings.TrimSpace(p.Text) == "" {
 		return fmt.Errorf("job is nil")
 	}
 	n.ensureConfigDefaults()
 
 	text := ""
-	var keyboard [][]map[string]interface{}
-	if len(p.Batch) > 0 {
+	keyboard := inlineKeyboardPayload(p.InlineKeyboard)
+	if strings.TrimSpace(p.Text) != "" {
+		text = strings.TrimSpace(p.Text)
+	} else if len(p.Batch) > 0 {
 		if len(sortedBatchItems(p.Batch)) == 0 {
 			return fmt.Errorf("job is nil")
 		}
@@ -178,7 +180,9 @@ func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayl
 		}
 	} else {
 		text = formatMessage(p)
-		keyboard = buildFeedbackKeyboard(p)
+		if len(keyboard) == 0 {
+			keyboard = buildFeedbackKeyboard(p)
+		}
 	}
 
 	url := apiBase + n.token + "/sendMessage"
@@ -285,6 +289,32 @@ func (n *Notifier) Send(ctx context.Context, telegramID int64, p port.NotifyPayl
 		return errors.New("telegram send failed")
 	}
 	return lastErr
+}
+
+func inlineKeyboardPayload(rows [][]port.InlineButton) [][]map[string]interface{} {
+	if len(rows) == 0 {
+		return nil
+	}
+	keyboard := make([][]map[string]interface{}, 0, len(rows))
+	for _, row := range rows {
+		if len(row) == 0 {
+			continue
+		}
+		converted := make([]map[string]interface{}, 0, len(row))
+		for _, button := range row {
+			if strings.TrimSpace(button.Text) == "" || strings.TrimSpace(button.CallbackData) == "" {
+				continue
+			}
+			converted = append(converted, map[string]interface{}{
+				"text":          button.Text,
+				"callback_data": button.CallbackData,
+			})
+		}
+		if len(converted) > 0 {
+			keyboard = append(keyboard, converted)
+		}
+	}
+	return keyboard
 }
 
 func (n *Notifier) retryBackoff(attempt int) time.Duration {

@@ -11,7 +11,9 @@ import (
 
 const moscowLocation = "Europe/Moscow"
 const defaultDigestClaimTTL = 15 * time.Minute
-const defaultMaxPerDay = 5
+const defaultFreeMaxPerDay = 5
+const defaultProMaxPerDay = 25
+const defaultMaxPerDay = defaultFreeMaxPerDay
 
 // DailyDigest отправляет pro-пользователям накопленные pending-уведомления в заданный час.
 type DailyDigest struct {
@@ -20,7 +22,8 @@ type DailyDigest struct {
 	jobRepo          port.JobRepository
 	notifier         port.Notifier
 	productEventRepo port.ProductEventRepository
-	maxPerDay        int
+	freeMaxPerDay    int
+	proMaxPerDay     int
 }
 
 // NewDailyDigest создаёт use case дайджеста.
@@ -32,19 +35,30 @@ func NewDailyDigest(
 	maxPerDay int,
 ) *DailyDigest {
 	if maxPerDay <= 0 {
-		maxPerDay = defaultMaxPerDay
+		maxPerDay = defaultProMaxPerDay
 	}
 	return &DailyDigest{
-		userRepo:  userRepo,
-		notifRepo: notifRepo,
-		jobRepo:   jobRepo,
-		notifier:  notifier,
-		maxPerDay: maxPerDay,
+		userRepo:      userRepo,
+		notifRepo:     notifRepo,
+		jobRepo:       jobRepo,
+		notifier:      notifier,
+		freeMaxPerDay: defaultFreeMaxPerDay,
+		proMaxPerDay:  maxPerDay,
 	}
 }
 
 func (d *DailyDigest) WithProductEventRepo(repo port.ProductEventRepository) *DailyDigest {
 	d.productEventRepo = repo
+	return d
+}
+
+func (d *DailyDigest) WithDailyCaps(freeMaxPerDay, proMaxPerDay int) *DailyDigest {
+	if freeMaxPerDay > 0 {
+		d.freeMaxPerDay = freeMaxPerDay
+	}
+	if proMaxPerDay > 0 {
+		d.proMaxPerDay = proMaxPerDay
+	}
 	return d
 }
 
@@ -92,6 +106,9 @@ func (d *DailyDigest) sendDigestForUser(ctx context.Context, userID int64) error
 	if user == nil {
 		return nil
 	}
+	if user.ID == 0 {
+		user.ID = userID
+	}
 	if user.IsPaused(time.Now()) {
 		slog.Debug("daily digest: paused user skipped", "user_id", userID)
 		return nil
@@ -101,7 +118,8 @@ func (d *DailyDigest) sendDigestForUser(ctx context.Context, userID int64) error
 	if err != nil {
 		return err
 	}
-	remaining := d.maxPerDay - countToday
+	dailyCap := d.dailyCapForUser(user)
+	remaining := dailyCap - countToday
 	if remaining <= 0 {
 		slog.Debug("daily digest: daily limit already reached", "user_id", userID)
 		return nil
@@ -179,7 +197,7 @@ func (d *DailyDigest) sendDigestForUser(ctx context.Context, userID int64) error
 			continue
 		}
 		if job, ok := jobsMap[jobID]; ok {
-			if err := d.recordNotificationSent(ctx, userID, job, "digest"); err != nil {
+			if err := d.recordNotificationSent(ctx, userID, job, "digest", dailyCap, user.EffectiveIsPro(time.Now())); err != nil {
 				slog.Warn("daily digest: record product event failed", "user_id", userID, "job_id", jobID, "event_type", port.ProductEventNotificationSent, "err", err)
 			}
 		}
@@ -253,7 +271,14 @@ func (d *DailyDigest) recoverMissedNotifications(ctx context.Context, userID int
 	return err
 }
 
-func (d *DailyDigest) recordNotificationSent(ctx context.Context, userID int64, job *domain.Job, deliveryMode string) error {
+func (d *DailyDigest) dailyCapForUser(user *domain.User) int {
+	if user != nil && user.EffectiveIsPro(time.Now()) {
+		return d.proMaxPerDay
+	}
+	return d.freeMaxPerDay
+}
+
+func (d *DailyDigest) recordNotificationSent(ctx context.Context, userID int64, job *domain.Job, deliveryMode string, dailyCap int, isPro bool) error {
 	if d.productEventRepo == nil || job == nil {
 		return nil
 	}
@@ -264,6 +289,8 @@ func (d *DailyDigest) recordNotificationSent(ctx context.Context, userID int64, 
 		Source: job.Source,
 		Properties: map[string]any{
 			"delivery_mode": deliveryMode,
+			"plan":          planName(isPro),
+			"daily_cap":     dailyCap,
 		},
 	})
 }

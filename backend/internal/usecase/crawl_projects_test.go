@@ -166,6 +166,9 @@ func (m *mockCrawlNotifRepo) SentRecently(context.Context, int64, time.Duration)
 }
 
 func (m *mockCrawlNotifRepo) CountToday(context.Context, int64) (int, error) { return 0, nil }
+func (m *mockCrawlNotifRepo) CountMissedToday(context.Context, int64) (int, error) {
+	return 0, nil
+}
 
 func (m *mockCrawlNotifRepo) GetPendingForUser(context.Context, int64) ([]port.PendingNotification, error) {
 	return nil, nil

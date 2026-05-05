@@ -46,6 +46,8 @@ const (
 	defaultDigestLockTTL           = 15 * time.Minute
 	defaultAccumulationLockKey     = "notifier:accumulation:leader"
 	defaultAccumulationLockTTL     = 9 * time.Minute
+	defaultProRenewalLockKey       = "notifier:pro-renewal:leader"
+	defaultProRenewalLockTTL       = 30 * time.Minute
 )
 
 func resolveTelegramBotToken(isProd bool) (token string, source string) {
@@ -115,7 +117,7 @@ func main() {
 	)
 	notifierMetrics := telemetry.NewNotifierMetrics(registry, queueName)
 
-	maxPerDay := getNotifierMaxPerDay()
+	freeMaxPerDay, proMaxPerDay := getNotifierDailyCaps()
 	notifierMaxRetries, err := config.ParsePositiveIntEnv("NOTIFIER_MAX_RETRIES", defaultNotifierMaxRetries)
 	if err != nil {
 		slog.Error("invalid NOTIFIER_MAX_RETRIES", "err", err)
@@ -195,10 +197,12 @@ func main() {
 	sendNotif := usecase.NewSendNotification(notifRepo, userRepo, jobRepo).
 		WithNotifier(notifier).
 		WithProductEventRepo(productEventRepo).
-		WithMaxPerDay(maxPerDay)
+		WithDailyCaps(freeMaxPerDay, proMaxPerDay)
 
-	dailyDigest := usecase.NewDailyDigest(userRepo, notifRepo, jobRepo, notifier, maxPerDay).
+	dailyDigest := usecase.NewDailyDigest(userRepo, notifRepo, jobRepo, notifier, proMaxPerDay).
+		WithDailyCaps(freeMaxPerDay, proMaxPerDay).
 		WithProductEventRepo(productEventRepo)
+	proRenewalReminders := usecase.NewProRenewalReminders(userRepo, notifier, productEventRepo)
 	digestLock := redisadapter.NewRedisLock(rdb)
 	digestCronSpec := os.Getenv("DIGEST_CRON")
 	if digestCronSpec == "" {
@@ -278,6 +282,48 @@ func main() {
 	accumulationCron.Start()
 	defer accumulationCron.Stop()
 	slog.Info("accumulation cron started", "spec", accumulationCronSpec)
+
+	proRenewalCronSpec := os.Getenv("PRO_RENEWAL_CRON")
+	if proRenewalCronSpec == "" {
+		proRenewalCronSpec = "15 9 * * *"
+	}
+	proRenewalLock := redisadapter.NewRedisLock(rdb)
+	proRenewalCron := cron.New()
+	if _, err := proRenewalCron.AddFunc(proRenewalCronSpec, func() {
+		lease, ok, err := proRenewalLock.Acquire(context.Background(), defaultProRenewalLockKey, defaultProRenewalLockTTL)
+		if err != nil {
+			slog.Error("pro renewal lock acquire failed", "key", defaultProRenewalLockKey, "err", err)
+			return
+		}
+		if !ok {
+			slog.Info("pro renewal skipped; lock already held", "key", defaultProRenewalLockKey)
+			return
+		}
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer releaseCancel()
+		defer func() {
+			released, releaseErr := lease.Release(releaseCtx)
+			if releaseErr != nil {
+				slog.Error("pro renewal lock release failed", "key", defaultProRenewalLockKey, "err", releaseErr)
+				return
+			}
+			if !released {
+				slog.Warn("pro renewal lock release skipped; token no longer owned", "key", defaultProRenewalLockKey)
+			}
+		}()
+
+		renewalCtx, renewalCancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer renewalCancel()
+		if err := proRenewalReminders.Execute(renewalCtx); err != nil {
+			slog.Error("pro renewal reminders failed", "err", err)
+		}
+	}); err != nil {
+		slog.Error("pro renewal cron add func", "spec", proRenewalCronSpec, "err", err)
+		os.Exit(1)
+	}
+	proRenewalCron.Start()
+	defer proRenewalCron.Stop()
+	slog.Info("pro renewal cron started", "spec", proRenewalCronSpec)
 
 	consumer := redisadapter.NewMatchNotifyConsumer(
 		rdb,
@@ -534,7 +580,13 @@ func waitForBackoff(ctx context.Context, d time.Duration) bool {
 
 func getNotifierMaxPerDay() int {
 	// Preferred key for notifier per-day cap; falls back to legacy key for compatibility.
-	return getPositiveIntEnvWithFallback("NOTIFY_PRO_MAX_PER_DAY", "NOTIFY_MAX_PER_DAY", 5)
+	return getPositiveIntEnvWithFallback("NOTIFY_PRO_MAX_PER_DAY", "NOTIFY_MAX_PER_DAY", 25)
+}
+
+func getNotifierDailyCaps() (int, int) {
+	freeMax := getPositiveIntEnvWithFallback("NOTIFY_FREE_MAX_PER_DAY", "NOTIFY_MAX_PER_DAY", 5)
+	proMax := getNotifierMaxPerDay()
+	return freeMax, proMax
 }
 
 func getPositiveIntEnvWithFallback(primaryKey, secondaryKey string, fallback int) int {

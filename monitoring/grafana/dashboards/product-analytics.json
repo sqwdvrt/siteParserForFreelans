@@ -2,7 +2,7 @@
   "uid": "siteparser-product",
   "title": "SiteParser — Product Analytics",
   "schemaVersion": 38,
-  "version": 1,
+  "version": 2,
   "refresh": "1m",
   "time": { "from": "now-30d", "to": "now" },
   "timepicker": {},
@@ -206,6 +206,102 @@
             "properties": [{ "id": "unit", "value": "percentunit" }]
           }
         ]
+      }
+    },
+    {
+      "id": 7,
+      "title": "Active Pro Users",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 12 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*)::bigint AS value\nFROM users\nWHERE is_pro = TRUE\n  AND pro_expires_at > NOW();",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 8,
+      "title": "Expired Pro Users",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 12 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COUNT(*)::bigint AS value\nFROM users\nWHERE is_pro = TRUE\n  AND pro_expires_at IS NOT NULL\n  AND pro_expires_at <= NOW();",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "colorMode": "background",
+        "graphMode": "none",
+        "textMode": "auto"
+      }
+    },
+    {
+      "id": 9,
+      "title": "Pro Activations and Renewals",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres" },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '1d'), COUNT(*)::bigint AS activations\nFROM product_events\nWHERE event_type = 'pro_activated'\n  AND $__timeFilter(created_at)\nGROUP BY 1\nORDER BY 1;",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "postgres" },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '1d'), COUNT(*)::bigint AS renewals\nFROM product_events\nWHERE event_type = 'pro_renewed'\n  AND $__timeFilter(created_at)\nGROUP BY 1\nORDER BY 1;",
+          "refId": "B"
+        }
+      ],
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
+      }
+    },
+    {
+      "id": 10,
+      "title": "Upgrade Funnel and Free Cap Pressure",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+      "datasource": { "type": "postgres", "uid": "postgres" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "postgres" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH viewed AS (\n  SELECT COUNT(DISTINCT user_id)::bigint AS value\n  FROM product_events\n  WHERE event_type = 'pro_upgrade_viewed'\n    AND $__timeFilter(created_at)\n), requested AS (\n  SELECT COUNT(DISTINCT user_id)::bigint AS value\n  FROM product_events\n  WHERE event_type = 'pro_upgrade_requested'\n    AND $__timeFilter(created_at)\n), activated AS (\n  SELECT COUNT(DISTINCT user_id)::bigint AS value\n  FROM product_events\n  WHERE event_type = 'pro_activated'\n    AND $__timeFilter(created_at)\n), cap_hits AS (\n  SELECT COUNT(DISTINCT user_id)::bigint AS value\n  FROM product_events\n  WHERE event_type = 'free_cap_hit'\n    AND $__timeFilter(created_at)\n), hidden AS (\n  SELECT COALESCE(SUM((properties->>'hidden_count')::bigint), 0)::bigint AS value\n  FROM product_events\n  WHERE event_type = 'free_hidden_by_cap'\n    AND $__timeFilter(created_at)\n)\nSELECT * FROM (\n  SELECT 'pro_upgrade_viewed' AS metric, value FROM viewed\n  UNION ALL\n  SELECT 'pro_upgrade_requested' AS metric, value FROM requested\n  UNION ALL\n  SELECT 'pro_activated' AS metric, value FROM activated\n  UNION ALL\n  SELECT 'free_cap_hit_users' AS metric, value FROM cap_hits\n  UNION ALL\n  SELECT 'free_hidden_by_cap_leads' AS metric, value FROM hidden\n) metrics;",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "showHeader": true,
+        "footer": { "show": false }
       }
     }
   ]

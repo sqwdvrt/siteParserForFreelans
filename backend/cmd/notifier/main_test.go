@@ -174,6 +174,17 @@ func TestNotifierEnvParsing_MaxPerDayFallsBackWhenProInvalid(t *testing.T) {
 	}
 }
 
+func TestNotifierEnvParsing_DailyCaps(t *testing.T) {
+	t.Setenv("NOTIFY_FREE_MAX_PER_DAY", "5")
+	t.Setenv("NOTIFY_PRO_MAX_PER_DAY", "25")
+	t.Setenv("NOTIFY_MAX_PER_DAY", "9")
+
+	freeMax, proMax := getNotifierDailyCaps()
+	if freeMax != 5 || proMax != 25 {
+		t.Fatalf("caps free=%d pro=%d, want free=5 pro=25", freeMax, proMax)
+	}
+}
+
 func TestResolveTelegramBotToken_PrefersLocalOutsideProduction(t *testing.T) {
 	t.Setenv("TELEGRAM_BOT_TOKEN", "prod-token")
 	t.Setenv(localTelegramTokenEnv, "local-token")

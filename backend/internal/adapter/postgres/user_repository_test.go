@@ -154,7 +154,7 @@ func TestUserRepository_UpdateNotifyHourScoped(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	if _, err := pool.Exec(ctx, `UPDATE users SET is_pro = TRUE WHERE id = $1`, id); err != nil {
+	if _, err := pool.Exec(ctx, `UPDATE users SET is_pro = TRUE, pro_expires_at = NOW() + INTERVAL '30 days' WHERE id = $1`, id); err != nil {
 		t.Fatalf("set is_pro: %v", err)
 	}
 

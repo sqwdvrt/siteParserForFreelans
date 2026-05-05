@@ -359,8 +359,10 @@ cd backend && go run ./cmd/crawler
 | `GRAFANA_ADMIN_PASSWORD` | Пароль администратора Grafana для monitoring profile на VPS |
 | `PGADMIN_EMAIL` | Логин для optional `pgAdmin` в production compose; используется только для localhost-only доступа через SSH tunnel |
 | `PGADMIN_PASSWORD` | Пароль для optional `pgAdmin`; задайте сильное значение (`openssl rand -hex 16`) |
-| `NOTIFY_PRO_MAX_PER_DAY` | Предпочтительный суточный лимит уведомлений на пользователя (`backend-notifier`, по умолчанию `5`) |
-| `NOTIFY_MAX_PER_DAY` | Legacy fallback для суточного лимита уведомлений (если `NOTIFY_PRO_MAX_PER_DAY` не задан) |
+| `NOTIFY_FREE_MAX_PER_DAY` | Суточный лимит уведомлений Free-пользователя (`backend-notifier`, по умолчанию `5`; fallback: `NOTIFY_MAX_PER_DAY`) |
+| `NOTIFY_PRO_MAX_PER_DAY` | Суточный лимит уведомлений Pro-пользователя (`backend-notifier`, по умолчанию `25`; fallback: `NOTIFY_MAX_PER_DAY`) |
+| `NOTIFY_MAX_PER_DAY` | Legacy fallback для суточных лимитов уведомлений |
+| `PRO_RENEWAL_CRON` | Cron-расписание reminder-касания по истечению Pro (`backend-notifier`, по умолчанию `15 9 * * *`) |
 | `API_URL` | URL backend API (в production для telegram-bot только `https://`) |
 | `POSTGRES_BIND_IP`/`REDIS_BIND_IP`/`API_BIND_IP` | Привязка портов Docker к интерфейсу хоста (по умолчанию `127.0.0.1`; для внешней публикации нужно явно задать, например `0.0.0.0`) |
 | `POSTGRES_PORT`/`REDIS_PORT`/`API_PORT` | Порты публикации на хосте (`POSTGRES_PORT` по умолчанию `55432` для локального dev/integration) |
@@ -404,6 +406,17 @@ cd backend && go run ./cmd/crawler
 | `RERANK_TOP_K` | Сколько кандидатов оставить после cross-encoder rerank (по умолчанию `10`) |
 
 Полный список: `.env.example`. Документация: `docs/env_setup.md`.
+
+### Pro v1
+
+Free получает до 5 уведомлений в день. Pro получает до 25 уведомлений в день, быструю доставку batch-уведомлений и выбор часа ежедневного digest. В Telegram появился self-serve upgrade intent: `/pro` и cap-hit сообщения показывают кнопку `Хочу Pro`, бот пишет `pro_upgrade_requested` в `product_events`, а администратор вручную подтверждает доступ на срок:
+
+```text
+/admin_pro 123456789 on 30
+/admin_pro 123456789 off
+```
+
+Срок хранится в `users.pro_expires_at`; effective Pro действует только пока `is_pro=true` и `pro_expires_at` в будущем. `backend-notifier` ежедневно проверяет expiry и отправляет reminder за 3 дня, в день истечения и после истечения срока. В `/status` пользователь видит текущий план, дневной cap и сколько лидов было скрыто лимитом.
 
 ## Тесты
 

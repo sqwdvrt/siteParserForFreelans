@@ -44,6 +44,8 @@ const defaultUserStatsRequestWindow = 7 * 24 * time.Hour
 const maxPreferenceKeywords = 32
 const maxPreferenceSources = 16
 const maxPreferenceValueLen = 64
+const defaultFreePlanDailyCap = 5
+const defaultProPlanDailyCap = 25
 
 var errTelegramIDInvalid = errors.New("telegram_id must be positive integer")
 var errProfileTextTooShort = errors.New("profile_text too short")
@@ -217,6 +219,10 @@ type PutUserPauseRequest struct {
 	Until *time.Time `json:"until"`
 }
 
+type PostUserProUpgradeIntentRequest struct {
+	Source string `json:"source"`
+}
+
 // UserPreferencesRequest — тело PUT /users/:id/preferences.
 type UserPreferencesRequest struct {
 	IncludeKeywords  []string `json:"include_keywords"`
@@ -228,20 +234,23 @@ type UserPreferencesRequest struct {
 
 // UserPreferencesResponse — ответ GET /users/:id/preferences.
 type UserPreferencesResponse struct {
-	IncludeKeywords  []string `json:"include_keywords"`
-	ExcludeKeywords  []string `json:"exclude_keywords"`
-	MinBudget        *float64 `json:"min_budget,omitempty"`
-	MaxBudget        *float64 `json:"max_budget,omitempty"`
-	PreferredSources []string `json:"preferred_sources"`
-	IsPro            bool     `json:"is_pro"`
+	IncludeKeywords  []string   `json:"include_keywords"`
+	ExcludeKeywords  []string   `json:"exclude_keywords"`
+	MinBudget        *float64   `json:"min_budget,omitempty"`
+	MaxBudget        *float64   `json:"max_budget,omitempty"`
+	PreferredSources []string   `json:"preferred_sources"`
+	IsPro            bool       `json:"is_pro"`
+	ProExpiresAt     *time.Time `json:"pro_expires_at,omitempty"`
+	NotifyHour       *int16     `json:"notify_hour,omitempty"`
 }
 
 // UserResponse — ответ GET /users/:id.
 type UserResponse struct {
-	ProfileText string     `json:"profile_text"`
-	IsPro       bool       `json:"is_pro"`
-	NotifyHour  *int16     `json:"notify_hour,omitempty"`
-	PausedUntil *time.Time `json:"paused_until,omitempty"`
+	ProfileText  string     `json:"profile_text"`
+	IsPro        bool       `json:"is_pro"`
+	ProExpiresAt *time.Time `json:"pro_expires_at,omitempty"`
+	NotifyHour   *int16     `json:"notify_hour,omitempty"`
+	PausedUntil  *time.Time `json:"paused_until,omitempty"`
 }
 
 // GetUser возвращает профиль пользователя для owner-scoped запросов.
@@ -268,10 +277,11 @@ func (h *Handlers) GetUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, UserResponse{
-		ProfileText: strings.TrimSpace(derefString(user.ProfileText)),
-		IsPro:       user.IsPro,
-		NotifyHour:  user.NotifyHour,
-		PausedUntil: user.PausedUntil,
+		ProfileText:  strings.TrimSpace(derefString(user.ProfileText)),
+		IsPro:        user.EffectiveIsPro(time.Now()),
+		ProExpiresAt: user.ProExpiresAt,
+		NotifyHour:   user.NotifyHour,
+		PausedUntil:  user.PausedUntil,
 	})
 }
 
@@ -430,7 +440,7 @@ func (h *Handlers) PutUserNotifyHour(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "forbidden", http.StatusForbidden)
 		return
 	}
-	if !user.IsPro {
+	if !user.EffectiveIsPro(time.Now()) {
 		http.Error(w, "pro subscription required", http.StatusForbidden)
 		return
 	}
@@ -541,7 +551,9 @@ func (h *Handlers) GetUserPreferences(w http.ResponseWriter, r *http.Request) {
 		MinBudget:        prefs.MinBudget,
 		MaxBudget:        prefs.MaxBudget,
 		PreferredSources: cloneAndNormalizePreferenceValues(prefs.PreferredSources, maxPreferenceSources),
-		IsPro:            user.IsPro,
+		IsPro:            user.EffectiveIsPro(time.Now()),
+		ProExpiresAt:     user.ProExpiresAt,
+		NotifyHour:       user.NotifyHour,
 	})
 }
 
@@ -569,9 +581,11 @@ func (h *Handlers) GetUserStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.UserStatsRepo == nil {
-		writeJSON(w, port.UserStats{
+		stats := &port.UserStats{
 			PeriodDays: int(defaultUserStatsRequestWindow.Hours() / 24),
-		})
+		}
+		enrichUserStats(stats, user)
+		writeJSON(w, stats)
 		return
 	}
 	stats, err := h.UserStatsRepo.GetUserStats(r.Context(), userID, defaultUserStatsRequestWindow)
@@ -585,7 +599,48 @@ func (h *Handlers) GetUserStats(w http.ResponseWriter, r *http.Request) {
 			PeriodDays: int(defaultUserStatsRequestWindow.Hours() / 24),
 		}
 	}
+	enrichUserStats(stats, user)
 	writeJSON(w, stats)
+}
+
+// PostUserProUpgradeIntent records a self-serve upgrade request from Telegram UX.
+func (h *Handlers) PostUserProUpgradeIntent(w http.ResponseWriter, r *http.Request) {
+	if !h.authorize(w, r) {
+		return
+	}
+	var req PostUserProUpgradeIntentRequest
+	rawBody, err := decodeJSONBody(w, r, &req)
+	if err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	userID, callerTelegramID, ok := h.authorizeOwnedUserRequest(w, r, rawBody)
+	if !ok {
+		return
+	}
+	user, err := h.UserRepo.GetByID(r.Context(), userID)
+	if err != nil {
+		h.logger().Error("post user pro upgrade intent get user failed", "user_id", userID, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	if user == nil {
+		http.Error(w, "user not found", http.StatusNotFound)
+		return
+	}
+	if user.TelegramID != callerTelegramID {
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return
+	}
+	h.recordProductEvent(r.Context(), port.ProductEvent{
+		Type:   port.ProductEventProUpgradeRequested,
+		UserID: userID,
+		Properties: map[string]any{
+			"source":       strings.TrimSpace(req.Source),
+			"current_plan": currentPlanName(user, time.Now()),
+		},
+	})
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // PutUserPreferences обновляет user_preferences пользователя.
@@ -1109,6 +1164,34 @@ func (h *Handlers) recordProductEvent(ctx context.Context, event port.ProductEve
 	if h.ProductMetrics != nil {
 		h.ProductMetrics.RecordEvent(string(event.Type), event.Source)
 	}
+}
+
+func enrichUserStats(stats *port.UserStats, user *domain.User) {
+	if stats == nil {
+		return
+	}
+	stats.Plan = currentPlanName(user, time.Now())
+	stats.DailyCap = defaultFreePlanDailyCap
+	if user != nil {
+		stats.ProExpiresAt = user.ProExpiresAt
+		stats.NotifyHour = user.NotifyHour
+		if user.EffectiveIsPro(time.Now()) {
+			stats.DailyCap = defaultProPlanDailyCap
+		}
+	}
+}
+
+func currentPlanName(user *domain.User, now time.Time) string {
+	if user == nil {
+		return "free"
+	}
+	if user.EffectiveIsPro(now) {
+		return "pro"
+	}
+	if user.IsPro && user.ProExpiresAt != nil && !user.ProExpiresAt.After(now) {
+		return "expired_pro"
+	}
+	return "free"
 }
 
 func hasNonEmptyProfileText(profileText *string) bool {

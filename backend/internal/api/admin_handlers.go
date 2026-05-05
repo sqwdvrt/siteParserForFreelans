@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
@@ -20,12 +21,18 @@ const adminMaxLimit = 200
 type AdminHandlers struct {
 	AdminRepo        port.AdminRepository
 	DebugMatchClient AdminDebugMatchClient
+	ProductEventRepo port.ProductEventRepository
 	AdminToken       string
 	Logger           *slog.Logger
 }
 
 type AdminDebugMatchClient interface {
 	GetMatchDebug(ctx context.Context, userID int64, jobURL string) (map[string]any, error)
+}
+
+type SetUserProRequest struct {
+	Enabled bool `json:"enabled"`
+	Days    int  `json:"days,omitempty"`
 }
 
 func (h *AdminHandlers) logger() *slog.Logger {
@@ -135,6 +142,86 @@ func (h *AdminHandlers) DeleteUser(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// SetUserPro включает, продлевает или выключает Pro по внутреннему user id.
+// PUT /admin/users/{id}/pro
+func (h *AdminHandlers) SetUserPro(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizeAdmin(w, r) {
+		return
+	}
+	userID, ok := parseIDParam(w, r, "id")
+	if !ok {
+		return
+	}
+	var req SetUserProRequest
+	if _, err := decodeJSONBody(w, r, &req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	before, err := h.AdminRepo.GetUser(r.Context(), userID)
+	if err != nil {
+		h.logger().Error("admin get user before pro update failed", "user_id", userID, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	found, _, err := h.AdminRepo.SetUserPro(r.Context(), userID, req.Enabled, req.Days)
+	if err != nil {
+		h.logger().Error("admin set user pro failed", "user_id", userID, "enabled", req.Enabled, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.Error(w, "user not found", http.StatusNotFound)
+		return
+	}
+	after, err := h.AdminRepo.GetUser(r.Context(), userID)
+	if err != nil {
+		h.logger().Warn("admin get user after pro update failed", "user_id", userID, "err", err)
+	} else {
+		h.recordProLifecycleEvent(r.Context(), before, after, req.Enabled, req.Days)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// SetTelegramUserPro включает, продлевает или выключает Pro по telegram_id.
+// PUT /admin/telegram-users/{telegram_id}/pro
+func (h *AdminHandlers) SetTelegramUserPro(w http.ResponseWriter, r *http.Request) {
+	if !h.authorizeAdmin(w, r) {
+		return
+	}
+	telegramID, ok := parseIDParam(w, r, "telegram_id")
+	if !ok {
+		return
+	}
+	var req SetUserProRequest
+	if _, err := decodeJSONBody(w, r, &req); err != nil {
+		http.Error(w, "invalid JSON", http.StatusBadRequest)
+		return
+	}
+	before, err := h.AdminRepo.GetUserByTelegramID(r.Context(), telegramID)
+	if err != nil {
+		h.logger().Error("admin get telegram user before pro update failed", "telegram_id", telegramID, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	found, _, err := h.AdminRepo.SetUserProByTelegramID(r.Context(), telegramID, req.Enabled, req.Days)
+	if err != nil {
+		h.logger().Error("admin set telegram user pro failed", "telegram_id", telegramID, "enabled", req.Enabled, "err", err)
+		http.Error(w, internalErrorMessage, http.StatusInternalServerError)
+		return
+	}
+	if !found {
+		http.Error(w, "user not found", http.StatusNotFound)
+		return
+	}
+	after, err := h.AdminRepo.GetUserByTelegramID(r.Context(), telegramID)
+	if err != nil {
+		h.logger().Warn("admin get telegram user after pro update failed", "telegram_id", telegramID, "err", err)
+	} else {
+		h.recordProLifecycleEvent(r.Context(), before, after, req.Enabled, req.Days)
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // ListJobs возвращает постраничный список задач.
 // GET /admin/jobs?page=1&limit=50&source=kwork
 func (h *AdminHandlers) ListJobs(w http.ResponseWriter, r *http.Request) {
@@ -202,6 +289,46 @@ func parsePagination(r *http.Request) (limit, offset int) {
 	}
 	offset = (page - 1) * limit
 	return limit, offset
+}
+
+func (h *AdminHandlers) recordProLifecycleEvent(
+	ctx context.Context,
+	before *port.AdminUser,
+	after *port.AdminUser,
+	enabled bool,
+	days int,
+) {
+	if h.ProductEventRepo == nil || after == nil || after.ID <= 0 {
+		return
+	}
+	eventType := port.ProductEventProActivated
+	if !enabled {
+		eventType = port.ProductEventProExpired
+	} else if before != nil && before.IsPro {
+		eventType = port.ProductEventProRenewed
+	} else if before != nil && before.ProExpiresAt != nil && before.ProExpiresAt.Before(time.Now()) {
+		eventType = port.ProductEventProRenewed
+	}
+	properties := map[string]any{
+		"days":          days,
+		"telegram_id":   after.TelegramID,
+		"previous_plan": "free",
+	}
+	if before != nil && before.IsPro {
+		properties["previous_plan"] = "pro"
+	} else if before != nil && before.ProExpiresAt != nil && before.ProExpiresAt.Before(time.Now()) {
+		properties["previous_plan"] = "expired_pro"
+	}
+	if after.ProExpiresAt != nil {
+		properties["pro_expires_at"] = after.ProExpiresAt.UTC().Format(time.RFC3339)
+	}
+	if err := h.ProductEventRepo.Record(ctx, port.ProductEvent{
+		Type:       eventType,
+		UserID:     after.ID,
+		Properties: properties,
+	}); err != nil {
+		h.logger().Warn("admin record pro lifecycle event failed", "user_id", after.ID, "event_type", eventType, "err", err)
+	}
 }
 
 func parseIDParam(w http.ResponseWriter, r *http.Request, param string) (int64, bool) {

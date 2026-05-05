@@ -4,21 +4,26 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/port"
 )
 
 type mockAdminRepo struct {
-	getStatsFunc  func(ctx context.Context) (*port.AdminStats, error)
-	listUsersFunc func(ctx context.Context, limit, offset int) ([]port.AdminUser, int64, error)
-	getUserFunc   func(ctx context.Context, userID int64) (*port.AdminUser, error)
-	deleteUserFn  func(ctx context.Context, userID int64) (bool, error)
-	listJobsFunc  func(ctx context.Context, source string, limit, offset int) ([]port.AdminJob, int64, error)
+	getStatsFunc          func(ctx context.Context) (*port.AdminStats, error)
+	listUsersFunc         func(ctx context.Context, limit, offset int) ([]port.AdminUser, int64, error)
+	getUserFunc           func(ctx context.Context, userID int64) (*port.AdminUser, error)
+	getUserByTelegramFunc func(ctx context.Context, telegramID int64) (*port.AdminUser, error)
+	deleteUserFn          func(ctx context.Context, userID int64) (bool, error)
+	listJobsFunc          func(ctx context.Context, source string, limit, offset int) ([]port.AdminJob, int64, error)
+	setProFunc            func(ctx context.Context, userID int64, enabled bool, days int) (bool, *time.Time, error)
+	setProByTelegramFunc  func(ctx context.Context, telegramID int64, enabled bool, days int) (bool, *time.Time, error)
 }
 
 type mockAdminDebugClient struct {
@@ -53,6 +58,13 @@ func (m *mockAdminRepo) GetUser(ctx context.Context, userID int64) (*port.AdminU
 	return nil, nil
 }
 
+func (m *mockAdminRepo) GetUserByTelegramID(ctx context.Context, telegramID int64) (*port.AdminUser, error) {
+	if m.getUserByTelegramFunc != nil {
+		return m.getUserByTelegramFunc(ctx, telegramID)
+	}
+	return nil, nil
+}
+
 func (m *mockAdminRepo) DeleteUser(ctx context.Context, userID int64) (bool, error) {
 	if m.deleteUserFn != nil {
 		return m.deleteUserFn(ctx, userID)
@@ -65,6 +77,20 @@ func (m *mockAdminRepo) ListJobs(ctx context.Context, source string, limit, offs
 		return m.listJobsFunc(ctx, source, limit, offset)
 	}
 	return nil, 0, nil
+}
+
+func (m *mockAdminRepo) SetUserPro(ctx context.Context, userID int64, enabled bool, days int) (bool, *time.Time, error) {
+	if m.setProFunc != nil {
+		return m.setProFunc(ctx, userID, enabled, days)
+	}
+	return false, nil, nil
+}
+
+func (m *mockAdminRepo) SetUserProByTelegramID(ctx context.Context, telegramID int64, enabled bool, days int) (bool, *time.Time, error) {
+	if m.setProByTelegramFunc != nil {
+		return m.setProByTelegramFunc(ctx, telegramID, enabled, days)
+	}
+	return false, nil, nil
 }
 
 func newAdminHandlers(repo port.AdminRepository) *AdminHandlers {
@@ -278,6 +304,110 @@ func TestAdminHandlersDeleteUserAndListJobs(t *testing.T) {
 	h.ListJobs(rr, req)
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("status=%d", rr.Code)
+	}
+}
+
+func TestAdminHandlersSetUserPro(t *testing.T) {
+	t.Run("on", func(t *testing.T) {
+		var gotUserID int64
+		var gotEnabled bool
+		var gotDays int
+		expiresAt := time.Now().UTC().Add(30 * 24 * time.Hour)
+		h := newAdminHandlers(&mockAdminRepo{
+			setProFunc: func(ctx context.Context, userID int64, enabled bool, days int) (bool, *time.Time, error) {
+				gotUserID = userID
+				gotEnabled = enabled
+				gotDays = days
+				return true, &expiresAt, nil
+			},
+		})
+
+		req := withURLParam(newAdminRequest(http.MethodPut, "/admin/users/7/pro"), "id", "7")
+		req.Body = io.NopCloser(strings.NewReader(`{"enabled":true,"days":30}`))
+		rr := httptest.NewRecorder()
+		h.SetUserPro(rr, req)
+
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("status=%d want=204", rr.Code)
+		}
+		if gotUserID != 7 || !gotEnabled || gotDays != 30 {
+			t.Fatalf("SetUserPro got user=%d enabled=%v days=%d", gotUserID, gotEnabled, gotDays)
+		}
+	})
+
+	t.Run("off", func(t *testing.T) {
+		var gotEnabled bool
+		h := newAdminHandlers(&mockAdminRepo{
+			setProFunc: func(ctx context.Context, userID int64, enabled bool, days int) (bool, *time.Time, error) {
+				gotEnabled = enabled
+				return true, nil, nil
+			},
+		})
+
+		req := withURLParam(newAdminRequest(http.MethodPut, "/admin/users/7/pro"), "id", "7")
+		req.Body = io.NopCloser(strings.NewReader(`{"enabled":false}`))
+		rr := httptest.NewRecorder()
+		h.SetUserPro(rr, req)
+
+		if rr.Code != http.StatusNoContent {
+			t.Fatalf("status=%d want=204", rr.Code)
+		}
+		if gotEnabled {
+			t.Fatal("enabled=true, want false")
+		}
+	})
+
+	t.Run("not found", func(t *testing.T) {
+		h := newAdminHandlers(&mockAdminRepo{
+			setProFunc: func(ctx context.Context, userID int64, enabled bool, days int) (bool, *time.Time, error) {
+				return false, nil, nil
+			},
+		})
+
+		req := withURLParam(newAdminRequest(http.MethodPut, "/admin/users/404/pro"), "id", "404")
+		req.Body = io.NopCloser(strings.NewReader(`{"enabled":true,"days":30}`))
+		rr := httptest.NewRecorder()
+		h.SetUserPro(rr, req)
+
+		if rr.Code != http.StatusNotFound {
+			t.Fatalf("status=%d want=404", rr.Code)
+		}
+	})
+}
+
+func TestAdminHandlersSetUserPro_RecordsLifecycleEvent(t *testing.T) {
+	getUserCalls := 0
+	eventRepo := &mockProductEventRepo{}
+	h := newAdminHandlers(&mockAdminRepo{
+		getUserFunc: func(ctx context.Context, userID int64) (*port.AdminUser, error) {
+			getUserCalls++
+			if getUserCalls == 1 {
+				return &port.AdminUser{ID: userID, TelegramID: 123456789, IsPro: false}, nil
+			}
+			expiresAt := time.Now().UTC().Add(30 * 24 * time.Hour)
+			return &port.AdminUser{ID: userID, TelegramID: 123456789, IsPro: true, ProExpiresAt: &expiresAt}, nil
+		},
+		setProFunc: func(ctx context.Context, userID int64, enabled bool, days int) (bool, *time.Time, error) {
+			expiresAt := time.Now().UTC().Add(30 * 24 * time.Hour)
+			return true, &expiresAt, nil
+		},
+	})
+	h.ProductEventRepo = eventRepo
+
+	req := withURLParam(newAdminRequest(http.MethodPut, "/admin/users/7/pro"), "id", "7")
+	req.Body = io.NopCloser(strings.NewReader(`{"enabled":true,"days":30}`))
+	rr := httptest.NewRecorder()
+
+	h.SetUserPro(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status=%d want=204", rr.Code)
+	}
+	if len(eventRepo.events) != 1 {
+		t.Fatalf("events len=%d want=1", len(eventRepo.events))
+	}
+	if eventRepo.events[0].Type != port.ProductEventProActivated {
+		t.Fatalf("event type=%q want=%q", eventRepo.events[0].Type, port.ProductEventProActivated)
 	}
 }
 

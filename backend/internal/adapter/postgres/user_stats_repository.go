@@ -75,6 +75,16 @@ func (r *UserStatsRepository) GetUserStats(
 	}
 
 	if err := r.pool.QueryRow(ctx, `
+		SELECT COUNT(DISTINCT job_id)
+		FROM notifications
+		WHERE user_id = $1
+		  AND status = 'missed'
+		  AND created_at >= $2
+	`, userID, since).Scan(&stats.ProjectsHiddenByCap); err != nil {
+		return nil, err
+	}
+
+	if err := r.pool.QueryRow(ctx, `
 		SELECT EXISTS (
 			SELECT 1
 			FROM user_preferences

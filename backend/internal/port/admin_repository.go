@@ -24,14 +24,16 @@ type AdminStats struct {
 
 // AdminUser — пользователь для панели администратора.
 type AdminUser struct {
-	ID                int64     `json:"id"`
-	TelegramID        int64     `json:"telegram_id"`
-	HasProfile        bool      `json:"has_profile"`
-	HasEmbedding      bool      `json:"has_embedding"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
-	NotificationsSent int64     `json:"notifications_sent"`
-	ProfileSnippet    string    `json:"profile_snippet,omitempty"` // первые 200 символов
+	ID                int64      `json:"id"`
+	TelegramID        int64      `json:"telegram_id"`
+	IsPro             bool       `json:"is_pro"`
+	ProExpiresAt      *time.Time `json:"pro_expires_at,omitempty"`
+	HasProfile        bool       `json:"has_profile"`
+	HasEmbedding      bool       `json:"has_embedding"`
+	CreatedAt         time.Time  `json:"created_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+	NotificationsSent int64      `json:"notifications_sent"`
+	ProfileSnippet    string     `json:"profile_snippet,omitempty"` // первые 200 символов
 }
 
 // AdminJob — задача для панели администратора.
@@ -51,6 +53,9 @@ type AdminRepository interface {
 	GetStats(ctx context.Context) (*AdminStats, error)
 	ListUsers(ctx context.Context, limit, offset int) ([]AdminUser, int64, error)
 	GetUser(ctx context.Context, userID int64) (*AdminUser, error)
+	GetUserByTelegramID(ctx context.Context, telegramID int64) (*AdminUser, error)
 	DeleteUser(ctx context.Context, userID int64) (bool, error) // bool=найден
 	ListJobs(ctx context.Context, source string, limit, offset int) ([]AdminJob, int64, error)
+	SetUserPro(ctx context.Context, userID int64, enabled bool, days int) (bool, *time.Time, error)
+	SetUserProByTelegramID(ctx context.Context, telegramID int64, enabled bool, days int) (bool, *time.Time, error)
 }

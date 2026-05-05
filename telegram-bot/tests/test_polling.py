@@ -208,6 +208,8 @@ def test_run_polling_rejects_debug_match_for_non_admin(bot, monkeypatch):
 
 
 def test_run_polling_profile_uses_cached_user_id(bot, monkeypatch):
+    profile_one = "Python backend developer with Django, FastAPI, PostgreSQL and 4 years of freelance experience."
+    profile_two = "Go backend developer with PostgreSQL, Redis, Docker and experience in API integrations."
     updates = [
         (
             [
@@ -216,7 +218,7 @@ def test_run_polling_profile_uses_cached_user_id(bot, monkeypatch):
                     "message": {
                         "chat": {"id": 100},
                         "from": {"id": 200},
-                        "text": "/profile python",
+                        "text": f"/profile {profile_one}",
                     },
                 },
                 {
@@ -224,7 +226,7 @@ def test_run_polling_profile_uses_cached_user_id(bot, monkeypatch):
                     "message": {
                         "chat": {"id": 100},
                         "from": {"id": 200},
-                        "text": "/profile golang",
+                        "text": f"/profile {profile_two}",
                     },
                 },
             ],
@@ -355,8 +357,8 @@ def test_run_polling_profile_without_text_shows_profile_overview(bot, monkeypatc
     monkeypatch.setattr(bot, "post_users", MagicMock(return_value=123))
     monkeypatch.setattr(
         bot,
-        "get_user_profile_text",
-        MagicMock(return_value="Python-разработчик, Django, FastAPI, 3 года опыта"),
+        "get_user_profile",
+        MagicMock(return_value={"profile_text": "Python-разработчик, Django, FastAPI, 3 года опыта", "is_pro": False}),
     )
     monkeypatch.setattr(bot, "send_keyboard", send_keyboard)
 
@@ -373,9 +375,10 @@ def test_run_polling_profile_without_text_shows_profile_overview(bot, monkeypatc
 
 
 def test_run_polling_profile_requires_start(bot, monkeypatch):
+    profile_text = "Python backend developer with Django, FastAPI, PostgreSQL and commercial project experience."
     updates = [
         (
-            [{"update_id": 1, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "/profile python"}}],
+            [{"update_id": 1, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": f"/profile {profile_text}"}}],
             2,
         )
     ]
@@ -392,9 +395,10 @@ def test_run_polling_profile_requires_start(bot, monkeypatch):
 
 
 def test_run_polling_profile_update_error(bot, monkeypatch):
+    profile_text = "Python backend developer with Django, FastAPI, PostgreSQL and commercial project experience."
     updates = [
         (
-            [{"update_id": 1, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "/profile python"}}],
+            [{"update_id": 1, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": f"/profile {profile_text}"}}],
             2,
         )
     ]
@@ -435,7 +439,7 @@ def test_run_polling_profile_empty_followup_text(bot, monkeypatch):
     send_message = MagicMock(return_value=True)
     monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
     monkeypatch.setattr(bot, "post_users", MagicMock(return_value=123))
-    monkeypatch.setattr(bot, "get_user_profile_text", MagicMock(return_value="старый профиль"))
+    monkeypatch.setattr(bot, "get_user_profile", MagicMock(return_value={"profile_text": "старый профиль", "is_pro": False}))
     monkeypatch.setattr(bot, "send_keyboard", MagicMock(return_value=55))
     monkeypatch.setattr(bot, "send_message", send_message)
     monkeypatch.setattr(bot, "answer_callback_query", lambda *args, **kwargs: None)
@@ -469,6 +473,7 @@ def test_run_polling_profile_invalid_message(bot, monkeypatch):
 
 
 def test_run_polling_profile_two_step_state_flow(bot, monkeypatch):
+    new_profile = "Python backend developer with Django, FastAPI, PostgreSQL and AI automation projects."
     updates = [
         (
             [
@@ -482,7 +487,7 @@ def test_run_polling_profile_two_step_state_flow(bot, monkeypatch):
                         "message": {"chat": {"id": 100}, "message_id": 55},
                     },
                 },
-                {"update_id": 3, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": "python backend"}},
+                {"update_id": 3, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": new_profile}},
             ],
             4,
             True,
@@ -493,7 +498,7 @@ def test_run_polling_profile_two_step_state_flow(bot, monkeypatch):
     put_user_profile_status = MagicMock(return_value=204)
     monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
     monkeypatch.setattr(bot, "post_users", MagicMock(return_value=123))
-    monkeypatch.setattr(bot, "get_user_profile_text", MagicMock(return_value="старый профиль"))
+    monkeypatch.setattr(bot, "get_user_profile", MagicMock(return_value={"profile_text": "старый профиль", "is_pro": False}))
     monkeypatch.setattr(bot, "put_user_profile_status", put_user_profile_status)
     monkeypatch.setattr(bot, "send_keyboard", MagicMock(return_value=55))
     monkeypatch.setattr(bot, "send_message", send_message)
@@ -557,7 +562,7 @@ def test_run_polling_notify_hour_prompt_blocked_for_non_pro(bot, monkeypatch):
         bot.run_polling("token", "https://api.example.com", "tok", "hmac")
 
     assert send_message.call_count == 1
-    assert "только Pro-пользователям" in send_message.call_args.args[2]
+    assert "доступен в Pro" in send_message.call_args.args[2]
     assert bot._get_conversation_state(200) is None
 
 
@@ -605,7 +610,7 @@ def test_handle_notify_hour_submission_clears_state_on_forbidden(bot, monkeypatc
 
     assert handled is True
     assert bot._get_conversation_state(200) is None
-    assert "только Pro-пользователям" in send_message.call_args.args[2]
+    assert "доступен в Pro" in send_message.call_args.args[2]
 
 
 def test_run_polling_handles_stats_command(bot, monkeypatch):
@@ -648,9 +653,10 @@ def test_run_polling_handles_stats_command(bot, monkeypatch):
     assert "За последние 7 дней" in text
     assert "Найдено проектов: 42" in text
     assert "Отправлено тебе: 12" in text
-    assert "Не дошло до тебя: 30" in text
+    assert "Отфильтровано вне выдачи: 30" in text
     assert "Бюджетный фильтр отсеял: 18" in text
-    assert "Ты ничего не теряешь молча" in text
+    assert "Скрыто дневным лимитом" in text
+    assert "сколько проектов нашлось" in text
 
 
 def test_run_polling_handles_status_command_as_stats_alias(bot, monkeypatch):
@@ -751,19 +757,115 @@ def test_run_polling_handles_pro_command(bot, monkeypatch):
 
     monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
     monkeypatch.setattr(bot, "post_users", MagicMock(return_value=123))
-    monkeypatch.setattr(bot, "get_user_is_pro", MagicMock(return_value=False))
-    send_with_reply_keyboard = MagicMock(return_value=None)
-    monkeypatch.setattr(bot, "send_with_reply_keyboard", send_with_reply_keyboard)
+    monkeypatch.setattr(
+        bot,
+        "get_user_profile",
+        MagicMock(return_value={"is_pro": False, "pro_expires_at": None, "notify_hour": None}),
+    )
+    send_keyboard = MagicMock(return_value=77)
+    monkeypatch.setattr(bot, "send_keyboard", send_keyboard)
 
     with pytest.raises(KeyboardInterrupt):
         bot.run_polling("token", "https://api.example.com", "tok", "hmac")
 
-    text = send_with_reply_keyboard.call_args.args[2]
+    text = send_keyboard.call_args.args[2]
+    keyboard = send_keyboard.call_args.args[3]
     assert "Pro-доступ" in text
     assert "Текущий план: Free" in text
-    assert "Без дневного лимита уведомлений" in text
-    assert "Выбор часа дайджеста" in text
-    assert "Как получить Pro" in text
+    assert "До 25 уведомлений в день" in text
+    assert "Без дневного лимита" not in text
+    assert "Выбор часа ежедневного дайджеста" in text
+    assert "Хочу Pro" in [button["text"] for row in keyboard for button in row]
+    assert "pro:upgrade" in [button["callback_data"] for row in keyboard for button in row]
+
+
+def test_handle_pro_upgrade_callback_posts_intent_and_confirms(bot, monkeypatch):
+    sent_messages = []
+    monkeypatch.setattr(bot, "_resolve_user_id", lambda *args, **kwargs: 123)
+    monkeypatch.setattr(bot, "post_pro_upgrade_intent", lambda *args, **kwargs: 204)
+    monkeypatch.setattr(bot, "send_message", lambda *args, **kwargs: sent_messages.append(args[2]) or True)
+    monkeypatch.setattr(bot, "answer_callback_query", lambda *args, **kwargs: None)
+
+    bot.handle_callback(
+        {
+            "id": "cb-pro-upgrade",
+            "data": "pro:upgrade",
+            "from": {"id": 200},
+            "message": {"chat": {"id": 100}, "message_id": 55},
+        },
+        "token",
+        "https://api.example.com",
+        "tok",
+        "hmac",
+    )
+
+    assert sent_messages
+    assert "Запрос на Pro" in sent_messages[0]
+
+
+def test_admin_pro_command_requires_admin(bot, monkeypatch):
+    monkeypatch.setenv("ADMIN_TELEGRAM_ID", "999")
+    send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(bot, "send_message", send_message)
+
+    handled = bot._handle_admin_pro_command(
+        "token",
+        100,
+        200,
+        "/admin_pro 123 on 30",
+        "https://api.example.com",
+    )
+
+    assert handled is True
+    assert "только администратору" in send_message.call_args.args[2]
+
+
+def test_admin_pro_command_turns_on_by_telegram_id(bot, monkeypatch):
+    calls = []
+    monkeypatch.setenv("ADMIN_TELEGRAM_ID", "200")
+    monkeypatch.setenv("ADMIN_AUTH_TOKEN", "admin-token")
+    monkeypatch.setattr(bot, "_http_put", lambda url, payload, **kwargs: calls.append((url, payload, kwargs)) or 204)
+    send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(bot, "send_message", send_message)
+
+    handled = bot._handle_admin_pro_command(
+        "token",
+        100,
+        200,
+        "/admin_pro 123456 on 30",
+        "https://api.example.com",
+    )
+
+    assert handled is True
+    assert calls == [
+        (
+            "https://api.example.com/admin/telegram-users/123456/pro",
+            {"enabled": True, "days": 30},
+            {"headers": {"Authorization": "Bearer admin-token"}},
+        )
+    ]
+    assert "Pro включён на 30 дней" in send_message.call_args.args[2]
+
+
+def test_admin_pro_command_turns_off_by_telegram_id(bot, monkeypatch):
+    calls = []
+    monkeypatch.setenv("ADMIN_TELEGRAM_ID", "200")
+    monkeypatch.setenv("ADMIN_AUTH_TOKEN", "admin-token")
+    monkeypatch.setattr(bot, "_http_put", lambda url, payload, **kwargs: calls.append((url, payload, kwargs)) or 204)
+    send_message = MagicMock(return_value=True)
+    monkeypatch.setattr(bot, "send_message", send_message)
+
+    handled = bot._handle_admin_pro_command(
+        "token",
+        100,
+        200,
+        "/admin_pro 123456 off",
+        "https://api.example.com",
+    )
+
+    assert handled is True
+    assert calls[0][1] == {"enabled": False}
+    assert "Pro выключен" in send_message.call_args.args[2]
 
 
 def test_run_polling_handles_pause_command(bot, monkeypatch):

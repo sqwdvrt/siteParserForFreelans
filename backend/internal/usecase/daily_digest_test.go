@@ -60,6 +60,10 @@ func (m *digestUserRepo) GetProUsersWithNotifyHour(ctx context.Context, hour int
 	return nil, nil
 }
 
+func (m *digestUserRepo) GetUsersWithProExpiryBetween(ctx context.Context, from, to time.Time) ([]*domain.User, error) {
+	return nil, nil
+}
+
 type digestNotifRepo struct {
 	countTodayFunc      func(ctx context.Context, userID int64) (int, error)
 	claimPendingFunc    func(ctx context.Context, userID int64, limit int) ([]port.PendingNotification, error)
@@ -116,6 +120,10 @@ func (m *digestNotifRepo) CountToday(ctx context.Context, userID int64) (int, er
 	if m.countTodayFunc != nil {
 		return m.countTodayFunc(ctx, userID)
 	}
+	return 0, nil
+}
+
+func (m *digestNotifRepo) CountMissedToday(ctx context.Context, userID int64) (int, error) {
 	return 0, nil
 }
 
@@ -230,8 +238,8 @@ func (m *digestNotifier) Send(ctx context.Context, telegramID int64, payload por
 
 func TestNewDailyDigestUsesDefaultMaxPerDay(t *testing.T) {
 	uc := NewDailyDigest(&digestUserRepo{}, &digestNotifRepo{}, &digestJobRepo{}, &digestNotifier{}, 0)
-	if uc.maxPerDay != defaultMaxPerDay {
-		t.Fatalf("maxPerDay=%d want=%d", uc.maxPerDay, defaultMaxPerDay)
+	if uc.freeMaxPerDay != defaultFreeMaxPerDay || uc.proMaxPerDay != defaultProMaxPerDay {
+		t.Fatalf("caps free=%d pro=%d want free=%d pro=%d", uc.freeMaxPerDay, uc.proMaxPerDay, defaultFreeMaxPerDay, defaultProMaxPerDay)
 	}
 }
 

@@ -192,6 +192,19 @@ func (r *NotificationRepository) CountToday(ctx context.Context, userID int64) (
 	return n, err
 }
 
+func (r *NotificationRepository) CountMissedToday(ctx context.Context, userID int64) (int, error) {
+	var n int
+	err := r.pool.QueryRow(ctx, `
+		SELECT COUNT(*)
+		FROM notifications
+		WHERE user_id = $1
+		  AND status = 'missed'
+		  AND created_at >= (date_trunc('day', now() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')
+		  AND created_at < ((date_trunc('day', now() AT TIME ZONE 'UTC') + INTERVAL '1 day') AT TIME ZONE 'UTC')
+	`, userID).Scan(&n)
+	return n, err
+}
+
 // CancelPendingByJobIDs удаляет pending-уведомления для экспайренных jobs.
 func (r *NotificationRepository) CancelPendingByJobIDs(ctx context.Context, jobIDs []int64) (int64, error) {
 	if len(jobIDs) == 0 {
@@ -397,7 +410,7 @@ func (r *NotificationRepository) GetFreeUsersWithPendingNotifications(ctx contex
 		FROM notifications n
 		JOIN users u ON u.id = n.user_id
 		WHERE n.status = 'pending'
-		  AND u.is_pro = FALSE
+		  AND NOT (u.is_pro = TRUE AND COALESCE(u.pro_expires_at > NOW(), FALSE))
 		  AND (u.paused_until IS NULL OR u.paused_until <= NOW())
 		ORDER BY n.user_id
 	`)

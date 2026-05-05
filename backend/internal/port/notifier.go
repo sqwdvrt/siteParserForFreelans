@@ -16,18 +16,25 @@ type BatchNotifyItem struct {
 	ReasonCodes   []string
 }
 
+type InlineButton struct {
+	Text         string
+	CallbackData string
+}
+
 // NotifyPayload — данные для уведомления о проекте.
 type NotifyPayload struct {
-	Source        string
-	Job           *domain.Job
-	Score         float64
-	FinalScore    float64
-	RankerVersion string
-	ReasonCodes   []string
-	WhyItFits     string // 1–2 фразы из ai_metadata, почему подходит (опционально)
-	Batch         []BatchNotifyItem
-	BatchScore    float64
-	CriticScore   float64
+	Source         string
+	Text           string
+	Job            *domain.Job
+	Score          float64
+	FinalScore     float64
+	RankerVersion  string
+	ReasonCodes    []string
+	WhyItFits      string // 1–2 фразы из ai_metadata, почему подходит (опционально)
+	Batch          []BatchNotifyItem
+	BatchScore     float64
+	CriticScore    float64
+	InlineKeyboard [][]InlineButton
 }
 
 // EffectiveBatchScore returns the canonical batch score and falls back to the

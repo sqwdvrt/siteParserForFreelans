@@ -74,6 +74,7 @@ func (m *mockUserStatsRepo) GetUserStats(ctx context.Context, userID int64, wind
 
 type mockProductEventRepo struct {
 	recordFunc func(ctx context.Context, event port.ProductEvent) error
+	existsFunc func(ctx context.Context, userID int64, eventType port.ProductEventType, since time.Time, propertyKey, propertyValue string) (bool, error)
 	events     []port.ProductEvent
 }
 
@@ -83,6 +84,13 @@ func (m *mockProductEventRepo) Record(ctx context.Context, event port.ProductEve
 		return m.recordFunc(ctx, event)
 	}
 	return nil
+}
+
+func (m *mockProductEventRepo) ExistsSince(ctx context.Context, userID int64, eventType port.ProductEventType, since time.Time, propertyKey, propertyValue string) (bool, error) {
+	if m.existsFunc != nil {
+		return m.existsFunc(ctx, userID, eventType, since, propertyKey, propertyValue)
+	}
+	return false, nil
 }
 
 type mockFeedbackRepo struct {
@@ -204,6 +212,10 @@ func (m *mockUserRepo) UpsertPreferencesScoped(ctx context.Context, userID int64
 	return nil
 }
 func (m *mockUserRepo) GetProUsersWithNotifyHour(ctx context.Context, hour int) ([]int64, error) {
+	return nil, nil
+}
+
+func (m *mockUserRepo) GetUsersWithProExpiryBetween(ctx context.Context, from, to time.Time) ([]*domain.User, error) {
 	return nil, nil
 }
 
@@ -494,14 +506,16 @@ func TestHandlers_PutUserProfile_RecordsCompletionForFirstProfile(t *testing.T) 
 func TestHandlers_GetUserProfile_Success(t *testing.T) {
 	profileText := "Flutter/Kotlin mobile developer with Android and cross-platform projects."
 	hour := int16(9)
+	expiresAt := time.Now().UTC().Add(30 * 24 * time.Hour)
 	repo := &mockUserRepo{
 		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
 			return &domain.User{
-				ID:          userID,
-				TelegramID:  123456789,
-				ProfileText: &profileText,
-				IsPro:       true,
-				NotifyHour:  &hour,
+				ID:           userID,
+				TelegramID:   123456789,
+				ProfileText:  &profileText,
+				IsPro:        true,
+				ProExpiresAt: &expiresAt,
+				NotifyHour:   &hour,
 			}, nil
 		},
 	}
@@ -530,6 +544,41 @@ func TestHandlers_GetUserProfile_Success(t *testing.T) {
 	}
 	if got := resp["is_pro"]; got != true {
 		t.Fatalf("is_pro = %v, want true", got)
+	}
+	if got := resp["pro_expires_at"]; got == nil {
+		t.Fatal("pro_expires_at missing for active Pro user")
+	}
+}
+
+func TestHandlers_GetUserProfile_ExpiredProReturnsFree(t *testing.T) {
+	expiresAt := time.Now().UTC().Add(-time.Hour)
+	repo := &mockUserRepo{
+		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+			return &domain.User{ID: userID, TelegramID: 123456789, IsPro: true, ProExpiresAt: &expiresAt}, nil
+		},
+	}
+	h := &Handlers{UserRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+
+	req := newJSONRequest(
+		http.MethodGet,
+		"/users/1",
+		nil,
+		newAuthHeadersWithUserSign(http.MethodGet, "/users/1", 123456789, nil),
+	)
+	req = attachRouteUserID(req, "1")
+	rr := httptest.NewRecorder()
+
+	h.GetUser(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var resp map[string]any
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := resp["is_pro"]; got != false {
+		t.Fatalf("is_pro = %v, want false for expired Pro", got)
 	}
 }
 
@@ -796,9 +845,10 @@ func TestHandlers_PutUserProfile_FlushError_DoesNotRollback(t *testing.T) {
 func TestHandlers_PutUserNotifyHour_Success(t *testing.T) {
 	var gotUserID int64
 	var gotHour int
+	expiresAt := time.Now().UTC().Add(24 * time.Hour)
 	repo := &mockUserRepo{
 		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
-			return &domain.User{ID: userID, TelegramID: 123456789, IsPro: true}, nil
+			return &domain.User{ID: userID, TelegramID: 123456789, IsPro: true, ProExpiresAt: &expiresAt}, nil
 		},
 		updateNotifyHourFunc: func(ctx context.Context, userID int64, hour int) error {
 			gotUserID = userID
@@ -851,6 +901,32 @@ func TestHandlers_PutUserNotifyHour_ForbiddenForNonPro(t *testing.T) {
 	}
 }
 
+func TestHandlers_PutUserNotifyHour_ForbiddenForExpiredPro(t *testing.T) {
+	expiresAt := time.Now().UTC().Add(-time.Minute)
+	repo := &mockUserRepo{
+		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+			return &domain.User{ID: userID, TelegramID: 123456789, IsPro: true, ProExpiresAt: &expiresAt}, nil
+		},
+	}
+	h := &Handlers{UserRepo: repo, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
+
+	body := []byte(`{"hour":8}`)
+	req := newJSONRequest(
+		http.MethodPut,
+		"/users/1/notify-hour",
+		body,
+		newAuthHeadersWithUserSign(http.MethodPut, "/users/1/notify-hour", 123456789, body),
+	)
+	req = attachRouteUserID(req, "1")
+	rr := httptest.NewRecorder()
+
+	h.PutUserNotifyHour(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want 403", rr.Code)
+	}
+}
+
 func TestHandlers_PutUserNotifyHour_InvalidHour(t *testing.T) {
 	h := &Handlers{UserRepo: &mockUserRepo{}, AuthToken: testAuthToken, UserHMACSecret: testUserHMACSecret}
 
@@ -872,9 +948,10 @@ func TestHandlers_PutUserNotifyHour_InvalidHour(t *testing.T) {
 }
 
 func TestHandlers_PutUserNotifyHour_UpdateError(t *testing.T) {
+	expiresAt := time.Now().UTC().Add(24 * time.Hour)
 	repo := &mockUserRepo{
 		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
-			return &domain.User{ID: userID, TelegramID: 123456789, IsPro: true}, nil
+			return &domain.User{ID: userID, TelegramID: 123456789, IsPro: true, ProExpiresAt: &expiresAt}, nil
 		},
 		updateNotifyHourFunc: func(ctx context.Context, userID int64, hour int) error {
 			return errors.New("db error")
@@ -977,9 +1054,10 @@ func TestHandlers_PutUserPause_ClearPauseWithNull(t *testing.T) {
 }
 
 func TestHandlers_GetUserPreferences_Success(t *testing.T) {
+	expiresAt := time.Now().UTC().Add(24 * time.Hour)
 	repo := &mockUserRepo{
 		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
-			return &domain.User{ID: userID, TelegramID: 123456789, IsPro: true}, nil
+			return &domain.User{ID: userID, TelegramID: 123456789, IsPro: true, ProExpiresAt: &expiresAt}, nil
 		},
 		getPreferencesFunc: func(ctx context.Context, userID int64) (*domain.UserPreferences, error) {
 			minBudget := 1000.0
@@ -1032,9 +1110,17 @@ func TestHandlers_GetUserPreferences_Success(t *testing.T) {
 }
 
 func TestHandlers_GetUserStats_Success(t *testing.T) {
+	expiresAt := time.Now().UTC().Add(72 * time.Hour)
+	notifyHour := int16(9)
 	repo := &mockUserRepo{
 		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
-			return &domain.User{ID: userID, TelegramID: 123456789}, nil
+			return &domain.User{
+				ID:           userID,
+				TelegramID:   123456789,
+				IsPro:        true,
+				ProExpiresAt: &expiresAt,
+				NotifyHour:   &notifyHour,
+			}, nil
 		},
 	}
 	statsRepo := &mockUserStatsRepo{
@@ -1051,7 +1137,12 @@ func TestHandlers_GetUserStats_Success(t *testing.T) {
 				ProjectsShown:            12,
 				ProjectsFilteredOther:    30,
 				ProjectsFilteredByBudget: 18,
+				ProjectsHiddenByCap:      6,
 				BudgetFilterActive:       true,
+				Plan:                     "pro",
+				DailyCap:                 25,
+				ProExpiresAt:             &expiresAt,
+				NotifyHour:               &notifyHour,
 			}, nil
 		},
 	}
@@ -1086,6 +1177,15 @@ func TestHandlers_GetUserStats_Success(t *testing.T) {
 	if !resp.BudgetFilterActive || resp.ProjectsFilteredByBudget != 18 {
 		t.Fatalf("unexpected budget stats: %#v", resp)
 	}
+	if resp.ProjectsHiddenByCap != 6 || resp.Plan != "pro" || resp.DailyCap != 25 {
+		t.Fatalf("unexpected plan stats: %#v", resp)
+	}
+	if resp.NotifyHour == nil || *resp.NotifyHour != 9 {
+		t.Fatalf("notify_hour=%v want 9", resp.NotifyHour)
+	}
+	if resp.ProExpiresAt == nil || !resp.ProExpiresAt.Equal(expiresAt) {
+		t.Fatalf("pro_expires_at=%v want %v", resp.ProExpiresAt, expiresAt)
+	}
 }
 
 func TestHandlers_GetUserStats_OwnerMismatch(t *testing.T) {
@@ -1114,6 +1214,55 @@ func TestHandlers_GetUserStats_OwnerMismatch(t *testing.T) {
 
 	if rr.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", rr.Code)
+	}
+}
+
+func TestHandlers_PostUserProUpgradeIntent_RecordsEvent(t *testing.T) {
+	expiresAt := time.Now().UTC().Add(-24 * time.Hour)
+	repo := &mockUserRepo{
+		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+			return &domain.User{
+				ID:           userID,
+				TelegramID:   123456789,
+				IsPro:        true,
+				ProExpiresAt: &expiresAt,
+			}, nil
+		},
+	}
+	eventRepo := &mockProductEventRepo{}
+	h := &Handlers{
+		UserRepo:         repo,
+		ProductEventRepo: eventRepo,
+		AuthToken:        testAuthToken,
+		UserHMACSecret:   testUserHMACSecret,
+	}
+
+	body := []byte(`{"source":"telegram_pro_screen"}`)
+	req := newJSONRequest(
+		http.MethodPost,
+		"/users/7/pro-upgrade-intent",
+		body,
+		newAuthHeadersWithUserSign(http.MethodPost, "/users/7/pro-upgrade-intent", 123456789, body),
+	)
+	req = attachRouteUserID(req, "7")
+	rr := httptest.NewRecorder()
+
+	h.PostUserProUpgradeIntent(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", rr.Code)
+	}
+	if len(eventRepo.events) != 1 {
+		t.Fatalf("events len = %d, want 1", len(eventRepo.events))
+	}
+	if eventRepo.events[0].Type != port.ProductEventProUpgradeRequested {
+		t.Fatalf("event type = %q, want %q", eventRepo.events[0].Type, port.ProductEventProUpgradeRequested)
+	}
+	if got := eventRepo.events[0].Properties["source"]; got != "telegram_pro_screen" {
+		t.Fatalf("source = %#v, want telegram_pro_screen", got)
+	}
+	if got := eventRepo.events[0].Properties["current_plan"]; got != "expired_pro" {
+		t.Fatalf("current_plan = %#v, want expired_pro", got)
 	}
 }
 

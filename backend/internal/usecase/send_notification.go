@@ -21,12 +21,13 @@ type batchItemMeta struct {
 // SendNotification проверяет валидность пары (user, job) и управляет доставкой
 // через notifications dedup state; batch-path при наличии notifier отправляет сразу.
 type SendNotification struct {
-	notifRepo port.NotificationRepository
-	userRepo  port.UserRepository
-	jobRepo   port.JobRepository
-	notifier  port.Notifier
-	eventRepo port.ProductEventRepository
-	maxPerDay int
+	notifRepo     port.NotificationRepository
+	userRepo      port.UserRepository
+	jobRepo       port.JobRepository
+	notifier      port.Notifier
+	eventRepo     port.ProductEventRepository
+	freeMaxPerDay int
+	proMaxPerDay  int
 }
 
 // NewSendNotification создаёт usecase.
@@ -36,10 +37,11 @@ func NewSendNotification(
 	jobRepo port.JobRepository,
 ) *SendNotification {
 	return &SendNotification{
-		notifRepo: notifRepo,
-		userRepo:  userRepo,
-		jobRepo:   jobRepo,
-		maxPerDay: defaultMaxPerDay,
+		notifRepo:     notifRepo,
+		userRepo:      userRepo,
+		jobRepo:       jobRepo,
+		freeMaxPerDay: defaultFreeMaxPerDay,
+		proMaxPerDay:  defaultProMaxPerDay,
 	}
 }
 
@@ -55,7 +57,17 @@ func (u *SendNotification) WithProductEventRepo(repo port.ProductEventRepository
 
 func (u *SendNotification) WithMaxPerDay(maxPerDay int) *SendNotification {
 	if maxPerDay > 0 {
-		u.maxPerDay = maxPerDay
+		u.proMaxPerDay = maxPerDay
+	}
+	return u
+}
+
+func (u *SendNotification) WithDailyCaps(freeMaxPerDay, proMaxPerDay int) *SendNotification {
+	if freeMaxPerDay > 0 {
+		u.freeMaxPerDay = freeMaxPerDay
+	}
+	if proMaxPerDay > 0 {
+		u.proMaxPerDay = proMaxPerDay
 	}
 	return u
 }
@@ -78,6 +90,9 @@ func (u *SendNotification) Execute(
 	if user == nil {
 		slog.Debug("send notification: user not found", "user_id", userID)
 		return nil
+	}
+	if user.ID == 0 {
+		user.ID = userID
 	}
 	if user.IsPaused(time.Now()) {
 		slog.Debug("send notification: paused user skipped", "user_id", userID)
@@ -142,6 +157,9 @@ func (u *SendNotification) ExecuteBatch(
 	if user == nil {
 		slog.Debug("send batch notification: user not found", "user_id", userID)
 		return nil
+	}
+	if user.ID == 0 {
+		user.ID = userID
 	}
 	if user.IsPaused(time.Now()) {
 		slog.Debug("send batch notification: paused user skipped", "user_id", userID)
@@ -216,7 +234,7 @@ func (u *SendNotification) ExecuteBatch(
 		return nil
 	}
 
-	selected, err := u.selectBatchWithinDailyCap(ctx, userID, deliverable)
+	selected, err := u.selectBatchWithinDailyCap(ctx, user, deliverable)
 	if err != nil {
 		return err
 	}
@@ -269,7 +287,8 @@ func (u *SendNotification) ExecuteBatch(
 			slog.Error("send batch notification: mark sent failed", "user_id", userID, "job_id", meta.job.ID, "err", err)
 			continue
 		}
-		if err := u.recordNotificationSent(ctx, userID, meta.job, source); err != nil {
+		dailyCap := u.dailyCapForUser(user)
+		if err := u.recordNotificationSent(ctx, userID, meta.job, source, dailyCap, user.EffectiveIsPro(time.Now())); err != nil {
 			slog.Warn("send batch notification: record product event failed", "user_id", userID, "job_id", meta.job.ID, "err", err)
 		}
 	}
@@ -280,13 +299,15 @@ func (u *SendNotification) ExecuteBatch(
 
 func (u *SendNotification) selectBatchWithinDailyCap(
 	ctx context.Context,
-	userID int64,
+	user *domain.User,
 	items []batchItemMeta,
 ) ([]batchItemMeta, error) {
 	if len(items) == 0 {
 		return nil, nil
 	}
-	if u.maxPerDay <= 0 {
+	userID := user.ID
+	maxPerDay := u.dailyCapForUser(user)
+	if maxPerDay <= 0 {
 		return items, nil
 	}
 
@@ -294,12 +315,18 @@ func (u *SendNotification) selectBatchWithinDailyCap(
 	if err != nil {
 		return nil, err
 	}
-	remaining := u.maxPerDay - countToday
+	remaining := maxPerDay - countToday
 	if remaining <= 0 {
 		for _, item := range items {
 			if err := u.notifRepo.MarkMissed(ctx, userID, item.job.ID); err != nil {
 				return nil, err
 			}
+		}
+		if err := u.recordCapHit(ctx, user, len(items), maxPerDay); err != nil {
+			slog.Warn("send batch notification: record cap hit failed", "user_id", userID, "err", err)
+		}
+		if err := u.maybeSendCapHitNudge(ctx, user, len(items), maxPerDay); err != nil {
+			slog.Warn("send batch notification: send cap hit nudge failed", "user_id", userID, "err", err)
 		}
 		return nil, nil
 	}
@@ -312,7 +339,21 @@ func (u *SendNotification) selectBatchWithinDailyCap(
 			return nil, err
 		}
 	}
+	hiddenCount := len(items) - remaining
+	if err := u.recordCapHit(ctx, user, hiddenCount, maxPerDay); err != nil {
+		slog.Warn("send batch notification: record partial cap hit failed", "user_id", userID, "err", err)
+	}
+	if err := u.maybeSendCapHitNudge(ctx, user, hiddenCount, maxPerDay); err != nil {
+		slog.Warn("send batch notification: send partial cap nudge failed", "user_id", userID, "err", err)
+	}
 	return items[:remaining], nil
+}
+
+func (u *SendNotification) dailyCapForUser(user *domain.User) int {
+	if user != nil && user.EffectiveIsPro(time.Now()) {
+		return u.proMaxPerDay
+	}
+	return u.freeMaxPerDay
 }
 
 func (u *SendNotification) recordNotificationSent(
@@ -320,6 +361,8 @@ func (u *SendNotification) recordNotificationSent(
 	userID int64,
 	job *domain.Job,
 	deliveryMode string,
+	dailyCap int,
+	isPro bool,
 ) error {
 	if u.eventRepo == nil || job == nil {
 		return nil
@@ -331,6 +374,126 @@ func (u *SendNotification) recordNotificationSent(
 		Source: job.Source,
 		Properties: map[string]any{
 			"delivery_mode": deliveryMode,
+			"plan":          planName(isPro),
+			"daily_cap":     dailyCap,
 		},
 	})
+}
+
+func planName(isPro bool) string {
+	if isPro {
+		return "pro"
+	}
+	return "free"
+}
+
+func (u *SendNotification) recordCapHit(ctx context.Context, user *domain.User, hiddenCount, dailyCap int) error {
+	if u.eventRepo == nil || user == nil || user.ID <= 0 || hiddenCount <= 0 {
+		return nil
+	}
+	return u.eventRepo.Record(ctx, port.ProductEvent{
+		Type:   port.ProductEventFreeHiddenByCap,
+		UserID: user.ID,
+		Properties: map[string]any{
+			"hidden_count": hiddenCount,
+			"daily_cap":    dailyCap,
+			"plan":         deliveryPlanName(user, time.Now()),
+		},
+	})
+}
+
+func (u *SendNotification) maybeSendCapHitNudge(ctx context.Context, user *domain.User, hiddenCount, dailyCap int) error {
+	if u.notifier == nil || user == nil || user.TelegramID <= 0 || hiddenCount <= 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	if user.EffectiveIsPro(now) {
+		return nil
+	}
+	if u.eventRepo != nil {
+		exists, err := u.eventRepo.ExistsSince(
+			ctx,
+			user.ID,
+			port.ProductEventFreeCapHit,
+			startOfUTCDay(now),
+			"",
+			"",
+		)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return nil
+		}
+	}
+	totalHiddenToday, err := u.notifRepo.CountMissedToday(ctx, user.ID)
+	if err != nil {
+		return err
+	}
+	text := formatCapHitMessage(user, totalHiddenToday, dailyCap)
+	err = u.notifier.Send(ctx, user.TelegramID, port.NotifyPayload{
+		Source: "cap-hit",
+		Text:   text,
+		InlineKeyboard: [][]port.InlineButton{{
+			{Text: "Хочу Pro", CallbackData: "pro:upgrade"},
+		}},
+	})
+	if err != nil {
+		return err
+	}
+	if u.eventRepo != nil {
+		return u.eventRepo.Record(ctx, port.ProductEvent{
+			Type:   port.ProductEventFreeCapHit,
+			UserID: user.ID,
+			Properties: map[string]any{
+				"hidden_count":     hiddenCount,
+				"hidden_today":     totalHiddenToday,
+				"daily_cap":        dailyCap,
+				"plan":             deliveryPlanName(user, now),
+				"upgrade_cta_sent": true,
+			},
+		})
+	}
+	return nil
+}
+
+func formatCapHitMessage(user *domain.User, hiddenToday, dailyCap int) string {
+	hiddenToday = maxInt(hiddenToday, 1)
+	if user != nil && user.IsPro && !user.EffectiveIsPro(time.Now()) {
+		return fmt.Sprintf(
+			"Срок Pro закончился. Сегодня я уже скрыл %d подходящих лидов лимитом Free (%d в день).\n\nВерни Pro, чтобы снова получать до 25 лидов в день, быстрые уведомления и дневную сводку.",
+			hiddenToday,
+			dailyCap,
+		)
+	}
+	return fmt.Sprintf(
+		"Лимит Free на сегодня исчерпан. Я уже скрыл %d подходящих лидов после дневного cap %d.\n\nPro даёт до 25 лидов в день, быстрые уведомления и выбор часа дайджеста.",
+		hiddenToday,
+		dailyCap,
+	)
+}
+
+func deliveryPlanName(user *domain.User, now time.Time) string {
+	if user == nil {
+		return "free"
+	}
+	if user.EffectiveIsPro(now) {
+		return "pro"
+	}
+	if user.IsPro && user.ProExpiresAt != nil && !user.ProExpiresAt.After(now) {
+		return "expired_pro"
+	}
+	return "free"
+}
+
+func startOfUTCDay(now time.Time) time.Time {
+	y, m, d := now.UTC().Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
+}
+
+func maxInt(value, fallback int) int {
+	if value > 0 {
+		return value
+	}
+	return fallback
 }

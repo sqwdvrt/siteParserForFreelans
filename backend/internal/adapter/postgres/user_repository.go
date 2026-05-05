@@ -43,8 +43,17 @@ func (r *UserRepository) Save(ctx context.Context, telegramID int64) (int64, boo
 func (r *UserRepository) GetByID(ctx context.Context, userID int64) (*domain.User, error) {
 	var u domain.User
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, telegram_id, profile_text, is_pro, notify_hour, paused_until FROM users WHERE id = $1
-	`, userID).Scan(&u.ID, &u.TelegramID, &u.ProfileText, &u.IsPro, &u.NotifyHour, &u.PausedUntil)
+		SELECT
+			id,
+			telegram_id,
+			profile_text,
+			is_pro AND COALESCE(pro_expires_at > NOW(), FALSE) AS is_pro,
+			pro_expires_at,
+			notify_hour,
+			paused_until
+		FROM users
+		WHERE id = $1
+	`, userID).Scan(&u.ID, &u.TelegramID, &u.ProfileText, &u.IsPro, &u.ProExpiresAt, &u.NotifyHour, &u.PausedUntil)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -58,8 +67,17 @@ func (r *UserRepository) GetByID(ctx context.Context, userID int64) (*domain.Use
 func (r *UserRepository) GetByTelegramID(ctx context.Context, telegramID int64) (*domain.User, error) {
 	var u domain.User
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, telegram_id, profile_text, is_pro, notify_hour, paused_until FROM users WHERE telegram_id = $1
-	`, telegramID).Scan(&u.ID, &u.TelegramID, &u.ProfileText, &u.IsPro, &u.NotifyHour, &u.PausedUntil)
+		SELECT
+			id,
+			telegram_id,
+			profile_text,
+			is_pro AND COALESCE(pro_expires_at > NOW(), FALSE) AS is_pro,
+			pro_expires_at,
+			notify_hour,
+			paused_until
+		FROM users
+		WHERE telegram_id = $1
+	`, telegramID).Scan(&u.ID, &u.TelegramID, &u.ProfileText, &u.IsPro, &u.ProExpiresAt, &u.NotifyHour, &u.PausedUntil)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -206,6 +224,7 @@ func (r *UserRepository) GetProUsersWithNotifyHour(ctx context.Context, hour int
 	rows, err := r.pool.Query(ctx, `
 		SELECT id FROM users
 		WHERE is_pro = TRUE
+		  AND pro_expires_at > NOW()
 		  AND notify_hour = $1
 	`, hour)
 	if err != nil {
@@ -222,6 +241,45 @@ func (r *UserRepository) GetProUsersWithNotifyHour(ctx context.Context, hour int
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+func (r *UserRepository) GetUsersWithProExpiryBetween(ctx context.Context, from, to time.Time) ([]*domain.User, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT
+			id,
+			telegram_id,
+			profile_text,
+			is_pro AND COALESCE(pro_expires_at > NOW(), FALSE) AS is_pro,
+			pro_expires_at,
+			notify_hour,
+			paused_until
+		FROM users
+		WHERE pro_expires_at >= $1
+		  AND pro_expires_at < $2
+		ORDER BY pro_expires_at ASC, id ASC
+	`, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var users []*domain.User
+	for rows.Next() {
+		var user domain.User
+		if err := rows.Scan(
+			&user.ID,
+			&user.TelegramID,
+			&user.ProfileText,
+			&user.IsPro,
+			&user.ProExpiresAt,
+			&user.NotifyHour,
+			&user.PausedUntil,
+		); err != nil {
+			return nil, err
+		}
+		users = append(users, &user)
+	}
+	return users, rows.Err()
 }
 
 // UpsertPreferencesScoped обновляет user_preferences в транзакции с app.current_user_id для RLS.

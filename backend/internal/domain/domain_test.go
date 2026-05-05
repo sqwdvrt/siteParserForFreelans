@@ -132,6 +132,32 @@ func TestIsPaused_table(t *testing.T) {
 	}
 }
 
+func TestEffectiveIsPro_table(t *testing.T) {
+	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
+	future := now.Add(24 * time.Hour)
+	past := now.Add(-24 * time.Hour)
+
+	tests := []struct {
+		name      string
+		user      *User
+		wantIsPro bool
+	}{
+		{name: "nil user", user: nil, wantIsPro: false},
+		{name: "free user", user: &User{IsPro: false, ProExpiresAt: &future}, wantIsPro: false},
+		{name: "missing expiry", user: &User{IsPro: true}, wantIsPro: false},
+		{name: "expired pro", user: &User{IsPro: true, ProExpiresAt: &past}, wantIsPro: false},
+		{name: "active pro", user: &User{IsPro: true, ProExpiresAt: &future}, wantIsPro: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.user.EffectiveIsPro(now); got != tc.wantIsPro {
+				t.Fatalf("EffectiveIsPro() = %v, want %v", got, tc.wantIsPro)
+			}
+		})
+	}
+}
+
 // ---------------------------------------------------------------------------
 // UserFeedback struct fields (smoke test — pure data, no methods)
 // ---------------------------------------------------------------------------
