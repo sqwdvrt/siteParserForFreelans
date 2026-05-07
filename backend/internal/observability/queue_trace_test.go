@@ -20,14 +20,16 @@ func TestQueueDispatchTraceRoundTrip(t *testing.T) {
 		t.Fatalf("trace_id=%q want trace-123", trace.TraceID)
 	}
 
-	restored := ContextWithQueueDispatchTrace(nil, trace)
+	var nilCtx context.Context
+	restored := ContextWithQueueDispatchTrace(nilCtx, trace)
 	if got := TraceIDFromContext(restored); got != "trace-123" {
 		t.Fatalf("restored trace_id=%q want trace-123", got)
 	}
 }
 
 func TestContextWithQueueDispatchTrace_NoData(t *testing.T) {
-	ctx := ContextWithQueueDispatchTrace(nil, port.QueueDispatchTrace{})
+	var nilCtx context.Context
+	ctx := ContextWithQueueDispatchTrace(nilCtx, port.QueueDispatchTrace{})
 	if ctx == nil {
 		t.Fatal("context must not be nil")
 	}

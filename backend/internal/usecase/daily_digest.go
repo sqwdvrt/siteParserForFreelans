@@ -13,7 +13,6 @@ const moscowLocation = "Europe/Moscow"
 const defaultDigestClaimTTL = 15 * time.Minute
 const defaultFreeMaxPerDay = 5
 const defaultProMaxPerDay = 25
-const defaultMaxPerDay = defaultFreeMaxPerDay
 
 // DailyDigest отправляет pro-пользователям накопленные pending-уведомления в заданный час.
 type DailyDigest struct {
