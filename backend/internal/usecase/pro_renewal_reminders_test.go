@@ -98,3 +98,42 @@ func TestProRenewalReminders_ExecuteSendsThreeDayReminderOnce(t *testing.T) {
 		t.Fatalf("payloads=%d want 0 after dedupe", len(notifier.payloads))
 	}
 }
+
+func TestProRenewalReminders_ExecuteRecordsExpiredEvent(t *testing.T) {
+	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
+	expiresAt := time.Date(2026, 5, 4, 10, 0, 0, 0, time.UTC)
+	notifier := &mockNotifier{}
+	eventRepo := &mockEventRepo{}
+	repo := &reminderUserRepo{
+		getUsersWithProExpiryBetweenFunc: func(ctx context.Context, from, to time.Time) ([]*domain.User, error) {
+			startYesterday := time.Date(2026, 5, 4, 0, 0, 0, 0, time.UTC)
+			startToday := time.Date(2026, 5, 5, 0, 0, 0, 0, time.UTC)
+			if from.Equal(startYesterday) && to.Equal(startToday) {
+				return []*domain.User{{ID: 11, TelegramID: 1100, IsPro: true, ProExpiresAt: &expiresAt}}, nil
+			}
+			return nil, nil
+		},
+	}
+
+	err := NewProRenewalReminders(repo, notifier, eventRepo).
+		WithNow(func() time.Time { return now }).
+		Execute(context.Background())
+	if err != nil {
+		t.Fatalf("Execute err=%v", err)
+	}
+	if len(notifier.payloads) != 1 {
+		t.Fatalf("payloads=%d want 1", len(notifier.payloads))
+	}
+	if got := notifier.payloads[0].InlineKeyboard[0][0].CallbackData; got != "pro:upgrade" {
+		t.Fatalf("callback=%q want pro:upgrade", got)
+	}
+	if len(eventRepo.recorded) != 2 {
+		t.Fatalf("events=%d want 2", len(eventRepo.recorded))
+	}
+	if eventRepo.recorded[0].Type != port.ProductEventProRenewalReminderSent {
+		t.Fatalf("event[0]=%q want %q", eventRepo.recorded[0].Type, port.ProductEventProRenewalReminderSent)
+	}
+	if eventRepo.recorded[1].Type != port.ProductEventProExpired {
+		t.Fatalf("event[1]=%q want %q", eventRepo.recorded[1].Type, port.ProductEventProExpired)
+	}
+}

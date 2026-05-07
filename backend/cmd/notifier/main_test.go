@@ -242,6 +242,9 @@ func (s *stubUserRepo) UpsertPreferencesScoped(ctx context.Context, userID int64
 func (s *stubUserRepo) GetProUsersWithNotifyHour(ctx context.Context, hour int) ([]int64, error) {
 	return nil, nil
 }
+func (s *stubUserRepo) GetUsersWithProExpiryBetween(ctx context.Context, from, to time.Time) ([]*domain.User, error) {
+	return nil, nil
+}
 
 type stubJobRepo struct {
 	getByID func(ctx context.Context, jobID int64) (*domain.Job, error)
@@ -371,6 +374,10 @@ func (s *stubNotifRepo) CountToday(ctx context.Context, userID int64) (int, erro
 	if s.countToday != nil {
 		return s.countToday(ctx, userID)
 	}
+	return 0, nil
+}
+
+func (s *stubNotifRepo) CountMissedToday(ctx context.Context, userID int64) (int, error) {
 	return 0, nil
 }
 

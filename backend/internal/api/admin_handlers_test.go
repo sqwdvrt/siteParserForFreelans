@@ -411,6 +411,56 @@ func TestAdminHandlersSetUserPro_RecordsLifecycleEvent(t *testing.T) {
 	}
 }
 
+func TestAdminHandlersSetTelegramUserPro_RecordsExpiredRenewalEvent(t *testing.T) {
+	getUserCalls := 0
+	eventRepo := &mockProductEventRepo{}
+	h := newAdminHandlers(&mockAdminRepo{
+		getUserByTelegramFunc: func(ctx context.Context, telegramID int64) (*port.AdminUser, error) {
+			getUserCalls++
+			if getUserCalls == 1 {
+				expiresAt := time.Now().UTC().Add(-24 * time.Hour)
+				return &port.AdminUser{
+					ID:           7,
+					TelegramID:   telegramID,
+					IsPro:        false,
+					ProExpiresAt: &expiresAt,
+				}, nil
+			}
+			expiresAt := time.Now().UTC().Add(30 * 24 * time.Hour)
+			return &port.AdminUser{
+				ID:           7,
+				TelegramID:   telegramID,
+				IsPro:        true,
+				ProExpiresAt: &expiresAt,
+			}, nil
+		},
+		setProByTelegramFunc: func(ctx context.Context, telegramID int64, enabled bool, days int) (bool, *time.Time, error) {
+			expiresAt := time.Now().UTC().Add(30 * 24 * time.Hour)
+			return true, &expiresAt, nil
+		},
+	})
+	h.ProductEventRepo = eventRepo
+
+	req := withURLParam(newAdminRequest(http.MethodPut, "/admin/telegram-users/123456789/pro"), "telegram_id", "123456789")
+	req.Body = io.NopCloser(strings.NewReader(`{"enabled":true,"days":30}`))
+	rr := httptest.NewRecorder()
+
+	h.SetTelegramUserPro(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("status=%d want=204", rr.Code)
+	}
+	if len(eventRepo.events) != 1 {
+		t.Fatalf("events len=%d want=1", len(eventRepo.events))
+	}
+	if eventRepo.events[0].Type != port.ProductEventProRenewed {
+		t.Fatalf("event type=%q want=%q", eventRepo.events[0].Type, port.ProductEventProRenewed)
+	}
+	if got := eventRepo.events[0].Properties["previous_plan"]; got != "expired_pro" {
+		t.Fatalf("previous_plan=%#v want expired_pro", got)
+	}
+}
+
 func TestParseHelpers(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/admin/users?page=0&limit=-1", nil)
 	limit, offset := parsePagination(req)

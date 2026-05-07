@@ -148,7 +148,11 @@ def test_put_user_pause_status_returns_status_code(bot, monkeypatch):
 
 def test_post_pro_upgrade_intent_returns_status_code(bot, monkeypatch):
     calls = []
-    monkeypatch.setattr(bot, "_http_post", lambda url, payload, **kwargs: calls.append((url, payload, kwargs)) or (204, None))
+    monkeypatch.setattr(
+        bot,
+        "_http_post",
+        lambda url, payload, **kwargs: calls.append((url, payload, kwargs)) or (204, None),
+    )
 
     status = bot.post_pro_upgrade_intent(
         "https://api.example.com",

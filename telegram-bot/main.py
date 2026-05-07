@@ -3093,7 +3093,15 @@ def _send_pro_overview(
     user_payload = get_user_profile(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)
     if not isinstance(user_payload, dict):
         user_payload = {"is_pro": get_user_is_pro(api_url, user_id, telegram_id, api_auth_token, api_user_hmac_secret)}
-    return send_keyboard(token, chat_id, _format_pro_overview_text(user_payload), _build_pro_overview_keyboard()) is not None
+    return (
+        send_keyboard(
+            token,
+            chat_id,
+            _format_pro_overview_text(user_payload),
+            _build_pro_overview_keyboard(),
+        )
+        is not None
+    )
 
 
 def _handle_pro_upgrade_callback(
@@ -3786,7 +3794,11 @@ def _handle_admin_pro_command(
 
     parts = text.split()
     if len(parts) < 3:
-        send_message(token, chat_id, "Использование: /admin_pro <telegram_id> on [days] или /admin_pro <telegram_id> off")
+        send_message(
+            token,
+            chat_id,
+            "Использование: /admin_pro <telegram_id> on [days] или /admin_pro <telegram_id> off",
+        )
         return True
     try:
         target_telegram_id = int(parts[1])

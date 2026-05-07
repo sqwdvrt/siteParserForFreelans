@@ -378,7 +378,16 @@ def test_run_polling_profile_requires_start(bot, monkeypatch):
     profile_text = "Python backend developer with Django, FastAPI, PostgreSQL and commercial project experience."
     updates = [
         (
-            [{"update_id": 1, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": f"/profile {profile_text}"}}],
+            [
+                {
+                    "update_id": 1,
+                    "message": {
+                        "chat": {"id": 100},
+                        "from": {"id": 200},
+                        "text": f"/profile {profile_text}",
+                    },
+                }
+            ],
             2,
         )
     ]
@@ -398,7 +407,16 @@ def test_run_polling_profile_update_error(bot, monkeypatch):
     profile_text = "Python backend developer with Django, FastAPI, PostgreSQL and commercial project experience."
     updates = [
         (
-            [{"update_id": 1, "message": {"chat": {"id": 100}, "from": {"id": 200}, "text": f"/profile {profile_text}"}}],
+            [
+                {
+                    "update_id": 1,
+                    "message": {
+                        "chat": {"id": 100},
+                        "from": {"id": 200},
+                        "text": f"/profile {profile_text}",
+                    },
+                }
+            ],
             2,
         )
     ]
@@ -439,7 +457,11 @@ def test_run_polling_profile_empty_followup_text(bot, monkeypatch):
     send_message = MagicMock(return_value=True)
     monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
     monkeypatch.setattr(bot, "post_users", MagicMock(return_value=123))
-    monkeypatch.setattr(bot, "get_user_profile", MagicMock(return_value={"profile_text": "старый профиль", "is_pro": False}))
+    monkeypatch.setattr(
+        bot,
+        "get_user_profile",
+        MagicMock(return_value={"profile_text": "старый профиль", "is_pro": False}),
+    )
     monkeypatch.setattr(bot, "send_keyboard", MagicMock(return_value=55))
     monkeypatch.setattr(bot, "send_message", send_message)
     monkeypatch.setattr(bot, "answer_callback_query", lambda *args, **kwargs: None)
@@ -498,7 +520,11 @@ def test_run_polling_profile_two_step_state_flow(bot, monkeypatch):
     put_user_profile_status = MagicMock(return_value=204)
     monkeypatch.setattr(bot, "get_updates", _updates_then_interrupt(updates))
     monkeypatch.setattr(bot, "post_users", MagicMock(return_value=123))
-    monkeypatch.setattr(bot, "get_user_profile", MagicMock(return_value={"profile_text": "старый профиль", "is_pro": False}))
+    monkeypatch.setattr(
+        bot,
+        "get_user_profile",
+        MagicMock(return_value={"profile_text": "старый профиль", "is_pro": False}),
+    )
     monkeypatch.setattr(bot, "put_user_profile_status", put_user_profile_status)
     monkeypatch.setattr(bot, "send_keyboard", MagicMock(return_value=55))
     monkeypatch.setattr(bot, "send_message", send_message)

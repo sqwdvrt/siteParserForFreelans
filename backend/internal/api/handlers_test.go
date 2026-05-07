@@ -1188,6 +1188,58 @@ func TestHandlers_GetUserStats_Success(t *testing.T) {
 	}
 }
 
+func TestHandlers_GetUserStats_WithoutStatsRepoUsesFallback(t *testing.T) {
+	expiresAt := time.Now().UTC().Add(-12 * time.Hour)
+	notifyHour := int16(14)
+	repo := &mockUserRepo{
+		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
+			return &domain.User{
+				ID:           userID,
+				TelegramID:   123456789,
+				IsPro:        true,
+				ProExpiresAt: &expiresAt,
+				NotifyHour:   &notifyHour,
+			}, nil
+		},
+	}
+	h := &Handlers{
+		UserRepo:       repo,
+		AuthToken:      testAuthToken,
+		UserHMACSecret: testUserHMACSecret,
+	}
+
+	req := newJSONRequest(
+		http.MethodGet,
+		"/users/7/stats",
+		nil,
+		newAuthHeadersWithUserSign(http.MethodGet, "/users/7/stats", 123456789, nil),
+	)
+	req = attachRouteUserID(req, "7")
+	rr := httptest.NewRecorder()
+
+	h.GetUserStats(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	var resp port.UserStats
+	if err := json.NewDecoder(rr.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Plan != "expired_pro" || resp.DailyCap != 5 {
+		t.Fatalf("unexpected fallback plan stats: %#v", resp)
+	}
+	if resp.NotifyHour == nil || *resp.NotifyHour != 14 {
+		t.Fatalf("notify_hour=%v want 14", resp.NotifyHour)
+	}
+	if resp.ProExpiresAt == nil || !resp.ProExpiresAt.Equal(expiresAt) {
+		t.Fatalf("pro_expires_at=%v want %v", resp.ProExpiresAt, expiresAt)
+	}
+	if resp.PeriodDays != 7 {
+		t.Fatalf("period_days=%d want 7", resp.PeriodDays)
+	}
+}
+
 func TestHandlers_GetUserStats_OwnerMismatch(t *testing.T) {
 	repo := &mockUserRepo{
 		getByIDFunc: func(ctx context.Context, userID int64) (*domain.User, error) {
