@@ -122,6 +122,11 @@ set +a
 bash ./scripts/post_deploy_production_gate.sh
 ```
 Этот gate ждёт healthy-состояния для `backend-api`, `browser-service`, `backend-crawler`, `backend-notifier`, `ai-service`, `ai-user-embed`, `ai-user-rematch`, `ai-ac-consumer` и `telegram-bot`.
+5. Дополнительно подтвердить fail-closed image invariant: live containers должны совпадать с refs из active release `.env.production`. Канонический путь проверки:
+```bash
+bash ./scripts/vps_ops_report.sh
+```
+В отчёте check `runtime_image_drift` обязан быть `OK`. Любой `FAIL` означает, что rollout был частичным или на VPS произошёл ручной drift.
 
 ### 0.5 Queue drain and post-release observation
 1. Снять срез по очередям до и после production deploy:

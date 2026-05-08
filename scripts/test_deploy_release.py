@@ -88,6 +88,17 @@ class DeployReleaseScriptTest(unittest.TestCase):
         self.assertIn('"${TARGET_SERVICES[@]}"', script_text)
         self.assertIn('services_to_assert=("${TARGET_SERVICES[@]}")', script_text)
 
+    def test_deploy_verifies_live_container_images_before_switching_release(self) -> None:
+        script_text = DEPLOY_SCRIPT.read_text(encoding="utf-8")
+
+        self.assertIn("verify_runtime_service_images()", script_text)
+        self.assertIn('docker inspect --format "{{.Config.Image}}" "$container_id"', script_text)
+        self.assertIn('die "runtime image mismatch for ${service}: expected ${expected_image}, got ${actual_image}"', script_text)
+        self.assertLess(
+            script_text.index("verify_runtime_service_images compose_args services_to_assert"),
+            script_text.index("switch_live_release"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -38,6 +38,17 @@ QUEUE_KEYS = (
     "match-notify:dlq",
 )
 STATUS_ORDER = {"OK": 0, "WARN": 1, "FAIL": 2}
+RUNTIME_SERVICE_IMAGE_VARS = {
+    "backend-api": "BACKEND_IMAGE",
+    "backend-crawler": "BACKEND_IMAGE",
+    "backend-notifier": "BACKEND_IMAGE",
+    "browser-service": "BROWSER_SERVICE_IMAGE",
+    "telegram-bot": "TELEGRAM_BOT_IMAGE",
+    "ai-service": "AI_IMAGE",
+    "ai-user-embed": "AI_IMAGE",
+    "ai-user-rematch": "AI_IMAGE",
+    "ai-ac-consumer": "AI_IMAGE",
+}
 
 
 def now_utc() -> str:
@@ -195,6 +206,44 @@ def find_container_by_suffix(containers: list[dict[str, str]], suffix: str) -> d
         if container["name"].endswith(suffix):
             return container
     return None
+
+
+def find_container_for_service(containers: list[dict[str, str]], service: str) -> dict[str, str] | None:
+    return find_container_by_suffix(containers, f"{service}-1")
+
+
+def collect_runtime_image_drift(env: dict[str, str], containers: list[dict[str, str]]) -> list[dict[str, str]]:
+    drifts: list[dict[str, str]] = []
+    for service, image_var in RUNTIME_SERVICE_IMAGE_VARS.items():
+        expected_image = env.get(image_var, "").strip()
+        if not expected_image:
+            continue
+
+        container = find_container_for_service(containers, service)
+        if container is None:
+            drifts.append(
+                {
+                    "service": service,
+                    "expected": expected_image,
+                    "actual": "<missing container>",
+                }
+            )
+            continue
+
+        inspect = run_command(
+            ["docker", "inspect", "--format", "{{.Config.Image}}", container["name"]],
+            check=False,
+        )
+        actual_image = inspect.stdout.strip() if inspect.returncode == 0 else "<inspect failed>"
+        if actual_image != expected_image:
+            drifts.append(
+                {
+                    "service": service,
+                    "expected": expected_image,
+                    "actual": actual_image,
+                }
+            )
+    return drifts
 
 
 def is_mixed_live_topology(containers: list[dict[str, str]]) -> bool:
@@ -386,6 +435,8 @@ def build_recommendations(checks: list[dict[str, str]]) -> list[str]:
         actions.append("Inspect queue workers and DLQ growth before retrying cleanup or deploy actions.")
     if "swap" in failed_or_warned:
         actions.append("Review memory pressure and top consumers on the host if swap usage keeps growing.")
+    if "runtime_image_drift" in failed_or_warned:
+        actions.append("Re-run the canonical deploy flow; live container image refs do not match the active release env.")
     return actions
 
 
@@ -427,6 +478,20 @@ def collect_report(args: argparse.Namespace) -> dict[str, Any]:
             "status": gate_status,
             "summary": gate_summary,
             "details": gate_details,
+        }
+    )
+
+    runtime_image_drift = collect_runtime_image_drift(command_env, containers)
+    drift_summary = "live container images match the active release env"
+    if runtime_image_drift:
+        drift_services = ", ".join(item["service"] for item in runtime_image_drift)
+        drift_summary = f"runtime image drift detected for {drift_services}"
+    checks.append(
+        {
+            "name": "runtime_image_drift",
+            "status": "OK" if not runtime_image_drift else "FAIL",
+            "summary": drift_summary,
+            "details": runtime_image_drift,
         }
     )
 

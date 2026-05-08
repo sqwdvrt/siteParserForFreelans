@@ -321,6 +321,55 @@ assert_compose_services_created() {
   done
 }
 
+runtime_image_var_for_service() {
+  local service="$1"
+
+  case "$service" in
+    backend-api|backend-crawler|backend-notifier)
+      printf '%s\n' "BACKEND_IMAGE"
+      ;;
+    browser-service)
+      printf '%s\n' "BROWSER_SERVICE_IMAGE"
+      ;;
+    telegram-bot)
+      printf '%s\n' "TELEGRAM_BOT_IMAGE"
+      ;;
+    ai-service|ai-user-embed|ai-user-rematch|ai-ac-consumer)
+      printf '%s\n' "AI_IMAGE"
+      ;;
+    *)
+      printf '\n'
+      ;;
+  esac
+}
+
+verify_runtime_service_images() {
+  local -n compose_args_ref="$1"
+  local -n services_ref="$2"
+  local service
+  local image_var
+  local expected_image
+  local container_id
+  local actual_image
+
+  for service in "${services_ref[@]}"; do
+    image_var="$(runtime_image_var_for_service "$service")"
+    [[ -n "$image_var" ]] || continue
+
+    expected_image="${!image_var:-}"
+    [[ -n "$expected_image" ]] || die "missing expected image ref for ${service} via ${image_var}"
+
+    container_id="$(
+      docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args_ref[@]}" ps -q "$service" | head -n1
+    )"
+    [[ -n "$container_id" ]] || die "runtime image verification could not find a container for ${service}"
+
+    actual_image="$(docker inspect --format "{{.Config.Image}}" "$container_id")"
+    [[ "$actual_image" = "$expected_image" ]] || \
+      die "runtime image mismatch for ${service}: expected ${expected_image}, got ${actual_image}"
+  done
+}
+
 run_safe_docker_cleanup() {
   if [[ ! -f "./scripts/vps_safe_docker_cleanup.sh" ]]; then
     log "safe Docker cleanup script is missing; skipping pre-pull cleanup"
@@ -382,6 +431,7 @@ compose_release() {
           up -d --no-build --force-recreate "${monitoring_services_to_recreate[@]}"
       fi
     fi
+    verify_runtime_service_images compose_args services_to_assert
     docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" ps
   )
 }
