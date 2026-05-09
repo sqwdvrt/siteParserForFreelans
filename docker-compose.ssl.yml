@@ -1,0 +1,93 @@
+# VPS-specific overlay: подключает внешнюю сеть infra_default и пробрасывает
+# самоподписанный CA-сертификат в сервисы, которым нужен доступ к self-hosted TLS endpoints.
+#
+# Требует запущенного /home/deploy/infra (postgres + redis с TLS).
+# Подробнее: docs/vps_deploy.md
+#
+# Использование:
+#   docker compose -f docker-compose.prod.yml -f docker-compose.ssl.yml \
+#     --env-file .env.production up -d
+#
+# Переменная INFRA_CERTS_DIR (по умолчанию /home/deploy/infra/certs) позволяет
+# переопределить путь к CA-сертификату без правки файла.
+
+services:
+  backend-migrate:
+    environment:
+      SSL_CERT_FILE: /certs/ca.crt
+    volumes:
+      - ${INFRA_CERTS_DIR:-/home/deploy/infra/certs}/server.crt:/certs/ca.crt:ro
+
+  backend-api:
+    environment:
+      SSL_CERT_FILE: /certs/ca.crt
+    volumes:
+      - ${INFRA_CERTS_DIR:-/home/deploy/infra/certs}/server.crt:/certs/ca.crt:ro
+
+  backend-crawler:
+    environment:
+      SSL_CERT_FILE: /certs/ca.crt
+    volumes:
+      - ${INFRA_CERTS_DIR:-/home/deploy/infra/certs}/server.crt:/certs/ca.crt:ro
+
+  backend-notifier:
+    environment:
+      SSL_CERT_FILE: /certs/ca.crt
+    volumes:
+      - ${INFRA_CERTS_DIR:-/home/deploy/infra/certs}/server.crt:/certs/ca.crt:ro
+
+  ai-service:
+    environment:
+      SSL_CERT_FILE: /certs/ca.crt
+      AI_COMBINE_SSL_CERT_FILE: "1"
+    volumes:
+      - ${INFRA_CERTS_DIR:-/home/deploy/infra/certs}/server.crt:/certs/ca.crt:ro
+
+  ai-user-embed:
+    environment:
+      SSL_CERT_FILE: /certs/ca.crt
+      AI_COMBINE_SSL_CERT_FILE: "1"
+    volumes:
+      - ${INFRA_CERTS_DIR:-/home/deploy/infra/certs}/server.crt:/certs/ca.crt:ro
+
+  ai-user-rematch:
+    environment:
+      SSL_CERT_FILE: /certs/ca.crt
+      AI_COMBINE_SSL_CERT_FILE: "1"
+    volumes:
+      - ${INFRA_CERTS_DIR:-/home/deploy/infra/certs}/server.crt:/certs/ca.crt:ro
+
+  ai-ac-consumer:
+    environment:
+      SSL_CERT_FILE: /certs/ca.crt
+      AI_COMBINE_SSL_CERT_FILE: "1"
+    volumes:
+      - ${INFRA_CERTS_DIR:-/home/deploy/infra/certs}/server.crt:/certs/ca.crt:ro
+
+  telegram-bot:
+    environment:
+      SSL_CERT_FILE: /certs/ca.crt
+    volumes:
+      - ${INFRA_CERTS_DIR:-/home/deploy/infra/certs}/server.crt:/certs/ca.crt:ro
+
+  browser-service:
+    environment:
+      SSL_CERT_FILE: /certs/ca.crt
+    volumes:
+      - ${INFRA_CERTS_DIR:-/home/deploy/infra/certs}/server.crt:/certs/ca.crt:ro
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0
+    command:
+      - --redis.addr=${REDIS_EXPORTER_REDIS_ADDR}
+      - --tls-ca-cert-file=/certs/ca.crt
+      - -skip-tls-verification=false
+    environment:
+      SSL_CERT_FILE: /certs/ca.crt
+    volumes:
+      - ${INFRA_CERTS_DIR:-/home/deploy/infra/certs}/server.crt:/certs/ca.crt:ro
+
+networks:
+  default:
+    name: infra_default
+    external: true

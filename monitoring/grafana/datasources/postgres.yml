@@ -1,0 +1,16 @@
+apiVersion: 1
+
+datasources:
+  - name: Product Analytics Postgres
+    type: postgres
+    uid: postgres
+    url: ${GRAFANA_POSTGRES_HOST}:${GRAFANA_POSTGRES_PORT}
+    user: ${POSTGRES_USER}
+    database: ${POSTGRES_DB}
+    secureJsonData:
+      password: ${POSTGRES_PASSWORD}
+    jsonData:
+      sslmode: ${GRAFANA_POSTGRES_SSLMODE}
+      postgresVersion: 1600
+      timescaledb: false
+    editable: false

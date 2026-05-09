@@ -1,0 +1,35 @@
+package port
+
+import (
+	"context"
+	"errors"
+	"time"
+
+	"github.com/sqwdvrt/siteParserForFreelans/backend/internal/domain"
+)
+
+// FeedbackStats агрегирует обратную связь пользователя за период.
+type FeedbackStats struct {
+	GoodCount int
+	BadCount  int
+}
+
+// ErrFeedbackNotAllowed means the user cannot leave feedback for the job
+// because the job was not finalized as a delivery for that user.
+var ErrFeedbackNotAllowed = errors.New("feedback not allowed for job")
+
+// FeedbackRepository хранит и читает обратную связь пользователей на уведомления.
+type FeedbackRepository interface {
+	// Upsert записывает или обновляет feedback для пары (user_id, job_id).
+	// Повторный вызов для той же пары перезаписывает предыдущую оценку.
+	// Разрешено только для job, которые были финализированы к доставке этому пользователю.
+	Upsert(ctx context.Context, userID, jobID int64, fb domain.FeedbackType) error
+
+	// StatsRecent возвращает агрегированные счётчики good/bad для пользователя
+	// за последний период within.
+	StatsRecent(ctx context.Context, userID int64, within time.Duration) (FeedbackStats, error)
+
+	// GlobalStatsRecent возвращает агрегированные счётчики good/bad по всем
+	// пользователям за последний период within.
+	GlobalStatsRecent(ctx context.Context, within time.Duration) (FeedbackStats, error)
+}

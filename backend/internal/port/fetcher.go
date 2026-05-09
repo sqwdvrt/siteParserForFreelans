@@ -1,0 +1,7 @@
+package port
+
+import "context"
+
+type Fetcher interface {
+	Fetch(ctx context.Context, url string) ([]byte, error)
+}

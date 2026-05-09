@@ -1,0 +1,617 @@
+name: Test Gate
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to check"
+        required: true
+        default: main
+
+permissions:
+  contents: read
+  statuses: write
+
+jobs:
+  resolve-target:
+    runs-on: ubuntu-latest
+    outputs:
+      target_sha: ${{ steps.resolve.outputs.target_sha }}
+    steps:
+      - name: Resolve target SHA
+        id: resolve
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if (context.eventName === "workflow_dispatch") {
+              const ref = context.payload.inputs.ref;
+              const { data } = await github.rest.repos.getCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref,
+              });
+              core.setOutput("target_sha", data.sha);
+              return;
+            }
+
+            if (context.eventName === "pull_request") {
+              core.setOutput("target_sha", context.payload.pull_request.head.sha);
+              return;
+            }
+
+            core.setOutput("target_sha", context.sha);
+
+  workflow-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
+
+      - name: Run actionlint
+        uses: docker://rhysd/actionlint:1.7.8
+
+  compose-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
+
+      - name: Materialize example env files for compose validation
+        run: |
+          cp .env.example .env
+          cp .env.production.example .env.production
+
+      - name: Validate docker-compose.yml
+        run: docker compose --env-file .env.example -f docker-compose.yml --profile workers --profile ai-user-embed --profile ai-user-rematch config -q
+
+      - name: Validate docker-compose.prod.yml
+        run: docker compose --env-file .env.production.example -f docker-compose.prod.yml -f docker-compose.ssl.yml config -q
+
+      - name: Check production config contract
+        run: python3 ./scripts/production_config_contract.py check-consistency
+
+  backend-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: backend/go.sum
+
+      - name: Run backend unit tests
+        run: |
+          set -euo pipefail
+          started_at=$(date +%s)
+          cd backend
+          GOMODCACHE=$(pwd)/.gomodcache GOCACHE=$(pwd)/.gocache go test ./... -count=1
+          finished_at=$(date +%s)
+          echo $((finished_at - started_at)) > ../backend-unit-seconds.txt
+
+      - name: Upload backend unit timing
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-unit-timing
+          path: backend-unit-seconds.txt
+
+  ai-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: ai-service/requirements.txt
+
+      - name: Install AI dependencies
+        run: python -m pip install -r ai-service/requirements.txt
+
+      - name: Run AI unit tests
+        run: |
+          set -euo pipefail
+          started_at=$(date +%s)
+          ./scripts/pytest_ai.sh -q
+          finished_at=$(date +%s)
+          echo $((finished_at - started_at)) > ai-unit-seconds.txt
+
+      - name: Upload AI unit timing
+        uses: actions/upload-artifact@v4
+        with:
+          name: ai-unit-timing
+          path: ai-unit-seconds.txt
+
+  browser-service-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: browser-service/requirements-dev.txt
+
+      - name: Install browser-service test dependencies
+        run: python -m pip install -r browser-service/requirements-dev.txt
+
+      - name: Run browser-service unit tests
+        run: ./scripts/pytest_browser_service.sh -q
+
+      - name: Run browser-service integration smoke
+        run: ./scripts/browser_service_integration_smoke.sh
+
+  telegram-bot-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: telegram-bot/pyproject.toml
+
+      - name: Install Telegram bot dependencies
+        run: python -m pip install -e "./telegram-bot[dev]"
+
+      - name: Run Telegram bot unit tests
+        run: |
+          set -euo pipefail
+          started_at=$(date +%s)
+          ./scripts/pytest_telegram_bot.sh -q
+          finished_at=$(date +%s)
+          echo $((finished_at - started_at)) > telegram-bot-unit-seconds.txt
+
+      - name: Upload Telegram bot unit timing
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-bot-unit-timing
+          path: telegram-bot-unit-seconds.txt
+
+  go-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: backend/go.sum
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.11.0
+          working-directory: backend
+
+  python-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: Lint ai-service
+        run: ruff check ai-service
+
+      - name: Lint browser-service
+        run: ruff check browser-service
+
+      - name: Lint telegram-bot
+        run: ruff check telegram-bot
+
+  performance-gate:
+    runs-on: ubuntu-latest
+    needs:
+      - backend-unit
+      - ai-unit
+      - telegram-bot-unit
+    env:
+      BACKEND_UNIT_MAX_SECONDS: "180"
+      AI_UNIT_MAX_SECONDS: "240"
+      TELEGRAM_BOT_UNIT_MAX_SECONDS: "90"
+    steps:
+      - name: Download backend unit timing
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-unit-timing
+          path: .artifacts/backend
+
+      - name: Download AI unit timing
+        uses: actions/download-artifact@v4
+        with:
+          name: ai-unit-timing
+          path: .artifacts/ai
+
+      - name: Download Telegram bot unit timing
+        uses: actions/download-artifact@v4
+        with:
+          name: telegram-bot-unit-timing
+          path: .artifacts/telegram
+
+      - name: Enforce performance budgets
+        run: |
+          set -euo pipefail
+
+          backend_seconds="$(cat .artifacts/backend/backend-unit-seconds.txt)"
+          ai_seconds="$(cat .artifacts/ai/ai-unit-seconds.txt)"
+          telegram_seconds="$(cat .artifacts/telegram/telegram-bot-unit-seconds.txt)"
+
+          for value in "$backend_seconds" "$ai_seconds" "$telegram_seconds"; do
+            if ! [[ "$value" =~ ^[0-9]+$ ]]; then
+              echo "ERROR: invalid timing value: '$value'"
+              exit 1
+            fi
+          done
+
+          echo "backend-unit: ${backend_seconds}s (limit ${BACKEND_UNIT_MAX_SECONDS}s)"
+          echo "ai-unit: ${ai_seconds}s (limit ${AI_UNIT_MAX_SECONDS}s)"
+          echo "telegram-bot-unit: ${telegram_seconds}s (limit ${TELEGRAM_BOT_UNIT_MAX_SECONDS}s)"
+
+          if (( backend_seconds > BACKEND_UNIT_MAX_SECONDS )); then
+            echo "ERROR: backend-unit exceeded performance budget"
+            exit 1
+          fi
+          if (( ai_seconds > AI_UNIT_MAX_SECONDS )); then
+            echo "ERROR: ai-unit exceeded performance budget"
+            exit 1
+          fi
+          if (( telegram_seconds > TELEGRAM_BOT_UNIT_MAX_SECONDS )); then
+            echo "ERROR: telegram-bot-unit exceeded performance budget"
+            exit 1
+          fi
+
+          echo "Performance gate PASSED"
+
+  coverage-gate:
+    runs-on: ubuntu-latest
+    env:
+      BACKEND_INTERNAL_COVERAGE_MIN: "70"
+      AI_SERVICE_COVERAGE_MIN: "70"
+      TELEGRAM_BOT_COVERAGE_MIN: "80"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: backend/go.sum
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            ai-service/requirements.txt
+            telegram-bot/pyproject.toml
+
+      - name: Install Python coverage dependencies
+        run: |
+          python -m pip install -r ai-service/requirements.txt
+          python -m pip install -e "./telegram-bot[dev]"
+          python -m pip install "pytest>=7.0" "pytest-cov>=4.0" "python-dotenv>=1.0"
+
+      - name: Run coverage gate
+        env:
+          PYTHON_BIN: python
+        run: ./scripts/check_coverage.sh
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: site_parser
+          POSTGRES_PASSWORD: site_parser
+          POSTGRES_DB: site_parser
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U site_parser -d site_parser"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgres://site_parser:site_parser@localhost:55432/site_parser?sslmode=disable
+      REDIS_URL: redis://localhost:6379/0
+      INTEGRATION_TESTS: "1"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache-dependency-path: backend/go.sum
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: ai-service/requirements.txt
+
+      - name: Install PostgreSQL client tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client-16 || sudo apt-get install -y postgresql-client
+
+      - name: Install AI dependencies
+        run: python -m pip install -r ai-service/requirements.txt
+
+      - name: Check migration filenames
+        run: ./scripts/check_migration_filenames.sh
+
+      - name: Apply database migrations
+        env:
+          MIGRATION_RETRY_ATTEMPTS: "60"
+          MIGRATION_RETRY_DELAY_SEC: "2"
+        run: bash ./scripts/apply_migrations.sh
+
+      - name: Backup/restore smoke test
+        run: ./scripts/backup_restore_smoke.sh
+
+      - name: Run backend integration tests
+        run: |
+          cd backend
+          GOMODCACHE=$(pwd)/.gomodcache GOCACHE=$(pwd)/.gocache \
+            go test -tags='integration integration_tc' ./internal/adapter/postgres ./internal/adapter/redis -count=1
+
+      - name: Run AI integration tests
+        run: |
+          cd ai-service
+          INTEGRATION_TESTS=1 python -m pytest -q -m integration
+
+  e2e-compose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
+
+      - name: Prepare CI env file
+        # Compose e2e must not use placeholder "change_me" secrets because the
+        # backend validates them at boot and exits before /healthz goes green.
+        run: |
+          cp .env.example .env
+          printf '%s\n' \
+            'POSTGRES_PASSWORD=E2ePostgresSecret_2026' \
+            'API_AUTH_TOKEN=B7nP3xQ9mR2tV8yL4cD6kF1hJ5sW0zUaX2' \
+            'API_USER_HMAC_SECRET=C9vN4mB7qT2yH8kL1pR5sD3fG6jW0xZaY4' \
+            'ADMIN_AUTH_TOKEN=H4kL9pR2sT7vX3yN6bC1dF8gJ5mQ0wZe' \
+            >> .env
+
+      - name: Start backend API stack
+        # Brings up postgres → redis → backend-migrate → backend-api.
+        # No --profile workers: ai-service / crawler / notifier are excluded.
+        run: docker compose up -d backend-api
+
+      - name: Wait for API to become healthy
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 60); do
+            if curl -sf http://127.0.0.1:8080/healthz >/dev/null 2>&1; then
+              echo "API healthy after $((i * 3))s"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "ERROR: API did not become healthy within 180s"
+          docker compose logs --no-color
+          exit 1
+
+      - name: Smoke — GET /healthz and /readyz
+        run: |
+          set -euo pipefail
+          curl -sf http://127.0.0.1:8080/healthz
+          curl -sf http://127.0.0.1:8080/readyz
+          echo "OK: healthz and readyz"
+
+      - name: E2E — POST /users and PUT /users/{id}/profile
+        env:
+          # Match the values written into .env via .env.example above.
+          API_AUTH_TOKEN: B7nP3xQ9mR2tV8yL4cD6kF1hJ5sW0zUaX2
+          API_USER_HMAC_SECRET: C9vN4mB7qT2yH8kL1pR5sD3fG6jW0xZaY4
+        run: |
+          set -euo pipefail
+
+          TG_ID="987654321"
+          API_URL="http://127.0.0.1:8080"
+
+          sign_user_request() {
+            local method="$1" path="$2" tgid="$3" ts="$4" nonce="$5" body="$6"
+            local body_hash
+            body_hash="$(printf '%s' "$body" | openssl dgst -sha256 -binary | xxd -p -c 256)"
+            printf '%s\n%s\n%s\n%s\n%s\n%s' \
+              "$method" "$path" "$tgid" "$ts" "$nonce" "$body_hash" \
+              | openssl dgst -sha256 -hmac "$API_USER_HMAC_SECRET" -binary | xxd -p -c 256
+          }
+
+          # --- POST /users ---
+          post_body="{\"telegram_id\":${TG_ID}}"
+          post_ts="$(date +%s)"
+          post_nonce="$(openssl rand -hex 16)"
+          post_sig="$(sign_user_request POST /users "$TG_ID" "$post_ts" "$post_nonce" "$post_body")"
+          post_resp="$(curl -sS -w '\n%{http_code}' -X POST "${API_URL}/users" \
+            -H "Authorization: Bearer ${API_AUTH_TOKEN}" \
+            -H "X-Telegram-ID: ${TG_ID}" \
+            -H "X-Request-Timestamp: ${post_ts}" \
+            -H "X-Request-Nonce: ${post_nonce}" \
+            -H "X-Request-Signature: ${post_sig}" \
+            -H "Content-Type: application/json" \
+            -d "$post_body")"
+          post_code="$(printf '%s' "$post_resp" | tail -n1)"
+          post_body_resp="$(printf '%s' "$post_resp" | sed '$d')"
+          [ "$post_code" = "200" ] || {
+            echo "ERROR: POST /users returned HTTP ${post_code}"
+            echo "$post_body_resp"
+            exit 1
+          }
+          user_id="$(printf '%s' "$post_body_resp" | grep -o '"user_id":[0-9]*' | cut -d: -f2)"
+          [ -n "$user_id" ] || {
+            echo "ERROR: failed to parse user_id from: $post_body_resp"
+            exit 1
+          }
+          echo "OK: POST /users → user_id=${user_id}"
+
+          # --- PUT /users/{id}/profile ---
+          put_body='{"profile_text":"Backend Python developer with six years building Telegram bots, parsers, Postgres APIs, and automation for freelance marketplaces."}'
+          put_path="/users/${user_id}/profile"
+          put_ts="$(date +%s)"
+          put_nonce="$(openssl rand -hex 16)"
+          put_sig="$(sign_user_request PUT "$put_path" "$TG_ID" "$put_ts" "$put_nonce" "$put_body")"
+          put_code="$(curl -sS -o /dev/null -w '%{http_code}' -X PUT "${API_URL}${put_path}" \
+            -H "Authorization: Bearer ${API_AUTH_TOKEN}" \
+            -H "X-Telegram-ID: ${TG_ID}" \
+            -H "X-Request-Timestamp: ${put_ts}" \
+            -H "X-Request-Nonce: ${put_nonce}" \
+            -H "X-Request-Signature: ${put_sig}" \
+            -H "Content-Type: application/json" \
+            -d "$put_body")"
+          [ "$put_code" = "204" ] || {
+            echo "ERROR: PUT ${put_path} returned HTTP ${put_code}"
+            exit 1
+          }
+          echo "OK: PUT /profile → 204"
+
+          echo "E2E PASSED"
+
+      - name: Dump service logs on failure
+        if: failure()
+        run: docker compose logs --no-color
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v
+
+  publish-gate-status:
+    runs-on: ubuntu-latest
+    # Fork PRs get a read-only GITHUB_TOKEN, so publishing commit statuses would fail.
+    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true) }}
+    needs:
+      - resolve-target
+      - workflow-lint
+      - compose-validate
+      - backend-unit
+      - ai-unit
+      - browser-service-tests
+      - telegram-bot-unit
+      - go-lint
+      - python-lint
+      - performance-gate
+      - coverage-gate
+      - integration
+      - e2e-compose
+    steps:
+      - name: Publish gate status for target SHA
+        uses: actions/github-script@v7
+        env:
+          TARGET_SHA: ${{ needs.resolve-target.outputs.target_sha }}
+        with:
+          script: |
+            const requiredJobs = [
+              "workflow-lint",
+              "compose-validate",
+              "backend-unit",
+              "ai-unit",
+              "browser-service-tests",
+              "telegram-bot-unit",
+              "go-lint",
+              "python-lint",
+              "performance-gate",
+              "coverage-gate",
+              "integration",
+              "e2e-compose",
+            ];
+
+            const results = {
+              "workflow-lint": "${{ needs.workflow-lint.result }}",
+              "compose-validate": "${{ needs.compose-validate.result }}",
+              "backend-unit": "${{ needs.backend-unit.result }}",
+              "ai-unit": "${{ needs.ai-unit.result }}",
+              "browser-service-tests": "${{ needs.browser-service-tests.result }}",
+              "telegram-bot-unit": "${{ needs.telegram-bot-unit.result }}",
+              "go-lint": "${{ needs.go-lint.result }}",
+              "python-lint": "${{ needs.python-lint.result }}",
+              "performance-gate": "${{ needs.performance-gate.result }}",
+              "coverage-gate": "${{ needs.coverage-gate.result }}",
+              "integration": "${{ needs.integration.result }}",
+              "e2e-compose": "${{ needs.e2e-compose.result }}",
+            };
+
+            const failedJobs = requiredJobs.filter((job) => results[job] !== "success");
+            const state = failedJobs.length === 0 ? "success" : "failure";
+            const description = failedJobs.length === 0
+              ? "All Test Gate jobs passed."
+              : `Failed jobs: ${failedJobs.join(", ")}`.slice(0, 140);
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: process.env.TARGET_SHA,
+              state,
+              context: context.workflow,
+              description,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });

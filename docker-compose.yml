@@ -1,30 +1,465 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - effective_cache_size=256MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=32MB
+      - -c
+      - max_connections=20
+      - -c
+      - wal_buffers=8MB
+      - -c
+      - checkpoint_completion_target=0.9
+      - -c
+      - random_page_cost=1.1
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-site_parser}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-site_parser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}
       POSTGRES_DB: ${POSTGRES_DB:-site_parser}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_BIND_IP:-127.0.0.1}:${POSTGRES_PORT:-55432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./backend/migrations:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-site_parser} -d ${POSTGRES_DB:-site_parser}"]
       interval: 5s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: ${POSTGRES_MEM_LIMIT:-512m}
+          cpus: '1.0'
+        reservations:
+          memory: 128m
 
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "${REDIS_BIND_IP:-127.0.0.1}:${REDIS_PORT:-6379}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: ${REDIS_MEM_LIMIT:-256m}
+          cpus: '0.5'
+        reservations:
+          memory: 64m
+
+  backend-migrate:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["true"]
+    env_file: .env
+    environment:
+      # Локальный compose всегда мигрирует локальный postgres, чтобы схема совпадала
+      # с runtime-контейнерами backend-api/backend-notifier/ai-service.
+      DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
+      DATABASE_MIGRATE_URL: ""
+      RUN_MIGRATIONS: "1"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /home/app:mode=0700,size=16m
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.5'
+        reservations:
+          memory: 32m
+
+  backend-api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["./api"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      RUN_MIGRATIONS: "0"
+    ports:
+      - "${API_BIND_IP:-127.0.0.1}:${API_PORT:-8080}:8080"
+    depends_on:
+      backend-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: ${API_MEM_LIMIT:-512m}
+          cpus: '1.0'
+        reservations:
+          memory: 128m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /home/app:mode=0700,size=16m
+
+  browser-service:
+    profiles:
+      - workers
+    build:
+      context: ./browser-service
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:${BROWSER_PORT:-8090}:8090"
+    environment:
+      BROWSER_TIMEOUT_MS: ${BROWSER_TIMEOUT_MS:-60000}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${BROWSER_MEM_LIMIT:-1g}
+          cpus: '1.0'
+        reservations:
+          memory: 256m
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=256m
+
+  backend-crawler:
+    profiles:
+      - workers
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["./crawler"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      RUN_MIGRATIONS: "0"
+      CRAWLER_HEALTH_ADDR: ":8081"
+      BROWSER_SERVICE_URL: http://browser-service:8090
+    depends_on:
+      backend-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      browser-service:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /home/app:mode=0700,size=16m
+    deploy:
+      resources:
+        limits:
+          memory: ${CRAWLER_MEM_LIMIT:-512m}
+          cpus: '1.0'
+        reservations:
+          memory: 128m
+
+  backend-notifier:
+    profiles:
+      - workers
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    command: ["./notifier"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      RUN_MIGRATIONS: "0"
+      NOTIFIER_HEALTH_ADDR: ":8082"
+    depends_on:
+      backend-migrate:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8082/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /home/app:mode=0700,size=16m
+    deploy:
+      resources:
+        limits:
+          memory: ${NOTIFIER_MEM_LIMIT:-256m}
+          cpus: '0.5'
+        reservations:
+          memory: 64m
+
+  ai-service:
+    profiles:
+      - workers
+    image: ${AI_IMAGE:-siteparserforfreelans-ai-runtime:local}
+    build:
+      context: ./ai-service
+      dockerfile: Dockerfile
+      args:
+        EMBEDDING_MODEL: ${EMBEDDING_MODEL:-all-MiniLM-L6-v2}
+        PRELOAD_LOCAL_MODELS: ${PRELOAD_LOCAL_MODELS:-1}
+    command: ["python", "cmd/consumer/main.py"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      EMBEDDING_REQUIRE_LOCAL: "${EMBEDDING_REQUIRE_LOCAL:-1}"
+      AI_READY_FILE: /tmp/ai-consumer-ready
+      AI_METRICS_BIND: ${AI_METRICS_BIND:-0.0.0.0}
+      AI_CONSUMER_METRICS_PORT: ${AI_CONSUMER_METRICS_PORT:-9108}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/ai-consumer-ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: ${AI_MEM_LIMIT:-2g}
+        reservations:
+          memory: 512m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+      - /home/app:mode=0700,size=64m
+
+  ai-user-embed:
+    image: ${AI_IMAGE:-siteparserforfreelans-ai-runtime:local}
+    profiles:
+      - ai-user-embed
+    command: ["python", "cmd/user_embed_consumer/main.py"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      EMBEDDING_REQUIRE_LOCAL: "${EMBEDDING_REQUIRE_LOCAL:-1}"
+      AI_READY_FILE: /tmp/ai-user-embed-ready
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/ai-user-embed-ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: ${AI_MEM_LIMIT:-2g}
+        reservations:
+          memory: 512m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+      - /home/app:mode=0700,size=64m
+
+  ai-user-rematch:
+    image: ${AI_IMAGE:-siteparserforfreelans-ai-runtime:local}
+    command: ["python", "cmd/user_rematch_consumer/main.py"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      AI_READY_FILE: /tmp/ai-user-rematch-ready
+      AI_USER_REMATCH_HEALTH_PORT: ${AI_USER_REMATCH_HEALTH_PORT:-8092}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/ai-user-rematch-ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${AI_MEM_LIMIT:-2g}
+        reservations:
+          memory: 256m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+      - /home/app:mode=0700,size=64m
+
+  ai-ac-consumer:
+    image: ${AI_IMAGE:-siteparserforfreelans-ai-runtime:local}
+    profiles:
+      - workers
+    command: ["python", "cmd/ac_consumer/main.py"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-site_parser}:${POSTGRES_PASSWORD:?set_POSTGRES_PASSWORD_in_.env}@postgres:5432/${POSTGRES_DB:-site_parser}?sslmode=disable
+      REDIS_URL: redis://redis:6379/0
+      AI_READY_FILE: /tmp/ai-ac-consumer-ready
+      AI_METRICS_BIND: ${AI_METRICS_BIND:-0.0.0.0}
+      AI_AC_CONSUMER_METRICS_PORT: ${AI_AC_CONSUMER_METRICS_PORT:-9109}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/ai-ac-consumer-ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          memory: ${AI_MEM_LIMIT:-2g}
+        reservations:
+          memory: 512m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+      - /home/app:mode=0700,size=64m
+
+  telegram-bot:
+    profiles:
+      - bot
+    build:
+      context: ./telegram-bot
+      dockerfile: Dockerfile
+    env_file: .env
+    environment:
+      API_URL: http://backend-api:8080
+      TELEGRAM_HEARTBEAT_FILE: /tmp/telegram-bot-heartbeat
+      TELEGRAM_HEARTBEAT_MAX_AGE_SEC: ${TELEGRAM_HEARTBEAT_MAX_AGE_SEC:-90}
+    depends_on:
+      backend-api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >
+          import os, sys, time;
+          p=os.getenv("TELEGRAM_HEARTBEAT_FILE","/tmp/telegram-bot-heartbeat");
+          m=float(os.getenv("TELEGRAM_HEARTBEAT_MAX_AGE_SEC","90"));
+          now=time.time();
+          ok=os.path.exists(p) and (now-os.path.getmtime(p) <= m);
+          sys.exit(0 if ok else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: ${BOT_MEM_LIMIT:-256m}
+          cpus: '0.5'
+        reservations:
+          memory: 64m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=32m
+      - /home/app:mode=0700,size=16m
+
+  jaeger:
+    profiles:
+      - tracing
+    image: jaegertracing/all-in-one:1.62
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "127.0.0.1:16686:16686"
+      - "127.0.0.1:4317:4317"
+    deploy:
+      resources:
+        limits:
+          memory: 512m
 
 volumes:
   postgres_data:

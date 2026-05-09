@@ -1,0 +1,10 @@
+[Unit]
+Description=Run SiteParser VPS health report every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+Unit=siteparser-vps-health-report.service
+
+[Install]
+WantedBy=timers.target

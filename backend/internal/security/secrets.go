@@ -1,0 +1,252 @@
+package security
+
+import (
+	"fmt"
+	"math"
+	"net"
+	"net/url"
+	"strings"
+)
+
+var forbiddenSecretPrefixes = []string{
+	"change_me",
+	"changeme",
+	"replace_me",
+	"replace_with",
+	"your_",
+	"example_",
+	"dummy_",
+	"test_",
+}
+
+// ValidateSecret проверяет базовую policy секрета: placeholder-паттерны,
+// минимальная длина и приближённая энтропия.
+func ValidateSecret(name, secret string, minLen int) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "secret"
+	}
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return fmt.Errorf("%s is empty", name)
+	}
+	if minLen <= 0 {
+		minLen = 24
+	}
+	lower := strings.ToLower(secret)
+	for _, p := range forbiddenSecretPrefixes {
+		if strings.HasPrefix(lower, p) {
+			return fmt.Errorf("%s uses placeholder prefix %q", name, p)
+		}
+	}
+	if len(secret) < minLen {
+		return fmt.Errorf("%s must be at least %d chars", name, minLen)
+	}
+	// Shannon-энтропия строки ≠ криптографическая стойкость пароля.
+	// Машинно-сгенерированные пароли (Supabase, Railway) имеют реальную стойкость ~95 бит
+	// при 16 символах, но Shannon-энтропия строки не превышает log2(n)*n ≈ 64 бит при n=16.
+	// Порог 64 бита достаточен: отсеивает словарные пароли и короткие секреты.
+	minEntropyBits := math.Max(64, float64(minLen)*3.0)
+	if entropy := shannonEntropyBits(secret); entropy < minEntropyBits {
+		return fmt.Errorf("%s is too weak (entropy %.1f < %.1f bits)", name, entropy, minEntropyBits)
+	}
+	return nil
+}
+
+// ValidateURLPassword извлекает пароль из URL и проверяет его как секрет.
+// Для DATABASE_URL порог энтропии ограничен 60 битами, чтобы типичные пароли
+// Supabase/Railway (16 символов, ~60 бит по Шеннону) проходили проверку.
+func ValidateURLPassword(urlName, rawURL string, minLen int) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("%s is invalid: %w", urlName, err)
+	}
+	if u.User == nil {
+		return fmt.Errorf("%s must include credentials", urlName)
+	}
+	pw, ok := u.User.Password()
+	if !ok || strings.TrimSpace(pw) == "" {
+		return fmt.Errorf("%s must include password", urlName)
+	}
+	return validateURLPasswordEntropy(urlName+" password", pw, minLen, 60)
+}
+
+// validateURLPasswordEntropy проверяет пароль с заданным потолком энтропии (maxEntropyCap).
+func validateURLPasswordEntropy(name, secret string, minLen int, maxEntropyCap float64) error {
+	secret = strings.TrimSpace(secret)
+	if secret == "" {
+		return fmt.Errorf("%s is empty", name)
+	}
+	if minLen <= 0 {
+		minLen = 24
+	}
+	lower := strings.ToLower(secret)
+	for _, p := range forbiddenSecretPrefixes {
+		if strings.HasPrefix(lower, p) {
+			return fmt.Errorf("%s uses placeholder prefix %q", name, p)
+		}
+	}
+	if len(secret) < minLen {
+		return fmt.Errorf("%s must be at least %d chars", name, minLen)
+	}
+	minEntropyBits := math.Max(64, float64(minLen)*3.0)
+	if maxEntropyCap > 0 && minEntropyBits > maxEntropyCap {
+		minEntropyBits = maxEntropyCap
+	}
+	if entropy := shannonEntropyBits(secret); entropy < minEntropyBits {
+		return fmt.Errorf("%s is too weak (entropy %.1f < %.1f bits)", name, entropy, minEntropyBits)
+	}
+	return nil
+}
+
+// IsProductionEnv сообщает, следует ли применять production policy для транспорта.
+func IsProductionEnv(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "prod", "production":
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidatePostgresTLSForProduction проверяет, что Postgres URL использует sslmode=require|verify-ca|verify-full.
+func ValidatePostgresTLSForProduction(urlName, rawURL string) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("%s is invalid: %w", urlName, err)
+	}
+	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
+	if scheme != "postgres" && scheme != "postgresql" {
+		return fmt.Errorf("%s must use postgres:// or postgresql:// scheme", urlName)
+	}
+	sslMode := strings.ToLower(strings.TrimSpace(u.Query().Get("sslmode")))
+	switch sslMode {
+	case "require", "verify-ca", "verify-full":
+		return nil
+	case "":
+		return fmt.Errorf("%s must include sslmode=require (or verify-ca/verify-full) in production", urlName)
+	default:
+		return fmt.Errorf("%s uses insecure sslmode=%q in production", urlName, sslMode)
+	}
+}
+
+// ValidateRedisTLSForProduction проверяет, что Redis URL использует rediss:// и защищён паролем.
+func ValidateRedisTLSForProduction(urlName, rawURL string, passwordMinLen int) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("%s is invalid: %w", urlName, err)
+	}
+	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
+	host := strings.TrimSpace(u.Hostname())
+	if host == "" {
+		return fmt.Errorf("%s must include host in production", urlName)
+	}
+	if scheme != "rediss" && (scheme != "redis" || !isInternalRedisHost(host)) {
+		return fmt.Errorf("%s must use rediss:// in production", urlName)
+	}
+	if u.User == nil {
+		return fmt.Errorf("%s must include credentials in production", urlName)
+	}
+	pw, ok := u.User.Password()
+	if !ok || strings.TrimSpace(pw) == "" {
+		return fmt.Errorf("%s must include password in production", urlName)
+	}
+	if passwordMinLen <= 0 {
+		passwordMinLen = 16
+	}
+	if err := ValidateSecret(urlName+" password", pw, passwordMinLen); err != nil {
+		return err
+	}
+	return nil
+}
+
+func isInternalRedisHost(host string) bool {
+	host = strings.TrimSpace(strings.TrimSuffix(host, "."))
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		if ip.IsLoopback() {
+			return true
+		}
+		if ip4 := ip.To4(); ip4 != nil {
+			return isPrivateIPv4(ip4)
+		}
+		return false
+	}
+	return !strings.Contains(host, ".")
+}
+
+func isPrivateIPv4(ip net.IP) bool {
+	ip4 := ip.To4()
+	if ip4 == nil {
+		return false
+	}
+	switch {
+	case ip4[0] == 10:
+		return true
+	case ip4[0] == 172 && ip4[1] >= 16 && ip4[1] <= 31:
+		return true
+	case ip4[0] == 192 && ip4[1] == 168:
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidateHTTPSURLForProduction проверяет, что URL использует HTTPS в production.
+func ValidateHTTPSURLForProduction(urlName, rawURL string) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("%s is invalid: %w", urlName, err)
+	}
+	if strings.ToLower(strings.TrimSpace(u.Scheme)) != "https" {
+		return fmt.Errorf("%s must use https:// in production", urlName)
+	}
+	if strings.TrimSpace(u.Host) == "" {
+		return fmt.Errorf("%s must include host", urlName)
+	}
+	return nil
+}
+
+// ValidateHTTPOrHTTPSURL проверяет, что URL использует http:// или https://
+// и содержит host. Подходит для внутренних service/proxy URL.
+func ValidateHTTPOrHTTPSURL(urlName, rawURL string) error {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return fmt.Errorf("%s is invalid: %w", urlName, err)
+	}
+	scheme := strings.ToLower(strings.TrimSpace(u.Scheme))
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("%s must use http:// or https://", urlName)
+	}
+	if strings.TrimSpace(u.Host) == "" {
+		return fmt.Errorf("%s must include host", urlName)
+	}
+	return nil
+}
+
+func shannonEntropyBits(s string) float64 {
+	if s == "" {
+		return 0
+	}
+	counts := make(map[rune]int, len(s))
+	n := 0
+	for _, r := range s {
+		counts[r]++
+		n++
+	}
+	if n == 0 {
+		return 0
+	}
+	var entropyPerRune float64
+	total := float64(n)
+	for _, c := range counts {
+		p := float64(c) / total
+		entropyPerRune += -p * math.Log2(p)
+	}
+	return entropyPerRune * total
+}

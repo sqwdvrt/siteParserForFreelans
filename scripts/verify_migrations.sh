@@ -1,11 +1,57 @@
 #!/bin/bash
-# Проверка миграций: применяет 001_init.sql и проверяет таблицы
-set -e
+# Проверка миграций: применяет все SQL-файлы из backend/migrations и проверяет базовые операции
+set -euo pipefail
 
-DB_URL="${DATABASE_URL:-postgres://site_parser:site_parser@localhost:5432/site_parser?sslmode=disable}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ENV_FILE="${ENV_FILE:-${ROOT_DIR}/.env}"
+
+if [[ -f "$ENV_FILE" ]]; then
+  # Auto-load repo .env to reduce false failures when DATABASE_URL is not exported.
+  set -a
+  # shellcheck disable=SC1090
+  source "$ENV_FILE"
+  set +a
+fi
+
+DB_URL="${DATABASE_URL:-}"
+if [[ -z "$DB_URL" ]]; then
+  echo "ERROR: DATABASE_URL is not set."
+  echo "Set DATABASE_URL in environment or in $ENV_FILE"
+  exit 1
+fi
+
+MIGRATIONS_DIR="${MIGRATIONS_DIR:-${ROOT_DIR}/backend/migrations}"
+
+if [[ ! -d "$MIGRATIONS_DIR" ]]; then
+  echo "ERROR: migrations directory not found: $MIGRATIONS_DIR"
+  exit 1
+fi
+
+shopt -s nullglob
+migration_files=("$MIGRATIONS_DIR"/*.sql)
+shopt -u nullglob
+
+if [[ ${#migration_files[@]} -eq 0 ]]; then
+  echo "ERROR: no migration files found in $MIGRATIONS_DIR"
+  exit 1
+fi
+
+LIST_MIGRATIONS_SCRIPT="${ROOT_DIR}/backend/scripts/list-migrations.sh"
+if [[ ! -f "$LIST_MIGRATIONS_SCRIPT" ]]; then
+  echo "ERROR: migration lister script was not found: $LIST_MIGRATIONS_SCRIPT"
+  exit 1
+fi
 
 echo "Applying migrations..."
-psql "$DB_URL" -f backend/migrations/001_init.sql
+MIGRATION_LIST_FILE="$(mktemp)"
+trap 'rm -f "$MIGRATION_LIST_FILE"' EXIT
+sh "$LIST_MIGRATIONS_SCRIPT" "$MIGRATIONS_DIR" > "$MIGRATION_LIST_FILE"
+
+while IFS= read -r migration; do
+  [[ -n "$migration" ]] || continue
+  echo " - $migration"
+  psql "$DB_URL" -v ON_ERROR_STOP=1 -f "$migration"
+done < "$MIGRATION_LIST_FILE"
 
 echo "Verifying tables..."
 psql "$DB_URL" -c "\dt"

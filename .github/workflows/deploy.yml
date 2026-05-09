@@ -1,0 +1,669 @@
+name: Deploy Pipeline
+
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: "Deployment target"
+        type: choice
+        required: true
+        default: staging
+        options:
+          - staging
+          - production
+      ref:
+        description: "Git ref to deploy (branch/tag/SHA). For manual runs, required gate workflows must already be green for the target SHA."
+        required: true
+        default: main
+      deploy_scope:
+        description: "Deployment scope"
+        type: choice
+        required: true
+        default: full
+        options:
+          - full
+          - ai-only
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  resolve-target:
+    runs-on: ubuntu-latest
+    outputs:
+      deploy_sha: ${{ steps.meta.outputs.deploy_sha }}
+      deploy_ref: ${{ steps.meta.outputs.deploy_ref }}
+      deploy_scope: ${{ steps.meta.outputs.deploy_scope }}
+      target_environment: ${{ steps.meta.outputs.target_environment }}
+      staging_configured: ${{ steps.meta.outputs.staging_configured }}
+      run_staging: ${{ steps.meta.outputs.run_staging }}
+      run_production: ${{ steps.meta.outputs.run_production }}
+    steps:
+      - name: Checkout target ref
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
+          fetch-depth: 1
+
+      - name: Resolve deployment metadata
+        id: meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TARGET: ${{ github.event.inputs.target_environment }}
+          INPUT_REF: ${{ github.event.inputs.ref }}
+          INPUT_SCOPE: ${{ github.event.inputs.deploy_scope }}
+          PUSH_REF_NAME: ${{ github.ref_name }}
+          STAGING_SSH_HOST: ${{ secrets.STAGING_SSH_HOST }}
+          STAGING_SSH_USER: ${{ secrets.STAGING_SSH_USER }}
+          STAGING_SSH_PRIVATE_KEY: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
+          STAGING_DEPLOY_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
+          STAGING_HEALTHCHECK_URL: ${{ secrets.STAGING_HEALTHCHECK_URL }}
+        run: |
+          set -euo pipefail
+
+          deploy_sha="$(git rev-parse HEAD)"
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            target_environment="${INPUT_TARGET}"
+            deploy_ref="${INPUT_REF}"
+            deploy_scope="${INPUT_SCOPE:-full}"
+          else
+            target_environment="staging"
+            deploy_ref="${PUSH_REF_NAME}"
+            deploy_scope="full"
+          fi
+
+          staging_configured="true"
+          for staging_var in \
+            STAGING_SSH_HOST \
+            STAGING_SSH_USER \
+            STAGING_SSH_PRIVATE_KEY \
+            STAGING_DEPLOY_PATH \
+            STAGING_HEALTHCHECK_URL
+          do
+            if [ -z "${!staging_var}" ]; then
+              staging_configured="false"
+              break
+            fi
+          done
+
+          run_staging="true"
+          run_production="false"
+          if [ "${target_environment}" = "production" ]; then
+            run_staging="false"
+            run_production="true"
+          fi
+
+          if [ "${run_staging}" = "true" ] && [ "${staging_configured}" != "true" ]; then
+            echo "::warning::Skipping staging deployment because required staging secrets are missing"
+            run_staging="false"
+          fi
+
+          {
+            echo "deploy_sha=${deploy_sha}"
+            echo "deploy_ref=${deploy_ref}"
+            echo "deploy_scope=${deploy_scope}"
+            echo "target_environment=${target_environment}"
+            echo "staging_configured=${staging_configured}"
+            echo "run_staging=${run_staging}"
+            echo "run_production=${run_production}"
+          } >> "${GITHUB_OUTPUT}"
+
+  verify-gates:
+    runs-on: ubuntu-latest
+    needs:
+      - resolve-target
+    steps:
+      - name: Wait for required gates on target SHA
+        uses: actions/github-script@v7
+        env:
+          DEPLOY_SHA: ${{ needs.resolve-target.outputs.deploy_sha }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const sha = process.env.DEPLOY_SHA;
+            const isManual = context.eventName === "workflow_dispatch";
+            const required = ["Test Gate", "Security Baseline", "Supply Chain Security", "Monitoring Gate"];
+            const maxAttempts = 90; // 30 minutes with 20s interval
+            const sleepMs = 20_000;
+
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+            function latestRunByName(runs, name) {
+              return runs
+                .filter((r) => r.name === name)
+                .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+            }
+
+            function latestStatusByContext(statuses, name) {
+              return statuses
+                .filter((status) => status.context === name)
+                .sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at))[0];
+            }
+
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+              const combinedStatus = await github.rest.repos.getCombinedStatusForRef({
+                owner,
+                repo,
+                ref: sha,
+              });
+              const runs = await github.paginate(
+                github.rest.actions.listWorkflowRunsForRepo,
+                { owner, repo, head_sha: sha, per_page: 100 }
+              );
+
+              let allCompleted = true;
+              let failedGate = null;
+              const statusReport = {};
+
+              for (const gateName of required) {
+                const status = latestStatusByContext(combinedStatus.data.statuses, gateName);
+                if (status) {
+                  if (status.state === "success") {
+                    statusReport[gateName] = "success";
+                    continue;
+                  }
+
+                  if (status.state === "pending") {
+                    statusReport[gateName] = `status=${status.state}`;
+                    allCompleted = false;
+                    continue;
+                  }
+
+                  failedGate = `${gateName} status is '${status.state}'`;
+                  break;
+                }
+
+                const run = latestRunByName(runs, gateName);
+                if (!run) {
+                  statusReport[gateName] = "missing";
+                  if (isManual) {
+                    core.setFailed(
+                      `Missing required gate '${gateName}' for manual deploy of ${sha}. ` +
+                      `Run the gate workflows on the target ref first, then retry deploy.`
+                    );
+                    return;
+                  }
+                  allCompleted = false;
+                  continue;
+                }
+
+                if (run.status !== "completed") {
+                  statusReport[gateName] = `status=${run.status}`;
+                  allCompleted = false;
+                  continue;
+                }
+
+                if (run.conclusion !== "success") {
+                  failedGate = `${gateName} concluded with '${run.conclusion}'`;
+                  break;
+                }
+
+                statusReport[gateName] = "success";
+              }
+
+              core.info(`Gate check attempt ${attempt}/${maxAttempts}: ${JSON.stringify(statusReport)}`);
+
+              if (failedGate) {
+                core.setFailed(`Deployment gate failed for ${sha}: ${failedGate}`);
+                return;
+              }
+
+              if (allCompleted) {
+                core.info(`All deployment gates passed for ${sha}.`);
+                return;
+              }
+
+              if (attempt === maxAttempts) {
+                core.setFailed(
+                  `Timed out waiting for required gates on ${sha}. Required: ${required.join(", ")}`
+                );
+                return;
+              }
+
+              await sleep(sleepMs);
+            }
+
+  release-preflight-gate:
+    runs-on: ubuntu-latest
+    needs:
+      - resolve-target
+    if: ${{ needs.resolve-target.outputs.run_staging == 'true' || needs.resolve-target.outputs.run_production == 'true' }}
+    steps:
+      - name: Checkout target SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-target.outputs.deploy_sha }}
+          fetch-depth: 1
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run release preflight contract/smoke checks
+        run: ./scripts/release_preflight_gate.sh
+
+  publish-runtime-images:
+    runs-on: ubuntu-latest
+    needs:
+      - resolve-target
+      - verify-gates
+      - release-preflight-gate
+    if: ${{ needs.resolve-target.outputs.run_staging == 'true' || needs.resolve-target.outputs.run_production == 'true' }}
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      backend_image: ${{ steps.image-refs.outputs.backend_image }}
+      browser_service_image: ${{ steps.image-refs.outputs.browser_service_image }}
+      telegram_bot_image: ${{ steps.image-refs.outputs.telegram_bot_image }}
+      ai_image: ${{ steps.image-refs.outputs.ai_image }}
+    steps:
+      - name: Checkout target SHA
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve-target.outputs.deploy_sha }}
+          fetch-depth: 1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve image repositories
+        id: image-repos
+        run: |
+          set -euo pipefail
+          owner="$(printf '%s' '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')"
+          {
+            echo "backend_repo=ghcr.io/${owner}/siteparserforfreelans-backend"
+            echo "browser_service_repo=ghcr.io/${owner}/siteparserforfreelans-browser-service"
+            echo "telegram_bot_repo=ghcr.io/${owner}/siteparserforfreelans-telegram-bot"
+            echo "ai_repo=ghcr.io/${owner}/siteparserforfreelans-ai-runtime"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Build and push backend image
+        id: build-backend
+        if: ${{ needs.resolve-target.outputs.deploy_scope == 'full' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image-repos.outputs.backend_repo }}:${{ needs.resolve-target.outputs.deploy_sha }}
+
+      - name: Build and push browser-service image
+        id: build-browser-service
+        if: ${{ needs.resolve-target.outputs.deploy_scope == 'full' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ./browser-service
+          file: ./browser-service/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image-repos.outputs.browser_service_repo }}:${{ needs.resolve-target.outputs.deploy_sha }}
+
+      - name: Build and push telegram-bot image
+        id: build-telegram-bot
+        if: ${{ needs.resolve-target.outputs.deploy_scope == 'full' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ./telegram-bot
+          file: ./telegram-bot/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image-repos.outputs.telegram_bot_repo }}:${{ needs.resolve-target.outputs.deploy_sha }}
+
+      - name: Build and push AI runtime image
+        id: build-ai
+        if: ${{ needs.resolve-target.outputs.deploy_scope == 'full' || needs.resolve-target.outputs.deploy_scope == 'ai-only' }}
+        uses: docker/build-push-action@v6
+        with:
+          context: ./ai-service
+          file: ./ai-service/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: ${{ steps.image-repos.outputs.ai_repo }}:${{ needs.resolve-target.outputs.deploy_sha }}
+          build-args: |
+            EMBEDDING_MODEL=all-MiniLM-L6-v2
+            PRELOAD_LOCAL_MODELS=0
+
+      - name: Export published image refs
+        id: image-refs
+        env:
+          DEPLOY_SCOPE: ${{ needs.resolve-target.outputs.deploy_scope }}
+        run: |
+          set -euo pipefail
+          {
+            echo "ai_image=${{ steps.image-repos.outputs.ai_repo }}@${{ steps.build-ai.outputs.digest }}"
+            if [ "${DEPLOY_SCOPE}" = "full" ]; then
+              echo "backend_image=${{ steps.image-repos.outputs.backend_repo }}@${{ steps.build-backend.outputs.digest }}"
+              echo "browser_service_image=${{ steps.image-repos.outputs.browser_service_repo }}@${{ steps.build-browser-service.outputs.digest }}"
+              echo "telegram_bot_image=${{ steps.image-repos.outputs.telegram_bot_repo }}@${{ steps.build-telegram-bot.outputs.digest }}"
+            else
+              echo "backend_image="
+              echo "browser_service_image="
+              echo "telegram_bot_image="
+            fi
+          } >> "${GITHUB_OUTPUT}"
+
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs:
+      - resolve-target
+      - verify-gates
+      - release-preflight-gate
+      - publish-runtime-images
+    if: ${{ needs.resolve-target.outputs.run_staging == 'true' }}
+    concurrency:
+      group: deploy-staging
+      cancel-in-progress: false
+    environment: staging
+    steps:
+      - name: Deploy to staging host
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          DEPLOY_SHA: ${{ needs.resolve-target.outputs.deploy_sha }}
+          DEPLOY_SCOPE: ${{ needs.resolve-target.outputs.deploy_scope }}
+          BASE_PATH: ${{ secrets.STAGING_DEPLOY_PATH }}
+          ORIGIN_URL: ${{ github.server_url }}/${{ github.repository }}.git
+          BACKEND_IMAGE: ${{ needs.publish-runtime-images.outputs.backend_image }}
+          BROWSER_SERVICE_IMAGE: ${{ needs.publish-runtime-images.outputs.browser_service_image }}
+          TELEGRAM_BOT_IMAGE: ${{ needs.publish-runtime-images.outputs.telegram_bot_image }}
+          AI_IMAGE: ${{ needs.publish-runtime-images.outputs.ai_image }}
+          AI_POST_DEPLOY_GATE: scripts/post_deploy_ai_gate.sh
+          IMAGE_REGISTRY: ghcr.io
+          IMAGE_REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          IMAGE_REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        with:
+          host: ${{ secrets.STAGING_SSH_HOST }}
+          username: ${{ secrets.STAGING_SSH_USER }}
+          key: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
+          script_stop: false
+          command_timeout: 90m
+          envs: DEPLOY_SHA,DEPLOY_SCOPE,BASE_PATH,ORIGIN_URL,BACKEND_IMAGE,BROWSER_SERVICE_IMAGE,TELEGRAM_BOT_IMAGE,AI_IMAGE,AI_POST_DEPLOY_GATE,IMAGE_REGISTRY,IMAGE_REGISTRY_USERNAME,IMAGE_REGISTRY_PASSWORD
+          script: |
+            set -euo pipefail
+            BASE_PATH="${BASE_PATH:?BASE_PATH is required}"
+            STATE_DIR="$(dirname "${BASE_PATH}")/.$(basename "${BASE_PATH}")-deploy"
+            REPO_DIR="${STATE_DIR}/repo"
+            RUN_ROOT=""
+
+            if [ -n "${IMAGE_REGISTRY_USERNAME:-}" ] || [ -n "${IMAGE_REGISTRY_PASSWORD:-}" ]; then
+              : "${IMAGE_REGISTRY:?IMAGE_REGISTRY is required when registry credentials are configured}"
+              : "${IMAGE_REGISTRY_USERNAME:?IMAGE_REGISTRY_USERNAME is required when registry credentials are configured}"
+              : "${IMAGE_REGISTRY_PASSWORD:?IMAGE_REGISTRY_PASSWORD is required when registry credentials are configured}"
+              printf '%s' "${IMAGE_REGISTRY_PASSWORD}" | docker login "${IMAGE_REGISTRY}" -u "${IMAGE_REGISTRY_USERNAME}" --password-stdin
+            fi
+
+            if [ -d "${REPO_DIR}/.git" ]; then
+              git -C "${REPO_DIR}" fetch --all --prune --tags
+              git -C "${REPO_DIR}" checkout --detach "${DEPLOY_SHA}"
+              RUN_ROOT="${REPO_DIR}"
+            elif [ -d "${BASE_PATH}/.git" ]; then
+              git -C "${BASE_PATH}" fetch --all --prune --tags
+              git -C "${BASE_PATH}" checkout --detach "${DEPLOY_SHA}"
+              RUN_ROOT="${BASE_PATH}"
+            else
+              echo "ERROR: no repo cache or legacy checkout found for ${BASE_PATH}" >&2
+              exit 1
+            fi
+
+            if [ "${DEPLOY_SCOPE}" = "ai-only" ]; then
+              current_env="${STATE_DIR}/current/.env.production"
+              if [ ! -f "${current_env}" ] && [ -f "${BASE_PATH}/.env.production" ]; then
+                current_env="${BASE_PATH}/.env.production"
+              fi
+              [ -f "${current_env}" ] || { echo "ERROR: current env file missing: ${current_env}" >&2; exit 1; }
+              changed_paths="$(git -C "${RUN_ROOT}" diff-tree --no-commit-id --name-only -r "${DEPLOY_SHA}")"
+              [ -n "${changed_paths}" ] || { echo "ERROR: ai-only deploy target has no file changes" >&2; exit 1; }
+              while IFS= read -r changed_path; do
+                [ -n "${changed_path}" ] || continue
+                case "${changed_path}" in
+                  ai-service/*|docker-compose.yml|docker-compose.prod.yml|docker-compose.ssl.yml|.github/workflows/deploy.yml|scripts/deploy_release.sh|scripts/post_deploy_ai_gate.sh|scripts/test_deploy_release.py|scripts/test_deploy_workflow.py|scripts/test_production_compose_ai_cache.py|scripts/test_supply_chain_security_workflow.py|docs/operations.md|docs/vps_deploy.md|README.md) ;;
+                  *)
+                    echo "ERROR: ai-only deploy cannot include non-AI path: ${changed_path}" >&2
+                    exit 1
+                    ;;
+                esac
+              done <<< "${changed_paths}"
+              BACKEND_IMAGE="$(grep '^BACKEND_IMAGE=' "${current_env}" | cut -d= -f2-)"
+              BROWSER_SERVICE_IMAGE="$(grep '^BROWSER_SERVICE_IMAGE=' "${current_env}" | cut -d= -f2-)"
+              TELEGRAM_BOT_IMAGE="$(grep '^TELEGRAM_BOT_IMAGE=' "${current_env}" | cut -d= -f2-)"
+              : "${BACKEND_IMAGE:?current env is missing BACKEND_IMAGE}"
+              : "${BROWSER_SERVICE_IMAGE:?current env is missing BROWSER_SERVICE_IMAGE}"
+              : "${TELEGRAM_BOT_IMAGE:?current env is missing TELEGRAM_BOT_IMAGE}"
+              : "${AI_IMAGE:?AI_IMAGE is required for ai-only deploy}"
+            fi
+
+            set -- --base-path "${BASE_PATH}" --sha "${DEPLOY_SHA}" --origin-url "${ORIGIN_URL}"
+            if [ "${DEPLOY_SCOPE}" = "ai-only" ]; then
+              set -- "$@" --post-deploy-gate "${AI_POST_DEPLOY_GATE}"
+              set -- "$@" --service ai-service --service ai-user-embed --service ai-user-rematch --service ai-ac-consumer
+            else
+              [ -z "${POST_DEPLOY_GATE:-}" ] || set -- "$@" --post-deploy-gate "${POST_DEPLOY_GATE}"
+            fi
+            bash "${RUN_ROOT}/scripts/deploy_release.sh" "$@"
+
+      - name: Staging health check
+        env:
+          STAGING_HEALTHCHECK_URL: ${{ secrets.STAGING_HEALTHCHECK_URL }}
+        run: |
+          set -euo pipefail
+          : "${STAGING_HEALTHCHECK_URL:?STAGING_HEALTHCHECK_URL is required}"
+          case "${STAGING_HEALTHCHECK_URL}" in
+            http://*|https://*) ;;
+            *)
+              echo "STAGING_HEALTHCHECK_URL must start with http:// or https://" >&2
+              exit 1
+              ;;
+          esac
+          curl --fail --show-error --silent --retry 10 --retry-delay 5 "${STAGING_HEALTHCHECK_URL}"
+
+  staging-smoke-e2e-gate:
+    runs-on: ubuntu-latest
+    needs:
+      - resolve-target
+      - deploy-staging
+    if: ${{ needs.resolve-target.outputs.run_staging == 'true' }}
+    concurrency:
+      group: deploy-staging-smoke-e2e-gate
+      cancel-in-progress: false
+    environment: staging
+    steps:
+      - name: Run staging smoke/e2e gate
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          DEPLOY_SHA: ${{ needs.resolve-target.outputs.deploy_sha }}
+          STAGING_GATE_API_URL: ${{ secrets.STAGING_GATE_API_URL }}
+          STAGING_SMOKE_TELEGRAM_ID: ${{ secrets.STAGING_SMOKE_TELEGRAM_ID }}
+        with:
+          host: ${{ secrets.STAGING_SSH_HOST }}
+          username: ${{ secrets.STAGING_SSH_USER }}
+          key: ${{ secrets.STAGING_SSH_PRIVATE_KEY }}
+          script_stop: false
+          command_timeout: 30m
+          envs: DEPLOY_SHA,STAGING_GATE_API_URL,STAGING_SMOKE_TELEGRAM_ID
+          script: |
+            set -euo pipefail
+            cd "${{ secrets.STAGING_DEPLOY_PATH }}"
+            set -a
+            . ./.env.production
+            set +a
+            if [ -n "${STAGING_GATE_API_URL:-}" ]; then
+              export API_URL="${STAGING_GATE_API_URL}"
+            fi
+            if [ -n "${STAGING_SMOKE_TELEGRAM_ID:-}" ]; then
+              export E2E_TELEGRAM_ID="${STAGING_SMOKE_TELEGRAM_ID}"
+            fi
+            bash ./scripts/staging_smoke_e2e_gate.sh
+
+  production-approval:
+    runs-on: ubuntu-latest
+    needs:
+      - resolve-target
+      - deploy-staging
+      - staging-smoke-e2e-gate
+    if: >-
+      ${{
+        always() &&
+        needs.resolve-target.outputs.run_production == 'true' &&
+        (
+          needs.resolve-target.outputs.run_staging != 'true' ||
+          (
+            needs.deploy-staging.result == 'success' &&
+            needs.staging-smoke-e2e-gate.result == 'success'
+          )
+        )
+      }}
+    environment: production
+    steps:
+      - name: Await production approval
+        run: echo "Production deployment approved."
+
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs:
+      - resolve-target
+      - deploy-staging
+      - staging-smoke-e2e-gate
+      - production-approval
+      - publish-runtime-images
+    if: >-
+      ${{
+        always() &&
+        needs.resolve-target.outputs.run_production == 'true' &&
+        needs.publish-runtime-images.result == 'success' &&
+        needs.production-approval.result == 'success' &&
+        (
+          needs.resolve-target.outputs.run_staging != 'true' ||
+          (
+            needs.deploy-staging.result == 'success' &&
+            needs.staging-smoke-e2e-gate.result == 'success'
+          )
+        )
+      }}
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - name: Deploy to production host
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          DEPLOY_SHA: ${{ needs.resolve-target.outputs.deploy_sha }}
+          DEPLOY_SCOPE: ${{ needs.resolve-target.outputs.deploy_scope }}
+          BASE_PATH: ${{ secrets.PROD_DEPLOY_PATH }}
+          POST_DEPLOY_GATE: scripts/post_deploy_production_gate.sh
+          ORIGIN_URL: ${{ github.server_url }}/${{ github.repository }}.git
+          BACKEND_IMAGE: ${{ needs.publish-runtime-images.outputs.backend_image }}
+          BROWSER_SERVICE_IMAGE: ${{ needs.publish-runtime-images.outputs.browser_service_image }}
+          TELEGRAM_BOT_IMAGE: ${{ needs.publish-runtime-images.outputs.telegram_bot_image }}
+          AI_IMAGE: ${{ needs.publish-runtime-images.outputs.ai_image }}
+          AI_POST_DEPLOY_GATE: scripts/post_deploy_ai_gate.sh
+          IMAGE_REGISTRY: ghcr.io
+          IMAGE_REGISTRY_USERNAME: ${{ secrets.REGISTRY_USERNAME }}
+          IMAGE_REGISTRY_PASSWORD: ${{ secrets.REGISTRY_PASSWORD }}
+        with:
+          host: ${{ secrets.PROD_SSH_HOST }}
+          username: ${{ secrets.PROD_SSH_USER }}
+          key: ${{ secrets.PROD_SSH_PRIVATE_KEY }}
+          script_stop: false
+          command_timeout: 90m
+          envs: DEPLOY_SHA,DEPLOY_SCOPE,BASE_PATH,POST_DEPLOY_GATE,ORIGIN_URL,BACKEND_IMAGE,BROWSER_SERVICE_IMAGE,TELEGRAM_BOT_IMAGE,AI_IMAGE,AI_POST_DEPLOY_GATE,IMAGE_REGISTRY,IMAGE_REGISTRY_USERNAME,IMAGE_REGISTRY_PASSWORD
+          script: |
+            set -euo pipefail
+            BASE_PATH="${BASE_PATH:?BASE_PATH is required}"
+            STATE_DIR="$(dirname "${BASE_PATH}")/.$(basename "${BASE_PATH}")-deploy"
+            REPO_DIR="${STATE_DIR}/repo"
+            RUN_ROOT=""
+
+            if [ -n "${IMAGE_REGISTRY_USERNAME:-}" ] || [ -n "${IMAGE_REGISTRY_PASSWORD:-}" ]; then
+              : "${IMAGE_REGISTRY:?IMAGE_REGISTRY is required when registry credentials are configured}"
+              : "${IMAGE_REGISTRY_USERNAME:?IMAGE_REGISTRY_USERNAME is required when registry credentials are configured}"
+              : "${IMAGE_REGISTRY_PASSWORD:?IMAGE_REGISTRY_PASSWORD is required when registry credentials are configured}"
+              printf '%s' "${IMAGE_REGISTRY_PASSWORD}" | docker login "${IMAGE_REGISTRY}" -u "${IMAGE_REGISTRY_USERNAME}" --password-stdin
+            fi
+
+            if [ -d "${REPO_DIR}/.git" ]; then
+              git -C "${REPO_DIR}" fetch --all --prune --tags
+              git -C "${REPO_DIR}" checkout --detach "${DEPLOY_SHA}"
+              RUN_ROOT="${REPO_DIR}"
+            elif [ -d "${BASE_PATH}/.git" ]; then
+              git -C "${BASE_PATH}" fetch --all --prune --tags
+              git -C "${BASE_PATH}" checkout --detach "${DEPLOY_SHA}"
+              RUN_ROOT="${BASE_PATH}"
+            else
+              echo "ERROR: no repo cache or legacy checkout found for ${BASE_PATH}" >&2
+              exit 1
+            fi
+
+            if [ "${DEPLOY_SCOPE}" = "ai-only" ]; then
+              current_env="${STATE_DIR}/current/.env.production"
+              if [ ! -f "${current_env}" ] && [ -f "${BASE_PATH}/.env.production" ]; then
+                current_env="${BASE_PATH}/.env.production"
+              fi
+              [ -f "${current_env}" ] || { echo "ERROR: current env file missing: ${current_env}" >&2; exit 1; }
+              changed_paths="$(git -C "${RUN_ROOT}" diff-tree --no-commit-id --name-only -r "${DEPLOY_SHA}")"
+              [ -n "${changed_paths}" ] || { echo "ERROR: ai-only deploy target has no file changes" >&2; exit 1; }
+              while IFS= read -r changed_path; do
+                [ -n "${changed_path}" ] || continue
+                case "${changed_path}" in
+                  ai-service/*|docker-compose.yml|docker-compose.prod.yml|docker-compose.ssl.yml|.github/workflows/deploy.yml|scripts/deploy_release.sh|scripts/post_deploy_ai_gate.sh|scripts/test_deploy_release.py|scripts/test_deploy_workflow.py|scripts/test_production_compose_ai_cache.py|scripts/test_supply_chain_security_workflow.py|docs/operations.md|docs/vps_deploy.md|README.md) ;;
+                  *)
+                    echo "ERROR: ai-only deploy cannot include non-AI path: ${changed_path}" >&2
+                    exit 1
+                    ;;
+                esac
+              done <<< "${changed_paths}"
+              BACKEND_IMAGE="$(grep '^BACKEND_IMAGE=' "${current_env}" | cut -d= -f2-)"
+              BROWSER_SERVICE_IMAGE="$(grep '^BROWSER_SERVICE_IMAGE=' "${current_env}" | cut -d= -f2-)"
+              TELEGRAM_BOT_IMAGE="$(grep '^TELEGRAM_BOT_IMAGE=' "${current_env}" | cut -d= -f2-)"
+              : "${BACKEND_IMAGE:?current env is missing BACKEND_IMAGE}"
+              : "${BROWSER_SERVICE_IMAGE:?current env is missing BROWSER_SERVICE_IMAGE}"
+              : "${TELEGRAM_BOT_IMAGE:?current env is missing TELEGRAM_BOT_IMAGE}"
+              : "${AI_IMAGE:?AI_IMAGE is required for ai-only deploy}"
+            fi
+
+            set -- --base-path "${BASE_PATH}" --sha "${DEPLOY_SHA}" --origin-url "${ORIGIN_URL}"
+            if [ "${DEPLOY_SCOPE}" = "ai-only" ]; then
+              set -- "$@" --post-deploy-gate "${AI_POST_DEPLOY_GATE}"
+              set -- "$@" --service ai-service --service ai-user-embed --service ai-user-rematch --service ai-ac-consumer
+            else
+              [ -z "${POST_DEPLOY_GATE:-}" ] || set -- "$@" --post-deploy-gate "${POST_DEPLOY_GATE}"
+            fi
+            bash "${RUN_ROOT}/scripts/deploy_release.sh" "$@"
+
+      - name: Production health check
+        env:
+          PROD_HEALTHCHECK_URL: ${{ secrets.PROD_HEALTHCHECK_URL }}
+        run: |
+          set -euo pipefail
+          : "${PROD_HEALTHCHECK_URL:?PROD_HEALTHCHECK_URL is required}"
+          case "${PROD_HEALTHCHECK_URL}" in
+            http://*|https://*) ;;
+            *)
+              echo "PROD_HEALTHCHECK_URL must start with http:// or https://" >&2
+              exit 1
+              ;;
+          esac
+          curl --fail --show-error --silent --retry 10 --retry-delay 5 "${PROD_HEALTHCHECK_URL}"
+          if [[ "${PROD_HEALTHCHECK_URL}" == */healthz ]]; then
+            curl --fail --show-error --silent --retry 10 --retry-delay 5 "${PROD_HEALTHCHECK_URL%/healthz}/readyz"
+          fi

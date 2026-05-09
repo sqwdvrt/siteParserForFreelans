@@ -1,0 +1,7 @@
+[allowlist]
+description = "Known non-production fixtures and local caches"
+paths = [
+  '''^backend/\.gomodcache.*''',
+  '''^backend/\.gocache.*''',
+  '''^telegram-bot/tests/test_main\.py$''',
+]

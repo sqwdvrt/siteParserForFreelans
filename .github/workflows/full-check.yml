@@ -1,0 +1,70 @@
+name: Full Check (make test-all)
+
+# Runs scripts/full_check.sh end-to-end as a single sequential job.
+# Requires Docker (actionlint, promtool, amtool fallbacks) and external
+# network (govulncheck → vuln.go.dev, pip-audit → osv.dev/pypi.org).
+# ubuntu-latest provides both by default.
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - develop
+
+jobs:
+  full-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # setup-go built-in cache targets the default GOMODCACHE path.
+      # full_check.sh overrides it to backend/.gomodcache-go1.25.10, so we
+      # manage the cache manually and disable the built-in one.
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.x"
+          cache: false
+
+      - name: Cache Go modules
+        uses: actions/cache@v4
+        with:
+          path: backend/.gomodcache-go1.25.10
+          key: ${{ runner.os }}-gomod-go1.25.10-${{ hashFiles('backend/go.sum') }}
+          restore-keys: ${{ runner.os }}-gomod-go1.25.10-
+
+      - name: Cache Go build artifacts
+        uses: actions/cache@v4
+        with:
+          path: backend/.gocache-go1.25.10
+          key: ${{ runner.os }}-gobuild-go1.25.10-${{ hashFiles('backend/**/*.go') }}
+          restore-keys: ${{ runner.os }}-gobuild-go1.25.10-
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: |
+            ai-service/requirements.txt
+            browser-service/requirements-dev.txt
+            telegram-bot/pyproject.toml
+
+      # Install all Python deps once up front so every full_check.sh step
+      # (ai tests, tg-bot tests, coverage gate, security/pip-audit) finds
+      # the required packages without any sub-script needing --user installs
+      # of pytest / pytest-cov.
+      - name: Install Python dependencies
+        run: |
+          python -m pip install -r ai-service/requirements.txt
+          python -m pip install -r browser-service/requirements-dev.txt
+          python -m pip install -e "./telegram-bot[dev]"
+          python -m pip install "pytest>=7.0" "pytest-cov>=4.0" "python-dotenv>=1.0"
+
+      - name: Run make test-all
+        env:
+          PYTHON_BIN: python
+          GO_TOOLCHAIN: go1.25.10
+        run: make test-all

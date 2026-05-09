@@ -1,0 +1,258 @@
+from __future__ import annotations
+
+from ai_service.domain.job import Job
+from ai_service.domain.user import User, UserPreferences
+from ai_service.util.preference_filter import (
+    PREFERENCE_FILTER_REASON_BUDGET,
+    PREFERENCE_FILTER_REASON_EXCLUDE_KEYWORD,
+    PREFERENCE_FILTER_REASON_INCLUDE_KEYWORD,
+    apply_preference_filter,
+    evaluate_preference_filter,
+    parse_budget_amount,
+)
+
+
+def test_parse_budget_amount_handles_plain_rubles() -> None:
+    assert parse_budget_amount("5000 руб") == 5000.0
+
+
+def test_parse_budget_amount_handles_suffix_k() -> None:
+    assert parse_budget_amount("5k руб") == 5000.0
+
+
+def test_parse_budget_amount_returns_none_on_unknown_text() -> None:
+    assert parse_budget_amount("договорная цена") is None
+
+
+def test_apply_preference_filter_excludes_keyword_case_insensitive() -> None:
+    job = Job(id=1, title="Need Laravel backend", description="PHP support", raw_html="")
+    users = [
+        User(
+            id=10,
+            telegram_id=1,
+            profile_text="python",
+            embedding=None,
+            preferences=UserPreferences(exclude_keywords=("laravel",)),
+        ),
+        User(id=20, telegram_id=2, profile_text="php", embedding=None),
+    ]
+
+    filtered = apply_preference_filter(job, users)
+
+    assert [user.id for user in filtered] == [20]
+
+
+def test_apply_preference_filter_keeps_user_when_budget_parse_fails() -> None:
+    job = Job(id=1, title="Backend", description="Support", raw_html="", budget="договорная")
+    users = [
+        User(
+            id=10,
+            telegram_id=1,
+            profile_text="python",
+            embedding=None,
+            preferences=UserPreferences(min_budget=10_000.0),
+        ),
+    ]
+
+    filtered = apply_preference_filter(job, users)
+
+    assert [user.id for user in filtered] == [10]
+
+
+def test_apply_preference_filter_excludes_when_stack_not_matching() -> None:
+    job = Job(id=1, title="Need Golang backend", description="Microservices in Go", raw_html="")
+    users = [
+        User(id=10, telegram_id=1, profile_text="Навыки: Python, Django", embedding=None),
+        User(id=20, telegram_id=2, profile_text="Навыки: Go, Redis", embedding=None),
+    ]
+
+    filtered = apply_preference_filter(job, users)
+
+    assert [user.id for user in filtered] == [20]
+
+
+def test_apply_preference_filter_excludes_when_experience_too_low() -> None:
+    job = Job(id=1, title="Backend", description="Требуется 5+ лет коммерческого опыта", raw_html="")
+    users = [
+        User(
+            id=10,
+            telegram_id=1,
+            profile_text="Уровень опыта: Middle (2–5 лет). Навыки: Python",
+            embedding=None,
+        ),
+        User(
+            id=20,
+            telegram_id=2,
+            profile_text="Уровень опыта: Senior (5+ лет). Навыки: Python",
+            embedding=None,
+        ),
+    ]
+
+    filtered = apply_preference_filter(job, users)
+
+    assert [user.id for user in filtered] == [20]
+
+
+def test_apply_preference_filter_excludes_when_work_type_mismatch() -> None:
+    job = Job(id=1, title="Backend API", description="Web backend service", raw_html="")
+    users = [
+        User(id=10, telegram_id=1, profile_text="Специализация: Мобильная разработка", embedding=None),
+        User(id=20, telegram_id=2, profile_text="Специализация: Backend-разработка", embedding=None),
+    ]
+
+    filtered = apply_preference_filter(job, users, classification={"project_type": "web"})
+
+    assert [user.id for user in filtered] == [20]
+
+
+def test_apply_preference_filter_uses_profile_budget_when_preferences_missing() -> None:
+    job = Job(id=1, title="Backend", description="Support", raw_html="", budget="800 руб")
+    users = [
+        User(
+            id=10,
+            telegram_id=1,
+            profile_text="Желаемая ставка: 1 000–2 500 ₽/ч. Навыки: Python",
+            embedding=None,
+        ),
+    ]
+
+    filtered = apply_preference_filter(job, users)
+
+    assert filtered == []
+
+
+def test_evaluate_preference_filter_records_budget_reason() -> None:
+    job = Job(id=1, title="Backend", description="Support", raw_html="", budget="800 руб")
+    users = [
+        User(
+            id=10,
+            telegram_id=1,
+            profile_text="Навыки: Python",
+            embedding=None,
+            preferences=UserPreferences(min_budget=1000.0),
+        ),
+        User(
+            id=20,
+            telegram_id=2,
+            profile_text="Навыки: Python",
+            embedding=None,
+            preferences=UserPreferences(min_budget=500.0),
+        ),
+    ]
+
+    result = evaluate_preference_filter(job, users)
+
+    assert [user.id for user in result.passed] == [20]
+    assert PREFERENCE_FILTER_REASON_BUDGET in result.filtered_user_reasons[10]
+
+
+def test_include_keywords_passes_when_keyword_present() -> None:
+    job = Job(id=1, title="Python backend разработчик", description="FastAPI, PostgreSQL", raw_html="")
+    user = User(
+        id=1,
+        telegram_id=1,
+        profile_text="Навыки: Python",
+        embedding=None,
+        preferences=UserPreferences(include_keywords=("python", "django")),
+    )
+    result = apply_preference_filter(job, [user])
+    assert result == [user]
+
+
+def test_include_keywords_filters_when_none_match() -> None:
+    job = Job(id=1, title="1С разработка", description="Бухгалтерия", raw_html="")
+    user = User(
+        id=2,
+        telegram_id=2,
+        profile_text="Навыки: Python",
+        embedding=None,
+        preferences=UserPreferences(include_keywords=("python", "django")),
+    )
+    result = apply_preference_filter(job, [user])
+    assert result == []
+
+
+def test_include_keywords_reason_recorded() -> None:
+    job = Job(id=1, title="Интернет-магазин", description="форма обратной связи", raw_html="")
+    user = User(
+        id=3,
+        telegram_id=3,
+        profile_text="Фрилансер backend-разработчик",
+        embedding=None,
+        preferences=UserPreferences(include_keywords=("python",)),
+    )
+    result = evaluate_preference_filter(job, [user])
+    assert result.passed == []
+    assert PREFERENCE_FILTER_REASON_INCLUDE_KEYWORD in result.filtered_user_reasons[3]
+
+
+def test_include_keywords_do_not_match_substrings_inside_other_words() -> None:
+    job = Job(id=1, title="Django backend", description="Python API", raw_html="")
+    user = User(
+        id=5,
+        telegram_id=5,
+        profile_text="Фрилансер backend-разработчик",
+        embedding=None,
+        preferences=UserPreferences(include_keywords=("go",)),
+    )
+
+    result = apply_preference_filter(job, [user])
+
+    assert result == []
+
+
+def test_include_keywords_match_short_exact_word() -> None:
+    job = Job(id=1, title="Go backend", description="Gin, PostgreSQL", raw_html="")
+    user = User(
+        id=6,
+        telegram_id=6,
+        profile_text="Навыки: Go",
+        embedding=None,
+        preferences=UserPreferences(include_keywords=("go",)),
+    )
+
+    result = apply_preference_filter(job, [user])
+
+    assert result == [user]
+
+
+def test_exclude_keywords_do_not_match_substrings_inside_other_words() -> None:
+    # Regression: "go" must NOT exclude a job mentioning "django" or "google"
+    job = Job(id=1, title="Django backend", description="google cloud, algorithm", raw_html="")
+    user = User(
+        id=7,
+        telegram_id=7,
+        profile_text="Навыки: Django",
+        embedding=None,
+        preferences=UserPreferences(exclude_keywords=("go",)),
+    )
+    result = apply_preference_filter(job, [user])
+    assert result == [user]
+
+
+def test_exclude_keywords_match_exact_word() -> None:
+    # "go" must exclude a job that contains the standalone word "go"
+    job = Job(id=1, title="Go backend developer", description="microservices", raw_html="")
+    user = User(
+        id=8,
+        telegram_id=8,
+        profile_text="Навыки: Go",
+        embedding=None,
+        preferences=UserPreferences(exclude_keywords=("go",)),
+    )
+    result = evaluate_preference_filter(job, [user])
+    assert result.passed == []
+    assert PREFERENCE_FILTER_REASON_EXCLUDE_KEYWORD in result.filtered_user_reasons[8]
+
+
+def test_include_keywords_empty_means_no_filter() -> None:
+    job = Job(id=1, title="Любой проект", description="Без требований", raw_html="")
+    user = User(
+        id=4,
+        telegram_id=4,
+        profile_text="Навыки: Python",
+        embedding=None,
+        preferences=UserPreferences(include_keywords=()),
+    )
+    result = apply_preference_filter(job, [user])
+    assert result == [user]

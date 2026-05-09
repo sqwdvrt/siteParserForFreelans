@@ -1,0 +1,339 @@
+name: Supply Chain Security
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - develop
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to check"
+        required: true
+        default: main
+
+permissions:
+  contents: read
+  security-events: write
+  id-token: write
+  statuses: write
+
+env:
+  GRYPE_VERSION: v0.75.0
+  SYFT_VERSION: v1.0.1
+
+jobs:
+  resolve-target:
+    runs-on: ubuntu-latest
+    outputs:
+      target_sha: ${{ steps.resolve.outputs.target_sha }}
+    steps:
+      - name: Resolve target SHA
+        id: resolve
+        uses: actions/github-script@v7
+        with:
+          script: |
+            if (context.eventName === "workflow_dispatch") {
+              const ref = context.payload.inputs.ref;
+              const { data } = await github.rest.repos.getCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                ref,
+              });
+              core.setOutput("target_sha", data.sha);
+              return;
+            }
+
+            if (context.eventName === "pull_request") {
+              core.setOutput("target_sha", context.payload.pull_request.head.sha);
+              return;
+            }
+
+            core.setOutput("target_sha", context.sha);
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
+          fetch-depth: 0
+
+      - name: Run gitleaks
+        id: gitleaks
+        run: |
+          set +e
+          config_args=()
+          if [ -f /repo/.gitleaks.toml ]; then
+            config_args=(--config /repo/.gitleaks.toml)
+          fi
+          docker run --rm -v "${PWD}:/repo" zricethezav/gitleaks:v8.30.0 \
+            detect --source /repo "${config_args[@]}" --no-banner --redact \
+            --report-format sarif --report-path /repo/gitleaks.sarif
+          exit_code=$?
+          if [ ! -f gitleaks.sarif ]; then
+            printf '%s\n' '{"version":"2.1.0","runs":[]}' > gitleaks.sarif
+          fi
+          echo "exit_code=${exit_code}" >> "${GITHUB_OUTPUT}"
+          exit 0
+
+      - name: Upload gitleaks SARIF
+        if: always()
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: gitleaks.sarif
+
+      - name: Upload gitleaks report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: gitleaks.sarif
+
+      - name: Fail on gitleaks findings
+        if: steps.gitleaks.outputs.exit_code != '0'
+        run: |
+          echo "ERROR: gitleaks detected potential secrets"
+          exit 1
+
+  prepare-anchore-tools:
+    runs-on: ubuntu-latest
+    env:
+      TOOLS_DIR: .anchore-tools/bin
+    steps:
+      - name: Restore Anchore tools cache
+        id: anchore-tools-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.TOOLS_DIR }}
+          key: ${{ runner.os }}-anchore-tools-${{ env.GRYPE_VERSION }}-${{ env.SYFT_VERSION }}
+
+      - name: Download pinned Grype/Syft binaries
+        if: steps.anchore-tools-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p "${TOOLS_DIR}"
+
+          grype_ver="${GRYPE_VERSION#v}"
+          syft_ver="${SYFT_VERSION#v}"
+
+          curl -sSfL "https://github.com/anchore/grype/releases/download/${GRYPE_VERSION}/grype_${grype_ver}_linux_amd64.tar.gz" -o /tmp/grype.tgz
+          tar -xzf /tmp/grype.tgz -C "${TOOLS_DIR}" grype
+
+          curl -sSfL "https://github.com/anchore/syft/releases/download/${SYFT_VERSION}/syft_${syft_ver}_linux_amd64.tar.gz" -o /tmp/syft.tgz
+          tar -xzf /tmp/syft.tgz -C "${TOOLS_DIR}" syft
+
+          chmod +x "${TOOLS_DIR}/grype" "${TOOLS_DIR}/syft"
+
+      - name: Verify tool versions
+        run: |
+          set -euo pipefail
+          "${TOOLS_DIR}/grype" version
+          "${TOOLS_DIR}/syft" version
+
+      - name: Upload Anchore tools artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: anchore-tools-${{ env.GRYPE_VERSION }}-${{ env.SYFT_VERSION }}
+          path: ${{ env.TOOLS_DIR }}
+          if-no-files-found: error
+
+  image-scan-sbom-sign:
+    runs-on: ubuntu-latest
+    needs:
+      - prepare-anchore-tools
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - service: backend
+            context: ./backend
+            dockerfile: ./backend/Dockerfile
+            trivy_pkg_types: os
+            run_grype: "false"
+          - service: ai-service
+            context: ./ai-service
+            dockerfile: ./ai-service/Dockerfile
+            trivy_pkg_types: os
+            run_grype: "false"
+          - service: telegram-bot
+            context: ./telegram-bot
+            dockerfile: ./telegram-bot/Dockerfile
+            trivy_pkg_types: os
+            run_grype: "false"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.ref || github.sha }}
+
+      - name: Download Anchore tools
+        uses: actions/download-artifact@v4
+        with:
+          name: anchore-tools-${{ env.GRYPE_VERSION }}-${{ env.SYFT_VERSION }}
+          path: .anchore-tools/bin
+
+      - name: Make Anchore tools executable
+        run: |
+          set -euo pipefail
+          chmod +x .anchore-tools/bin/grype .anchore-tools/bin/syft
+
+      - name: Build image
+        env:
+          IMAGE_REF: local/${{ matrix.service }}:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker build -t "${IMAGE_REF}" -f "${{ matrix.dockerfile }}" "${{ matrix.context }}"
+
+      - name: Run Trivy scan
+        id: trivy_scan
+        continue-on-error: true
+        env:
+          IMAGE_REF: local/${{ matrix.service }}:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v /var/run/docker.sock:/var/run/docker.sock \
+            -v "${PWD}:/work" \
+            aquasec/trivy:0.56.1 \
+            image \
+            --scanners vuln \
+            --format json \
+            --output "/work/trivy-${{ matrix.service }}.json" \
+            --ignore-unfixed \
+            --vuln-type "${{ matrix.trivy_pkg_types }}" \
+            --severity HIGH,CRITICAL \
+            --exit-code 1 \
+            "${IMAGE_REF}"
+
+      - name: Summarize Trivy findings
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ ! -f "trivy-${{ matrix.service }}.json" ]; then
+            echo "Trivy did not produce a report file."
+            exit 1
+          fi
+          jq -r '
+            [
+              .Results[]? as $result |
+              $result.Vulnerabilities[]? |
+              select(.Severity == "HIGH" or .Severity == "CRITICAL") |
+              [
+                ($result.Target // "unknown"),
+                (.PkgName // "unknown"),
+                (.InstalledVersion // "unknown"),
+                (.FixedVersion // "-"),
+                (.VulnerabilityID // "unknown"),
+                .Severity
+              ] | @tsv
+            ] | .[]
+          ' "trivy-${{ matrix.service }}.json" | sed -n '1,50p'
+
+      - name: Run Grype scan
+        if: ${{ matrix.run_grype == 'true' && steps.trivy_scan.outcome == 'success' }}
+        env:
+          IMAGE_REF: local/${{ matrix.service }}:${{ github.sha }}
+          # Trivy refreshes its DB on every run; Grype's default 5-day age guard
+          # is too strict for ephemeral CI when the published DB itself is older.
+          GRYPE_DB_VALIDATE_AGE: "false"
+        run: |
+          set -euo pipefail
+          ./.anchore-tools/bin/grype "${IMAGE_REF}" -o json > "grype-${{ matrix.service }}.json"
+          # Trivy already enforces HIGH/CRITICAL with ignore-unfixed. Grype stays blocking
+          # for actionable critical findings while ignoring not-fixed/wont-fix base image noise.
+          ./.anchore-tools/bin/grype "${IMAGE_REF}" --ignore-states not-fixed,wont-fix --fail-on critical
+
+      - name: Generate SBOM (CycloneDX JSON)
+        env:
+          IMAGE_REF: local/${{ matrix.service }}:${{ github.sha }}
+        run: |
+          set -euo pipefail
+          ./.anchore-tools/bin/syft "${IMAGE_REF}" -o cyclonedx-json="sbom-${{ matrix.service }}.cdx.json"
+
+      - name: Install Cosign
+        if: ${{ github.event_name == 'push' }}
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign SBOM artifact (keyless)
+        if: ${{ github.event_name == 'push' }}
+        run: |
+          set -euo pipefail
+          cosign sign-blob --yes \
+            --bundle "sbom-${{ matrix.service }}.bundle" \
+            --output-certificate "sbom-${{ matrix.service }}.pem" \
+            --output-signature "sbom-${{ matrix.service }}.sig" \
+            "sbom-${{ matrix.service }}.cdx.json"
+
+      - name: Note unsigned artifact for pull requests
+        if: ${{ github.event_name == 'pull_request' }}
+        run: |
+          set -euo pipefail
+          echo "SBOM signature is created on push events only (OIDC keyless signing)." > "sbom-${{ matrix.service }}.sig.note.txt"
+
+      - name: Upload supply-chain artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: supply-chain-${{ matrix.service }}
+          path: |
+            trivy-${{ matrix.service }}.json
+            grype-${{ matrix.service }}.json
+            sbom-${{ matrix.service }}.cdx.json
+            sbom-${{ matrix.service }}.sig
+            sbom-${{ matrix.service }}.pem
+            sbom-${{ matrix.service }}.bundle
+            sbom-${{ matrix.service }}.sig.note.txt
+          if-no-files-found: ignore
+
+      - name: Fail on Trivy findings
+        if: ${{ steps.trivy_scan.outcome == 'failure' }}
+        run: |
+          echo "ERROR: Trivy detected HIGH/CRITICAL findings for ${{ matrix.service }}"
+          exit 1
+
+  publish-gate-status:
+    runs-on: ubuntu-latest
+    # Fork PRs get a read-only GITHUB_TOKEN, so publishing commit statuses would fail.
+    if: ${{ always() && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork != true) }}
+    needs:
+      - resolve-target
+      - secret-scan
+      - prepare-anchore-tools
+      - image-scan-sbom-sign
+    steps:
+      - name: Publish gate status for target SHA
+        uses: actions/github-script@v7
+        env:
+          TARGET_SHA: ${{ needs.resolve-target.outputs.target_sha }}
+        with:
+          script: |
+            const requiredJobs = [
+              "secret-scan",
+              "prepare-anchore-tools",
+              "image-scan-sbom-sign",
+            ];
+            const results = {
+              "secret-scan": "${{ needs.secret-scan.result }}",
+              "prepare-anchore-tools": "${{ needs.prepare-anchore-tools.result }}",
+              "image-scan-sbom-sign": "${{ needs.image-scan-sbom-sign.result }}",
+            };
+
+            const failedJobs = requiredJobs.filter((job) => results[job] !== "success");
+            const state = failedJobs.length === 0 ? "success" : "failure";
+            const description = failedJobs.length === 0
+              ? "Supply Chain Security passed."
+              : `Failed jobs: ${failedJobs.join(", ")}`.slice(0, 140);
+
+            await github.rest.repos.createCommitStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              sha: process.env.TARGET_SHA,
+              state,
+              context: context.workflow,
+              description,
+              target_url: `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            });

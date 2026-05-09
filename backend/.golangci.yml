@@ -1,0 +1,24 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+  settings:
+    govet:
+      enable:
+        - shadow
+  exclusions:
+    paths:
+      - .gomodcache
+      - .gomodcache-local
+      - .gomodcache-docker
+      - .gocache
+
+formatters:
+  enable:
+    - gofmt

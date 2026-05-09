@@ -1,0 +1,479 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+BASE_PATH=""
+DEPLOY_SHA=""
+ENV_FILE=".env.production"
+ORIGIN_URL=""
+POST_DEPLOY_GATE=""
+COMPOSE_FILES=("docker-compose.prod.yml" "docker-compose.ssl.yml" "docker-compose.monitoring.yml")
+COMPOSE_PROFILES=("monitoring")
+TARGET_SERVICES=()
+RUNTIME_IMAGE_VARS=("BACKEND_IMAGE" "BROWSER_SERVICE_IMAGE" "TELEGRAM_BOT_IMAGE" "AI_IMAGE")
+MONITORING_SERVICES=("prometheus" "alertmanager" "redis-exporter" "postgres-exporter" "grafana")
+
+usage() {
+  cat <<'EOF'
+Usage: deploy_release.sh --base-path PATH --sha SHA [options]
+
+Options:
+  --base-path PATH         Stable live deploy path (required).
+  --sha SHA                Commit SHA to deploy (required).
+  --env-file NAME          Shared env file name inside releases (default: .env.production).
+  --compose-file FILE      Compose file to pass to docker compose. Repeatable.
+  --compose-profile NAME   Compose profile to enable. Repeatable.
+  --service NAME           Limit pull/up/assertion to a compose service. Repeatable.
+  --origin-url URL         Optional git origin for first-time repo cache bootstrap.
+  --post-deploy-gate PATH  Optional post-deploy gate script to run from the live symlink path.
+  --help                   Show this help text.
+EOF
+}
+
+log() {
+  printf '[deploy-release] %s\n' "$*"
+}
+
+die() {
+  log "ERROR: $*"
+  exit 1
+}
+
+merge_legacy_directory() {
+  local source_dir="$1"
+  local target_dir="$2"
+
+  [[ -d "$source_dir" ]] || return 0
+
+  mkdir -p "$target_dir"
+  shopt -s dotglob nullglob
+  for entry in "$source_dir"/*; do
+    mv "$entry" "$target_dir"/
+  done
+  shopt -u dotglob nullglob
+  rmdir "$source_dir" 2>/dev/null || true
+}
+
+update_symlink() {
+  local target="$1"
+  local link_path="$2"
+  local tmp_link="${link_path}.tmp.$$"
+
+  ln -sfn "$target" "$tmp_link"
+  mv -Tf "$tmp_link" "$link_path"
+}
+
+require_command() {
+  local bin="$1"
+  if ! command -v "$bin" >/dev/null 2>&1; then
+    die "required command is missing: $bin"
+  fi
+}
+
+sanitize_project_name() {
+  printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c '[:alnum:]_.-' '-'
+}
+
+run_with_heartbeat() {
+  local label="$1"
+  shift
+
+  local heartbeat_interval="${DEPLOY_HEARTBEAT_INTERVAL_SEC:-20}"
+  local log_file
+  local command_pid
+  local heartbeat_pid
+  local status
+
+  log_file="$(mktemp)"
+  log "starting ${label}: $*"
+
+  (
+    "$@"
+  ) >"$log_file" 2>&1 &
+  command_pid=$!
+
+  (
+    while kill -0 "$command_pid" 2>/dev/null; do
+      sleep "$heartbeat_interval"
+      kill -0 "$command_pid" 2>/dev/null || exit 0
+      log "${label}: still running"
+    done
+  ) &
+  heartbeat_pid=$!
+
+  set +e
+  wait "$command_pid"
+  status=$?
+  set -e
+
+  kill "$heartbeat_pid" 2>/dev/null || true
+  wait "$heartbeat_pid" 2>/dev/null || true
+
+  cat "$log_file"
+  rm -f "$log_file"
+
+  if [[ "$status" -ne 0 ]]; then
+    die "${label} failed with exit code ${status}"
+  fi
+}
+
+parse_args() {
+  local compose_files_set=0
+  local compose_profiles_set=0
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --base-path)
+        [[ $# -ge 2 ]] || die "--base-path requires a value"
+        BASE_PATH="$2"
+        shift 2
+        ;;
+      --sha)
+        [[ $# -ge 2 ]] || die "--sha requires a value"
+        DEPLOY_SHA="$2"
+        shift 2
+        ;;
+      --env-file)
+        [[ $# -ge 2 ]] || die "--env-file requires a value"
+        ENV_FILE="$2"
+        shift 2
+        ;;
+      --compose-file)
+        [[ $# -ge 2 ]] || die "--compose-file requires a value"
+        if [[ "$compose_files_set" -eq 0 ]]; then
+          COMPOSE_FILES=()
+          compose_files_set=1
+        fi
+        COMPOSE_FILES+=("$2")
+        shift 2
+        ;;
+      --compose-profile)
+        [[ $# -ge 2 ]] || die "--compose-profile requires a value"
+        if [[ "$compose_profiles_set" -eq 0 ]]; then
+          COMPOSE_PROFILES=()
+          compose_profiles_set=1
+        fi
+        COMPOSE_PROFILES+=("$2")
+        shift 2
+        ;;
+      --service)
+        [[ $# -ge 2 ]] || die "--service requires a value"
+        TARGET_SERVICES+=("$2")
+        shift 2
+        ;;
+      --origin-url)
+        [[ $# -ge 2 ]] || die "--origin-url requires a value"
+        ORIGIN_URL="$2"
+        shift 2
+        ;;
+      --post-deploy-gate)
+        [[ $# -ge 2 ]] || die "--post-deploy-gate requires a value"
+        POST_DEPLOY_GATE="$2"
+        shift 2
+        ;;
+      --help|-h)
+        usage
+        exit 0
+        ;;
+      *)
+        die "unknown argument: $1"
+        ;;
+    esac
+  done
+
+  [[ -n "$BASE_PATH" ]] || die "--base-path is required"
+  [[ -n "$DEPLOY_SHA" ]] || die "--sha is required"
+  [[ "${#COMPOSE_FILES[@]}" -gt 0 ]] || die "at least one --compose-file is required"
+}
+
+init_layout() {
+  local base_dir_input
+  local base_name
+
+  base_dir_input="$(dirname "$BASE_PATH")"
+  mkdir -p "$base_dir_input"
+  base_dir_input="$(cd "$base_dir_input" && pwd -P)"
+  base_name="$(basename "$BASE_PATH")"
+
+  BASE_PATH="${base_dir_input}/${base_name}"
+  STATE_DIR="${base_dir_input}/.${base_name}-deploy"
+  REPO_DIR="${STATE_DIR}/repo"
+  RELEASES_DIR="${STATE_DIR}/releases"
+  SHARED_DIR="${STATE_DIR}/shared"
+  CURRENT_LINK="${STATE_DIR}/current"
+  RELEASE_DIR="${RELEASES_DIR}/${DEPLOY_SHA}"
+  SHARED_ENV_FILE="${SHARED_DIR}/${ENV_FILE}"
+  SHARED_BACKUPS_DIR="${SHARED_DIR}/backups"
+  COMPOSE_PROJECT_NAME="$(sanitize_project_name "$base_name")"
+
+  mkdir -p "$STATE_DIR" "$RELEASES_DIR" "$SHARED_DIR"
+}
+
+migrate_legacy_checkout_if_needed() {
+  if [[ -L "$BASE_PATH" ]]; then
+    return
+  fi
+
+  if [[ -d "$BASE_PATH" && -d "$BASE_PATH/.git" ]]; then
+    [[ ! -e "$REPO_DIR" ]] || die "repo cache already exists at ${REPO_DIR}; cannot migrate legacy checkout from ${BASE_PATH}"
+
+    log "migrating legacy checkout at ${BASE_PATH} into ${REPO_DIR}"
+
+    if [[ -f "${BASE_PATH}/${ENV_FILE}" && ! -e "$SHARED_ENV_FILE" ]]; then
+      mv "${BASE_PATH}/${ENV_FILE}" "$SHARED_ENV_FILE"
+      log "moved ${ENV_FILE} into shared state"
+    fi
+
+    if [[ -d "${BASE_PATH}/backups" ]]; then
+      merge_legacy_directory "${BASE_PATH}/backups" "$SHARED_BACKUPS_DIR"
+      log "moved backups into shared state"
+    fi
+
+    mv "$BASE_PATH" "$REPO_DIR"
+    return
+  fi
+
+  if [[ -e "$BASE_PATH" ]]; then
+    die "${BASE_PATH} exists but is not a legacy git checkout or symlink"
+  fi
+}
+
+prepare_repo_cache() {
+  if [[ ! -e "$REPO_DIR" ]]; then
+    [[ -n "$ORIGIN_URL" ]] || die "repo cache missing at ${REPO_DIR}; rerun with --origin-url or migrate an existing checkout first"
+    log "bootstrapping repo cache from ${ORIGIN_URL}"
+    git clone "$ORIGIN_URL" "$REPO_DIR"
+  fi
+
+  [[ -d "${REPO_DIR}/.git" ]] || die "repo cache is not a git checkout: ${REPO_DIR}"
+
+  git -C "$REPO_DIR" fetch --all --prune --tags
+  git -C "$REPO_DIR" rev-parse --verify "${DEPLOY_SHA}^{commit}" >/dev/null 2>&1 || \
+    die "target commit is not available in repo cache: ${DEPLOY_SHA}"
+}
+
+ensure_shared_state() {
+  mkdir -p "$SHARED_BACKUPS_DIR"
+  [[ -f "$SHARED_ENV_FILE" ]] || die "shared env file is missing: ${SHARED_ENV_FILE}"
+}
+
+require_runtime_image_env() {
+  local image_var
+  for image_var in "${RUNTIME_IMAGE_VARS[@]}"; do
+    [[ -n "${!image_var:-}" ]] || die "${image_var} must be set to a digest-pinned image ref"
+  done
+}
+
+write_release_env_file() {
+  local release_env_file="${RELEASE_DIR}/${ENV_FILE}"
+  local image_var
+  local image_value
+
+  rm -f "$release_env_file"
+  cp "$SHARED_ENV_FILE" "$release_env_file"
+  for image_var in "${RUNTIME_IMAGE_VARS[@]}"; do
+    image_value="${!image_var}"
+    awk -v key="${image_var}" 'index($0, key "=") != 1' "$release_env_file" > "${release_env_file}.filtered"
+    mv "${release_env_file}.filtered" "$release_env_file"
+    printf '%s=%s\n' "$image_var" "$image_value" >> "$release_env_file"
+  done
+}
+
+ensure_release_worktree() {
+  if [[ -e "$RELEASE_DIR" ]]; then
+    [[ -d "$RELEASE_DIR" ]] || die "release path exists and is not a directory: ${RELEASE_DIR}"
+    [[ -e "${RELEASE_DIR}/.git" ]] || die "release path exists but is not a git worktree: ${RELEASE_DIR}"
+
+    local existing_sha
+    existing_sha="$(git -C "$RELEASE_DIR" rev-parse HEAD)"
+    [[ "$existing_sha" = "$DEPLOY_SHA" ]] || die "release path ${RELEASE_DIR} already exists for ${existing_sha}, expected ${DEPLOY_SHA}"
+
+    log "reusing existing release worktree ${RELEASE_DIR}"
+    return
+  fi
+
+  log "creating release worktree ${RELEASE_DIR}"
+  git -C "$REPO_DIR" worktree add --detach "$RELEASE_DIR" "$DEPLOY_SHA"
+}
+
+link_shared_state() {
+  rm -rf "${RELEASE_DIR}/backups"
+  ln -s "$SHARED_BACKUPS_DIR" "${RELEASE_DIR}/backups"
+
+  cat > "${RELEASE_DIR}/.env" <<EOF
+COMPOSE_PROJECT_NAME=${COMPOSE_PROJECT_NAME}
+COMPOSE_PROFILES=$(IFS=,; printf '%s' "${COMPOSE_PROFILES[*]}")
+EOF
+}
+
+assert_compose_services_created() {
+  local -n compose_args_ref="$1"
+  local -n available_services_ref="$2"
+  local available_service
+  local container_id
+
+  for available_service in "${available_services_ref[@]}"; do
+    [[ "$available_service" = "backend-migrate" ]] && continue
+
+    container_id="$(
+      docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args_ref[@]}" ps -q "$available_service" | head -n1
+    )"
+    [[ -n "$container_id" ]] || die "compose service did not create a container: ${available_service}"
+  done
+}
+
+runtime_image_var_for_service() {
+  local service="$1"
+
+  case "$service" in
+    backend-api|backend-crawler|backend-notifier)
+      printf '%s\n' "BACKEND_IMAGE"
+      ;;
+    browser-service)
+      printf '%s\n' "BROWSER_SERVICE_IMAGE"
+      ;;
+    telegram-bot)
+      printf '%s\n' "TELEGRAM_BOT_IMAGE"
+      ;;
+    ai-service|ai-user-embed|ai-user-rematch|ai-ac-consumer)
+      printf '%s\n' "AI_IMAGE"
+      ;;
+    *)
+      printf '\n'
+      ;;
+  esac
+}
+
+verify_runtime_service_images() {
+  local -n compose_args_ref="$1"
+  local -n services_ref="$2"
+  local service
+  local image_var
+  local expected_image
+  local container_id
+  local actual_image
+
+  for service in "${services_ref[@]}"; do
+    image_var="$(runtime_image_var_for_service "$service")"
+    [[ -n "$image_var" ]] || continue
+
+    expected_image="${!image_var:-}"
+    [[ -n "$expected_image" ]] || die "missing expected image ref for ${service} via ${image_var}"
+
+    container_id="$(
+      docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args_ref[@]}" ps -q "$service" | head -n1
+    )"
+    [[ -n "$container_id" ]] || die "runtime image verification could not find a container for ${service}"
+
+    actual_image="$(docker inspect --format "{{.Config.Image}}" "$container_id")"
+    [[ "$actual_image" = "$expected_image" ]] || \
+      die "runtime image mismatch for ${service}: expected ${expected_image}, got ${actual_image}"
+  done
+}
+
+run_safe_docker_cleanup() {
+  if [[ ! -f "./scripts/vps_safe_docker_cleanup.sh" ]]; then
+    log "safe Docker cleanup script is missing; skipping pre-pull cleanup"
+    return
+  fi
+
+  log "running safe Docker cleanup before pulling images"
+  DISK_WARN_PERCENT="${DEPLOY_DOCKER_CLEANUP_WARN_PERCENT:-0}" \
+    bash ./scripts/vps_safe_docker_cleanup.sh
+}
+
+compose_release() {
+  local compose_args=()
+  local compose_file
+  local compose_profile
+  local available_services=()
+  local services_to_assert=()
+  local monitoring_services_to_recreate=()
+  local monitoring_service
+  local available_service
+
+  for compose_file in "${COMPOSE_FILES[@]}"; do
+    compose_args+=(-f "$compose_file")
+  done
+  for compose_profile in "${COMPOSE_PROFILES[@]}"; do
+    compose_args+=(--profile "$compose_profile")
+  done
+
+  log "validating env and starting compose for ${DEPLOY_SHA}"
+  (
+    cd "$RELEASE_DIR"
+    bash ./scripts/validate-env-production.sh "$ENV_FILE"
+    run_safe_docker_cleanup
+    run_with_heartbeat "docker compose pull" \
+      docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" pull "${TARGET_SERVICES[@]}"
+    run_with_heartbeat "docker compose up" \
+      docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" up -d --no-build "${TARGET_SERVICES[@]}"
+    mapfile -t available_services < <(
+      docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" config --services
+    )
+    if [[ "${#TARGET_SERVICES[@]}" -gt 0 ]]; then
+      services_to_assert=("${TARGET_SERVICES[@]}")
+    else
+      services_to_assert=("${available_services[@]}")
+    fi
+    assert_compose_services_created compose_args services_to_assert
+    if [[ "${#TARGET_SERVICES[@]}" -eq 0 ]]; then
+      for monitoring_service in "${MONITORING_SERVICES[@]}"; do
+        for available_service in "${available_services[@]}"; do
+          if [[ "$available_service" = "$monitoring_service" ]]; then
+            monitoring_services_to_recreate+=("$monitoring_service")
+            break
+          fi
+        done
+      done
+      if [[ "${#monitoring_services_to_recreate[@]}" -gt 0 ]]; then
+        run_with_heartbeat "docker compose monitoring recreate" \
+          docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" \
+          up -d --no-build --force-recreate "${monitoring_services_to_recreate[@]}"
+      fi
+    fi
+    verify_runtime_service_images compose_args services_to_assert
+    docker compose -p "$COMPOSE_PROJECT_NAME" --env-file "$ENV_FILE" "${compose_args[@]}" ps
+  )
+}
+
+switch_live_release() {
+  update_symlink "$RELEASE_DIR" "$CURRENT_LINK"
+  update_symlink "$CURRENT_LINK" "$BASE_PATH"
+  log "live symlink now points to ${DEPLOY_SHA}"
+}
+
+run_post_deploy_gate() {
+  [[ -n "$POST_DEPLOY_GATE" ]] || return 0
+
+  log "running post-deploy gate ${POST_DEPLOY_GATE}"
+  (
+    cd "$BASE_PATH"
+    set -a
+    . "./${ENV_FILE}"
+    set +a
+    bash "./${POST_DEPLOY_GATE}"
+  )
+}
+
+main() {
+  require_command git
+  require_command docker
+  require_command mv
+  require_command ln
+  require_command bash
+
+  parse_args "$@"
+  init_layout
+  migrate_legacy_checkout_if_needed
+  prepare_repo_cache
+  ensure_shared_state
+  require_runtime_image_env
+  ensure_release_worktree
+  write_release_env_file
+  link_shared_state
+  compose_release
+  switch_live_release
+  run_post_deploy_gate
+}
+
+main "$@"

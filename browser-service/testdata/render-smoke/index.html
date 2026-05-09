@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Browser Service Smoke Fixture</title>
+  </head>
+  <body>
+    <main id="app">Booting fixture...</main>
+    <script>
+      window.setTimeout(() => {
+        const card = document.createElement("article");
+        card.className = "want-card";
+        card.dataset.id = "fixture-123";
+        card.textContent = "Kwork-like card rendered via javascript";
+        document.body.appendChild(card);
+        document.getElementById("app").textContent = "Fixture ready";
+      }, 150);
+    </script>
+  </body>
+</html>

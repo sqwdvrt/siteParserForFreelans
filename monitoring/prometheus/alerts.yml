@@ -1,0 +1,858 @@
+groups:
+  - name: siteparser-api
+    rules:
+      - alert: SiteParserApiDown
+        expr: up{job="backend-api"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: backend-api
+        annotations:
+          summary: "backend-api is down"
+          description: "Prometheus cannot scrape backend-api /metrics for more than 2 minutes."
+
+      - alert: SiteParserHigh5xxRatio
+        expr: |
+          (
+            sum(rate(siteparser_http_requests_total{job="backend-api", status=~"5.."}[5m]))
+            /
+            clamp_min(sum(rate(siteparser_http_requests_total{job="backend-api"}[5m])), 0.001)
+          ) > 0.02
+        for: 10m
+        labels:
+          severity: warning
+          service: backend-api
+        annotations:
+          summary: "High 5xx ratio on backend-api"
+          description: "5xx ratio is above 2% for 10 minutes."
+
+      - alert: SiteParserHighLatencyP95
+        expr: |
+          histogram_quantile(
+            0.95,
+            sum by (le) (
+              rate(siteparser_http_request_duration_seconds_bucket{job="backend-api", route!="/metrics"}[10m])
+            )
+          ) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          service: backend-api
+        annotations:
+          summary: "High backend-api p95 latency"
+          description: "p95 latency is above 500ms for 10 minutes."
+
+  - name: siteparser-workers
+    rules:
+      - alert: SiteParserCrawlerDown
+        expr: up{job="backend-crawler"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: backend-crawler
+        annotations:
+          summary: "backend-crawler is down"
+          description: "Prometheus cannot scrape backend-crawler /metrics for more than 2 minutes."
+
+      - alert: SiteParserNotifierDown
+        expr: up{job="backend-notifier"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: backend-notifier
+        annotations:
+          summary: "backend-notifier is down"
+          description: "Prometheus cannot scrape backend-notifier /metrics for more than 2 minutes."
+
+      - alert: SiteParserAiServiceDown
+        expr: up{job="ai-service"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: ai-service
+        annotations:
+          summary: "ai-service is down"
+          description: "Prometheus cannot scrape ai-service /metrics for more than 5 minutes."
+
+      - alert: SiteParserACConsumerDown
+        expr: up{job="ai-ac-consumer"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: ai-ac-consumer
+        annotations:
+          summary: "ai-ac-consumer is down"
+          description: "Prometheus cannot scrape ai-ac-consumer /metrics for more than 5 minutes."
+
+      - alert: SiteParserUserEmbedDown
+        expr: up{job="ai-user-embed"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: ai-user-embed
+        annotations:
+          summary: "ai-user-embed is down"
+          description: "Prometheus cannot scrape ai-user-embed /metrics for more than 5 minutes."
+
+      - alert: SiteParserUserRematchDown
+        expr: up{job="ai-user-rematch"} == 0
+        for: 5m
+        labels:
+          severity: critical
+          service: ai-user-rematch
+        annotations:
+          summary: "ai-user-rematch is down"
+          description: "Prometheus cannot scrape ai-user-rematch /metrics for more than 5 minutes."
+
+      - alert: SiteParserCrawlerVolumeLow
+        expr: |
+          increase(siteparser_crawler_jobs_scraped_total{job="backend-crawler"}[24h]) < 10
+        for: 2h
+        labels:
+          severity: warning
+          service: backend-crawler
+        annotations:
+          summary: "Crawler scraped unusually few jobs"
+          description: "crawler_jobs_scraped_total increased by fewer than 10 jobs over the last 24 hours."
+
+      - alert: SiteParserCrawlerFailureRatioHigh
+        expr: |
+          siteparser:crawler_failure_ratio:increase36h > 0.50
+        for: 30m
+        labels:
+          severity: warning
+          service: backend-crawler
+        annotations:
+          summary: "Crawler failure ratio is high"
+          description: "More than 50% of crawler runs failed over the last 36 hours."
+
+      - alert: SiteParserCrawlerInterruptedRatioHigh
+        expr: |
+          siteparser:crawler_interrupted_ratio:increase36h > 0.30
+        for: 30m
+        labels:
+          severity: warning
+          service: backend-crawler
+        annotations:
+          summary: "Crawler interrupted ratio is high"
+          description: "More than 30% of crawler runs were interrupted over the last 36 hours."
+
+      - alert: SiteParserCrawlerNoSuccessfulRuns
+        expr: |
+          siteparser:crawler_successful_runs:increase36h < 1
+        for: 30m
+        labels:
+          severity: critical
+          service: backend-crawler
+        annotations:
+          summary: "Crawler has no successful runs"
+          description: "backend-crawler did not complete a successful run during the last 36 hours."
+
+      - alert: SiteParserCrawlerNoJobsScraped
+        expr: |
+          siteparser:crawler_jobs_scraped:increase36h < 1
+        for: 30m
+        labels:
+          severity: warning
+          service: backend-crawler
+        annotations:
+          summary: "Crawler scraped no jobs"
+          description: "siteparser_crawler_jobs_scraped_total did not increase during the last 36 hours."
+
+      - alert: SiteParserNotifierFailureRatioHigh
+        expr: |
+          siteparser:notifier_failure_ratio:rate5m > 0.20
+          and
+          siteparser:notifier_failure_ratio:rate15m > 0.10
+        for: 10m
+        labels:
+          severity: warning
+          service: backend-notifier
+        annotations:
+          summary: "Notifier failure ratio is high"
+          description: "Notifier failed more than 10% of delivery attempts over 15 minutes, with a 5-minute spike above 20%."
+
+      - alert: SiteParserNotifierNoSuccessfulDeliveriesWithBacklog
+        expr: |
+          sum(siteparser_notifier_queue_depth{job="backend-notifier",state=~"ready|processing"}) > 100
+          and
+          (
+            siteparser:notifier_sent_rate:rate15m == 0
+          )
+        for: 15m
+        labels:
+          severity: warning
+          service: backend-notifier
+        annotations:
+          summary: "Notifier backlog is not draining"
+          description: "Notifier queue backlog stays above 100 while successful delivery rate remains at zero for 15 minutes."
+
+      - alert: SiteParserFeedbackPositiveRatioLow
+        expr: |
+          siteparser_feedback_recent_total{job="backend-api"} >= 10
+          and siteparser_feedback_positive_ratio{job="backend-api"} < 0.40
+        for: 6h
+        labels:
+          severity: warning
+          service: recommendations
+        annotations:
+          summary: "Feedback positive ratio is low"
+          description: "feedback_positive_ratio stayed below 0.40 for 6 hours; recommendation quality may be degraded."
+
+      # -----------------------------------------------------------------------
+      # Crawler quality — sudden drop in scraped jobs volume
+      # -----------------------------------------------------------------------
+      - alert: SiteParserCrawlerJobsVolumeDrop
+        expr: |
+          (
+            increase(siteparser_crawler_jobs_scraped_total{job="backend-crawler"}[24h])
+            <
+            (
+              # Median is used instead of average so a single counter/reset
+              # spike does not keep the volume-drop alert firing for days.
+              quantile_over_time(0.5, increase(siteparser_crawler_jobs_scraped_total{job="backend-crawler"}[24h])[7d:1d])
+              * 0.3
+            )
+          )
+          and
+          (
+            increase(siteparser_crawler_jobs_scraped_total{job="backend-crawler"}[24h]) > 0
+          )
+        for: 1h
+        labels:
+          severity: warning
+          service: backend-crawler
+        annotations:
+          summary: "Crawler jobs volume dropped significantly"
+          description: "Jobs scraped in last 24h is less than 30% of the 7-day average. Possible HTML changes or blocking."
+
+  - name: siteparser-ai-quality
+    # -----------------------------------------------------------------------
+    # AI/LLM quality alerts — LLM success rate, fallback rate, rerank filtering
+    # -----------------------------------------------------------------------
+    rules:
+      - alert: SiteParserGeminiClassifierFallbackRateHigh
+        expr: |
+          (
+            sum(rate(ai_llm_fallback_total{job="ai-service", pipeline="classifier"}[1h]))
+            /
+            clamp_max(
+              sum(rate(ai_llm_primary_total{job="ai-service", pipeline="classifier"}[1h]))
+              +
+              sum(rate(ai_llm_fallback_total{job="ai-service", pipeline="classifier"}[1h])),
+              0.001
+            )
+          ) > 0.30
+        for: 30m
+        labels:
+          severity: warning
+          service: ai-classifier
+        annotations:
+          summary: "Gemini classifier fallback rate is high"
+          description: "Classifier fallback rate exceeded 30% over the last hour. LLM quality may be degrading."
+
+      - alert: SiteParserGeminiActorFailureRateHigh
+        expr: |
+          (
+            sum(rate(ai_llm_primary_total{job="ai-ac-consumer", pipeline="actor", outcome="failure"}[1h]))
+            /
+            clamp_max(
+              sum(rate(ai_llm_primary_total{job="ai-ac-consumer", pipeline="actor"}[1h])),
+              0.001
+            )
+          ) > 0.20
+        for: 30m
+        labels:
+          severity: warning
+          service: ai-actor
+        annotations:
+          summary: "Gemini actor failure rate is high"
+          description: "Actor LLM failure rate exceeded 20% over the last hour."
+
+      - alert: SiteParserRerankAllFilteredRateHigh
+        expr: |
+          (
+            sum(rate(siteparser_rerank_all_filtered_total{job="ai-service"}[1h]))
+            /
+            clamp_max(
+              sum(rate(ai_llm_primary_total{job="ai-service", pipeline="classifier"}[1h]))
+              +
+              sum(rate(ai_llm_fallback_total{job="ai-service", pipeline="classifier"}[1h])),
+              0.001
+            )
+          ) > 0.10
+        for: 30m
+        labels:
+          severity: warning
+          service: ai-reranker
+        annotations:
+          summary: "Rerank all-filtered rate is high"
+          description: "More than 10% of jobs had all rerank candidates filtered. Embedding or rerank threshold may need adjustment."
+
+  - name: siteparser-infra
+    rules:
+      - alert: SiteParserRedisExporterDown
+        expr: up{job="redis-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: redis-exporter
+        annotations:
+          summary: "redis-exporter is down"
+          description: "Prometheus cannot scrape redis-exporter for more than 2 minutes."
+
+      - alert: SiteParserPostgresExporterDown
+        expr: up{job="postgres-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: postgres-exporter
+        annotations:
+          summary: "postgres-exporter is down"
+          description: "Prometheus cannot scrape postgres-exporter for more than 2 minutes."
+
+      - alert: SiteParserRedisUnavailable
+        expr: redis_up{job="redis-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: redis
+        annotations:
+          summary: "Redis is unavailable"
+          description: "redis-exporter reports redis_up=0 for more than 2 minutes."
+
+      - alert: SiteParserPostgresUnavailable
+        expr: pg_up{job="postgres-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: postgres
+        annotations:
+          summary: "PostgreSQL is unavailable"
+          description: "postgres-exporter reports pg_up=0 for more than 2 minutes."
+
+      - alert: SiteParserPostgresConnectionsHigh
+        expr: |
+          sum by (job, instance) (
+            pg_stat_database_numbackends{job="postgres-exporter", datname!~"template0|template1"}
+          ) > 80
+        for: 10m
+        labels:
+          severity: warning
+          service: postgres
+        annotations:
+          summary: "High PostgreSQL connection count"
+          description: "Active PostgreSQL backends are above 80 for 10 minutes."
+
+  - name: siteparser-queues
+    rules:
+      # Queue metrics rely on redis-exporter --check-keys for:
+      # ai-process, user-embed, user-rematch, ac-batch, match-notify and corresponding :processing/:dlq keys.
+      - alert: SiteParserAiProcessBacklogHigh
+        expr: |
+          sum by (job, instance) (redis_key_size{job="redis-exporter", key="ai-process"}) > 1000
+        for: 10m
+        labels:
+          severity: warning
+          service: ai-process
+        annotations:
+          summary: "ai-process backlog is high"
+          description: "Queue ai-process has more than 1000 messages for 10 minutes."
+
+      - alert: SiteParserUserEmbedBacklogHigh
+        expr: |
+          sum by (job, instance) (redis_key_size{job="redis-exporter", key="user-embed"}) > 1000
+        for: 10m
+        labels:
+          severity: warning
+          service: user-embed
+        annotations:
+          summary: "user-embed backlog is high"
+          description: "Queue user-embed has more than 1000 messages for 10 minutes."
+
+      - alert: SiteParserUserRematchBacklogHigh
+        expr: |
+          sum by (job, instance) (redis_key_size{job="redis-exporter", key="user-rematch"}) > 1000
+        for: 10m
+        labels:
+          severity: warning
+          service: user-rematch
+        annotations:
+          summary: "user-rematch backlog is high"
+          description: "Queue user-rematch has more than 1000 messages for 10 minutes."
+
+      - alert: SiteParserACBatchBacklogHigh
+        expr: |
+          sum by (job, instance) (redis_key_size{job="redis-exporter", key="ac-batch"}) > 1000
+        for: 10m
+        labels:
+          severity: warning
+          service: ac-batch
+        annotations:
+          summary: "ac-batch backlog is high"
+          description: "Queue ac-batch has more than 1000 messages for 10 minutes."
+
+      - alert: SiteParserMatchNotifyBacklogHigh
+        expr: |
+          sum by (job, instance) (redis_key_size{job="redis-exporter", key="match-notify"}) > 1000
+        for: 10m
+        labels:
+          severity: warning
+          service: match-notify
+        annotations:
+          summary: "match-notify backlog is high"
+          description: "Queue match-notify has more than 1000 messages for 10 minutes."
+
+      - alert: SiteParserPendingACJobsTableSizeHigh
+        expr: |
+          max by (job, instance) (ai_pending_ac_jobs_rows{job="ai-ac-consumer", state="unprocessed"}) > 5000
+        for: 15m
+        labels:
+          severity: warning
+          service: ai-ac-consumer
+        annotations:
+          summary: "pending_ac_jobs backlog is high"
+          description: "Unprocessed rows in pending_ac_jobs exceeded 5000 for 15 minutes."
+
+      - alert: SiteParserDLQNotEmpty
+        expr: |
+          redis_key_size{job="redis-exporter", key=~".*:dlq"} > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: queues-dlq
+        annotations:
+          summary: "DLQ {{ $labels.key }} is not empty"
+          description: "DLQ {{ $labels.key }} has {{ printf \"%.0f\" $value }} messages for more than 5 minutes."
+
+      - alert: SiteParserDLQGrowing
+        expr: |
+          delta(redis_key_size{job="redis-exporter", key=~".*:dlq"}[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          service: queues-dlq
+        annotations:
+          summary: "DLQ {{ $labels.key }} is growing"
+          description: "DLQ {{ $labels.key }} increased by {{ printf \"%.0f\" $value }} messages over the last 10 minutes."
+
+      - alert: SiteParserAiProcessStall
+        expr: |
+          (
+            sum by (job, instance) (redis_key_size{job="redis-exporter", key="ai-process"}) > 200
+          )
+          and on(job, instance)
+          (
+            sum by (job, instance) (redis_key_size{job="redis-exporter", key="ai-process:processing"}) == 0
+          )
+        for: 10m
+        labels:
+          severity: warning
+          service: ai-process
+        annotations:
+          summary: "ai-process consumer stall suspected"
+          description: "ai-process backlog exists but processing queue stays empty for 10 minutes."
+
+      - alert: SiteParserNotifierStall
+        expr: |
+          (
+            sum by (job, instance) (redis_key_size{job="redis-exporter", key="match-notify"}) > 100
+          )
+          and on(job, instance)
+          (
+            sum by (job, instance) (redis_key_size{job="redis-exporter", key="match-notify:processing"}) == 0
+          )
+        for: 15m
+        labels:
+          severity: warning
+          service: backend-notifier
+        annotations:
+          summary: "notification stall suspected"
+          description: "match-notify backlog exists but processing queue stays empty for 15 minutes."
+
+      - alert: SiteParserACBatchStall
+        expr: |
+          (
+            sum by (job, instance) (redis_key_size{job="redis-exporter", key="ac-batch"}) > 100
+          )
+          and on(job, instance)
+          (
+            sum by (job, instance) (redis_key_size{job="redis-exporter", key="ac-batch:processing"}) == 0
+          )
+        for: 15m
+        labels:
+          severity: warning
+          service: ai-ac-consumer
+        annotations:
+          summary: "ac-batch consumer stall suspected"
+          description: "ac-batch backlog exists but processing queue stays empty for 15 minutes."
+
+      - alert: SiteParserUserRematchStall
+        expr: |
+          (
+            sum by (job, instance) (redis_key_size{job="redis-exporter", key="user-rematch"}) > 100
+          )
+          and on(job, instance)
+          (
+            sum by (job, instance) (redis_key_size{job="redis-exporter", key="user-rematch:processing"}) == 0
+          )
+        for: 15m
+        labels:
+          severity: warning
+          service: ai-user-rematch
+        annotations:
+          summary: "user-rematch consumer stall suspected"
+          description: "user-rematch backlog exists but processing queue stays empty for 15 minutes."
+
+  # ---------------------------------------------------------------------------
+  # SLO burn-rate alerts (30-day window)
+  #
+  # Availability SLO : 99%   → error budget  = 1%  (0.01)
+  # Latency SLO      : p95 < 500ms → latency budget = 5% (0.05)
+  #
+  # Three levels, each using a short + long window pair:
+  #   page      (critical) : burn ≥ 14.4× — consumes 2% of budget in 1 h
+  #   ticket    (warning)  : burn ≥  6×   — consumes 5% of budget in 6 h
+  #   slow-burn (warning)  : burn ≥  1×   — consumes 10% of budget in 3 d
+  #
+  # Expressions reference recording rules from recording_rules.yml.
+  # ---------------------------------------------------------------------------
+  - name: siteparser-slo-burn-rate
+    rules:
+      # -----------------------------------------------------------------------
+      # Availability SLO burn-rate
+      # -----------------------------------------------------------------------
+
+      # page: 14.4× burn — 2% of monthly budget exhausted in ~1 hour
+      - alert: SiteParserApiBurnRateCritical
+        expr: |
+          siteparser:api_error_ratio:rate1m > (14.4 * 0.01)
+          and
+          siteparser:api_error_ratio:rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: critical
+          service: backend-api
+          slo: availability
+        annotations:
+          summary: "API error SLO — critical burn rate (14.4×)"
+          description: >
+            Error rate is burning through the monthly 1% budget at 14.4× speed
+            (short window: {{ $value | humanizePercentage }}).
+            At this rate ~2% of the 30-day budget will be exhausted in 1 hour.
+
+      # ticket: 6× burn — 5% of monthly budget exhausted in ~6 hours
+      - alert: SiteParserApiBurnRateHigh
+        expr: |
+          siteparser:api_error_ratio:rate5m > (6 * 0.01)
+          and
+          siteparser:api_error_ratio:rate30m > (6 * 0.01)
+        for: 10m
+        labels:
+          severity: warning
+          service: backend-api
+          slo: availability
+        annotations:
+          summary: "API error SLO — high burn rate (6×)"
+          description: >
+            Error rate is burning through the monthly 1% budget at 6× speed
+            (5-min window: {{ $value | humanizePercentage }}).
+            At this rate ~5% of the 30-day budget will be exhausted in 6 hours.
+
+      # slow-burn: 1× burn — 10% of monthly budget exhausted in ~3 days
+      - alert: SiteParserApiBurnRateSlow
+        expr: |
+          siteparser:api_error_ratio:rate30m > (1 * 0.01)
+          and
+          siteparser:api_error_ratio:rate6h > (1 * 0.01)
+        for: 1h
+        labels:
+          severity: warning
+          service: backend-api
+          slo: availability
+        annotations:
+          summary: "API error SLO — slow burn (1×)"
+          description: >
+            Error rate equals the monthly SLO budget rate
+            (30-min window: {{ $value | humanizePercentage }}).
+            At this rate ~10% of the 30-day budget will be exhausted in 3 days.
+
+      # -----------------------------------------------------------------------
+      # Latency SLO burn-rate  (budget = 5%: ≤5% of requests may exceed 500ms)
+      # -----------------------------------------------------------------------
+
+      # page: 14.4× burn → bad ratio > 72%
+      - alert: SiteParserApiLatencyBurnRateCritical
+        expr: |
+          siteparser:api_latency_bad_ratio:rate1m > (14.4 * 0.05)
+          and
+          siteparser:api_latency_bad_ratio:rate5m > (14.4 * 0.05)
+        for: 2m
+        labels:
+          severity: critical
+          service: backend-api
+          slo: latency
+        annotations:
+          summary: "API latency SLO — critical burn rate (14.4×)"
+          description: >
+            {{ $value | humanizePercentage }} of requests exceeded 500ms (1-min window).
+            Burning latency budget at 14.4×; ~2% of the 30-day budget consumed in ~1 hour.
+
+      # ticket: 6× burn → bad ratio > 30%
+      - alert: SiteParserApiLatencyBurnRateHigh
+        expr: |
+          siteparser:api_latency_bad_ratio:rate5m > (6 * 0.05)
+          and
+          siteparser:api_latency_bad_ratio:rate30m > (6 * 0.05)
+        for: 10m
+        labels:
+          severity: warning
+          service: backend-api
+          slo: latency
+        annotations:
+          summary: "API latency SLO — high burn rate (6×)"
+          description: >
+            {{ $value | humanizePercentage }} of requests exceeded 500ms (5-min window).
+            Burning latency budget at 6×; ~5% of the 30-day budget consumed in ~6 hours.
+
+      # slow-burn: 1× burn → bad ratio > 5%
+      - alert: SiteParserApiLatencyBurnRateSlow
+        expr: |
+          siteparser:api_latency_bad_ratio:rate30m > (1 * 0.05)
+          and
+          siteparser:api_latency_bad_ratio:rate6h > (1 * 0.05)
+        for: 1h
+        labels:
+          severity: warning
+          service: backend-api
+          slo: latency
+        annotations:
+          summary: "API latency SLO — slow burn (1×)"
+          description: >
+            {{ $value | humanizePercentage }} of requests exceeded 500ms (30-min window).
+            Burning latency budget at monthly rate; ~10% consumed in ~3 days.
+
+  # ---------------------------------------------------------------------------
+  # SLO burn-rate alerts for Crawler/Notifier/AI services
+  #
+  # Crawler SLO: 99% success rate (error budget = 1%)
+  # Notifier SLO: 99% success rate (error budget = 1%)
+  # AI SLO: 95% success rate without fallback (error budget = 5%)
+  # ---------------------------------------------------------------------------
+  - name: siteparser-crawler-slo-burn-rate
+    rules:
+      # page: 14.4× burn — critical
+      - alert: SiteParserCrawlerBurnRateCritical
+        expr: |
+          siteparser:crawler_error_ratio:rate1m > (14.4 * 0.01)
+          and
+          siteparser:crawler_error_ratio:rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: critical
+          service: backend-crawler
+          slo: availability
+        annotations:
+          summary: "Crawler error SLO — critical burn rate (14.4×)"
+          description: >
+            Crawler error rate is burning through the monthly 1% budget at 14.4× speed
+            (short window: {{ $value | humanizePercentage }}).
+            At this rate ~2% of the 30-day budget will be exhausted in 1 hour.
+
+      # ticket: 6× burn — warning
+      - alert: SiteParserCrawlerBurnRateHigh
+        expr: |
+          siteparser:crawler_error_ratio:rate5m > (6 * 0.01)
+          and
+          siteparser:crawler_error_ratio:rate30m > (6 * 0.01)
+        for: 10m
+        labels:
+          severity: warning
+          service: backend-crawler
+          slo: availability
+        annotations:
+          summary: "Crawler error SLO — high burn rate (6×)"
+          description: >
+            Crawler error rate is burning through the monthly 1% budget at 6× speed
+            (5-min window: {{ $value | humanizePercentage }}).
+            At this rate ~5% of the 30-day budget will be exhausted in 6 hours.
+
+      # slow-burn: 1× burn — warning
+      - alert: SiteParserCrawlerBurnRateSlow
+        expr: |
+          siteparser:crawler_error_ratio:rate30m > (1 * 0.01)
+          and
+          siteparser:crawler_error_ratio:rate6h > (1 * 0.01)
+        for: 1h
+        labels:
+          severity: warning
+          service: backend-crawler
+          slo: availability
+        annotations:
+          summary: "Crawler error SLO — slow burn (1×)"
+          description: >
+            Crawler error rate equals the monthly SLO budget rate
+            (30-min window: {{ $value | humanizePercentage }}).
+            At this rate ~10% of the 30-day budget will be exhausted in 3 days.
+
+  - name: siteparser-notifier-slo-burn-rate
+    rules:
+      # page: 14.4× burn — critical
+      - alert: SiteParserNotifierBurnRateCritical
+        expr: |
+          siteparser:notifier_error_ratio:rate1m > (14.4 * 0.01)
+          and
+          siteparser:notifier_error_ratio:rate5m > (14.4 * 0.01)
+        for: 2m
+        labels:
+          severity: critical
+          service: backend-notifier
+          slo: availability
+        annotations:
+          summary: "Notifier error SLO — critical burn rate (14.4×)"
+          description: >
+            Notifier error rate is burning through the monthly 1% budget at 14.4× speed
+            (short window: {{ $value | humanizePercentage }}).
+            At this rate ~2% of the 30-day budget will be exhausted in 1 hour.
+
+      # ticket: 6× burn — warning
+      - alert: SiteParserNotifierBurnRateHigh
+        expr: |
+          siteparser:notifier_error_ratio:rate5m > (6 * 0.01)
+          and
+          siteparser:notifier_error_ratio:rate30m > (6 * 0.01)
+        for: 10m
+        labels:
+          severity: warning
+          service: backend-notifier
+          slo: availability
+        annotations:
+          summary: "Notifier error SLO — high burn rate (6×)"
+          description: >
+            Notifier error rate is burning through the monthly 1% budget at 6× speed
+            (5-min window: {{ $value | humanizePercentage }}).
+            At this rate ~5% of the 30-day budget will be exhausted in 6 hours.
+
+      # slow-burn: 1× burn — warning
+      - alert: SiteParserNotifierBurnRateSlow
+        expr: |
+          siteparser:notifier_error_ratio:rate30m > (1 * 0.01)
+          and
+          siteparser:notifier_error_ratio:rate6h > (1 * 0.01)
+        for: 1h
+        labels:
+          severity: warning
+          service: backend-notifier
+          slo: availability
+        annotations:
+          summary: "Notifier error SLO — slow burn (1×)"
+          description: >
+            Notifier error rate equals the monthly SLO budget rate
+            (30-min window: {{ $value | humanizePercentage }}).
+            At this rate ~10% of the 30-day budget will be exhausted in 3 days.
+
+  - name: siteparser-ai-slo-burn-rate
+    rules:
+      # AI classifier fallback SLO: 95% success without fallback (budget = 5%)
+      # page: 14.4× burn → bad ratio > 72%
+      - alert: SiteParserAiClassifierBurnRateCritical
+        expr: |
+          siteparser:ai_classifier_fallback_ratio:rate1m > (14.4 * 0.05)
+          and
+          siteparser:ai_classifier_fallback_ratio:rate5m > (14.4 * 0.05)
+        for: 2m
+        labels:
+          severity: critical
+          service: ai-service
+          slo: classifier_quality
+        annotations:
+          summary: "AI classifier fallback SLO — critical burn rate (14.4×)"
+          description: >
+            {{ $value | humanizePercentage }} of classifier calls fell back to alternative (1-min window).
+            Burning fallback budget at 14.4×; ~2% of the 30-day budget consumed in ~1 hour.
+
+      # ticket: 6× burn → bad ratio > 30%
+      - alert: SiteParserAiClassifierBurnRateHigh
+        expr: |
+          siteparser:ai_classifier_fallback_ratio:rate5m > (6 * 0.05)
+          and
+          siteparser:ai_classifier_fallback_ratio:rate30m > (6 * 0.05)
+        for: 10m
+        labels:
+          severity: warning
+          service: ai-service
+          slo: classifier_quality
+        annotations:
+          summary: "AI classifier fallback SLO — high burn rate (6×)"
+          description: >
+            {{ $value | humanizePercentage }} of classifier calls fell back to alternative (5-min window).
+            Burning fallback budget at 6×; ~5% of the 30-day budget consumed in ~6 hours.
+
+      # slow-burn: 1× burn → bad ratio > 5%
+      - alert: SiteParserAiClassifierBurnRateSlow
+        expr: |
+          siteparser:ai_classifier_fallback_ratio:rate30m > (1 * 0.05)
+          and
+          siteparser:ai_classifier_fallback_ratio:rate6h > (1 * 0.05)
+        for: 1h
+        labels:
+          severity: warning
+          service: ai-service
+          slo: classifier_quality
+        annotations:
+          summary: "AI classifier fallback SLO — slow burn (1×)"
+          description: >
+            {{ $value | humanizePercentage }} of classifier calls fell back to alternative (30-min window).
+            Burning fallback budget at monthly rate; ~10% consumed in ~3 days.
+
+      # AI actor failure SLO: 95% success rate (budget = 5%)
+      # page: 14.4× burn — critical
+      - alert: SiteParserAiActorBurnRateCritical
+        expr: |
+          siteparser:ai_actor_failure_ratio:rate1m > (14.4 * 0.05)
+          and
+          siteparser:ai_actor_failure_ratio:rate5m > (14.4 * 0.05)
+        for: 2m
+        labels:
+          severity: critical
+          service: ai-ac-consumer
+          slo: actor_quality
+        annotations:
+          summary: "AI actor failure SLO — critical burn rate (14.4×)"
+          description: >
+            {{ $value | humanizePercentage }} of actor LLM calls failed (1-min window).
+            Burning failure budget at 14.4×; ~2% of the 30-day budget consumed in ~1 hour.
+
+      # ticket: 6× burn — warning
+      - alert: SiteParserAiActorBurnRateHigh
+        expr: |
+          siteparser:ai_actor_failure_ratio:rate5m > (6 * 0.05)
+          and
+          siteparser:ai_actor_failure_ratio:rate30m > (6 * 0.05)
+        for: 10m
+        labels:
+          severity: warning
+          service: ai-ac-consumer
+          slo: actor_quality
+        annotations:
+          summary: "AI actor failure SLO — high burn rate (6×)"
+          description: >
+            {{ $value | humanizePercentage }} of actor LLM calls failed (5-min window).
+            Burning failure budget at 6×; ~5% of the 30-day budget consumed in ~6 hours.
+
+      # slow-burn: 1× burn — warning
+      - alert: SiteParserAiActorBurnRateSlow
+        expr: |
+          siteparser:ai_actor_failure_ratio:rate30m > (1 * 0.05)
+          and
+          siteparser:ai_actor_failure_ratio:rate6h > (1 * 0.05)
+        for: 1h
+        labels:
+          severity: warning
+          service: ai-ac-consumer
+          slo: actor_quality
+        annotations:
+          summary: "AI actor failure SLO — slow burn (1×)"
+          description: >
+            {{ $value | humanizePercentage }} of actor LLM calls failed (30-min window).
+            Burning failure budget at monthly rate; ~10% consumed in ~3 days.

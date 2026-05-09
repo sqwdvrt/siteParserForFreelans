@@ -1,0 +1,281 @@
+{
+  "required_env": {
+    "APP_ENV": {
+      "type": "enum",
+      "allowed": [
+        "production"
+      ],
+      "documentation": "active"
+    },
+    "DATABASE_URL": {
+      "type": "postgres_url",
+      "documentation": "active"
+    },
+    "REDIS_URL": {
+      "type": "redis_url",
+      "documentation": "active"
+    },
+    "BACKEND_IMAGE": {
+      "type": "oci_image_digest",
+      "documentation": "active"
+    },
+    "BROWSER_SERVICE_IMAGE": {
+      "type": "oci_image_digest",
+      "documentation": "active"
+    },
+    "TELEGRAM_BOT_IMAGE": {
+      "type": "oci_image_digest",
+      "documentation": "active"
+    },
+    "AI_IMAGE": {
+      "type": "oci_image_digest",
+      "documentation": "active"
+    },
+    "API_AUTH_TOKEN": {
+      "type": "secret",
+      "min_length": 32,
+      "documentation": "active"
+    },
+    "API_USER_HMAC_SECRET": {
+      "type": "secret",
+      "min_length": 32,
+      "documentation": "active"
+    },
+    "ADMIN_AUTH_TOKEN": {
+      "type": "secret",
+      "min_length": 32,
+      "documentation": "active"
+    },
+    "API_TLS_CERT_HOST_PATH": {
+      "type": "existing_file",
+      "documentation": "active"
+    },
+    "API_TLS_KEY_HOST_PATH": {
+      "type": "existing_file",
+      "documentation": "active"
+    },
+    "TELEGRAM_BOT_TOKEN": {
+      "type": "secret",
+      "min_length": 20,
+      "documentation": "active"
+    },
+    "API_URL": {
+      "type": "https_url",
+      "documentation": "active"
+    },
+    "BOT_MODE": {
+      "type": "enum",
+      "allowed": [
+        "webhook"
+      ],
+      "documentation": "active"
+    },
+    "LLM_PROVIDER": {
+      "type": "enum",
+      "allowed": [
+        "gemini"
+      ],
+      "documentation": "active"
+    }
+  },
+  "conditional_env": {
+    "BOT_MODE": {
+      "webhook": {
+        "WEBHOOK_URL": {
+          "type": "https_url",
+          "documentation": "active"
+        },
+        "WEBHOOK_SECRET_TOKEN": {
+          "type": "secret",
+          "min_length": 32,
+          "documentation": "active"
+        }
+      }
+    },
+    "LLM_PROVIDER": {
+      "gemini": {
+        "GEMINI_API_KEY": {
+          "type": "nonempty",
+          "documentation": "active"
+        }
+      }
+    }
+  },
+  "compose_contract": {
+    "backend-migrate": {
+      "must_have_env_file": true,
+      "must_reference": [
+        "DATABASE_URL",
+        "BACKEND_IMAGE"
+      ]
+    },
+    "backend-api": {
+      "must_have_env_file": true,
+      "must_reference": [
+        "BACKEND_IMAGE",
+        "DATABASE_URL",
+        "REDIS_URL",
+        "API_ADDR",
+        "API_PORT",
+        "API_BIND_IP",
+        "API_TLS_CERT_FILE",
+        "API_TLS_KEY_FILE",
+        "API_TLS_CERT_HOST_PATH",
+        "API_TLS_KEY_HOST_PATH"
+      ]
+    },
+    "backend-crawler": {
+      "must_have_env_file": true,
+      "must_reference": [
+        "BACKEND_IMAGE",
+        "DATABASE_URL",
+        "REDIS_URL"
+      ]
+    },
+    "browser-service": {
+      "must_have_env_file": false,
+      "must_reference": [
+        "BROWSER_SERVICE_IMAGE"
+      ]
+    },
+    "backend-notifier": {
+      "must_have_env_file": true,
+      "must_reference": [
+        "BACKEND_IMAGE",
+        "DATABASE_URL",
+        "REDIS_URL"
+      ]
+    },
+    "ai-service": {
+      "must_have_env_file": true,
+      "must_reference": [
+        "AI_IMAGE",
+        "DATABASE_URL",
+        "REDIS_URL"
+      ]
+    },
+    "ai-user-embed": {
+      "must_have_env_file": true,
+      "must_reference": [
+        "AI_IMAGE",
+        "DATABASE_URL",
+        "REDIS_URL"
+      ]
+    },
+    "ai-user-rematch": {
+      "must_have_env_file": true,
+      "must_reference": [
+        "AI_IMAGE",
+        "DATABASE_URL",
+        "REDIS_URL"
+      ]
+    },
+    "ai-ac-consumer": {
+      "must_have_env_file": true,
+      "must_reference": [
+        "AI_IMAGE",
+        "DATABASE_URL",
+        "REDIS_URL"
+      ]
+    },
+    "telegram-bot": {
+      "must_have_env_file": true,
+      "must_reference": [
+        "TELEGRAM_BOT_IMAGE",
+        "API_URL",
+        "BOT_MODE",
+        "WEBHOOK_URL",
+        "WEBHOOK_SECRET_TOKEN",
+        "BOT_BIND_IP",
+        "BOT_PORT"
+      ]
+    }
+  },
+  "runtime_contract": [
+    {
+      "file": "backend/cmd/api/main.go",
+      "must_contain": [
+        "DATABASE_URL not set",
+        "API_AUTH_TOKEN not set",
+        "API_USER_HMAC_SECRET not set",
+        "ADMIN_AUTH_TOKEN not set",
+        "ValidatePostgresTLSForProduction(\"DATABASE_URL\"",
+        "ValidateRedisTLSForProduction(\"REDIS_URL\"",
+        "validateExistingFile(\"API_TLS_CERT_FILE\"",
+        "validateExistingFile(\"API_TLS_KEY_FILE\"",
+        "APP_ENV=production requires API TLS"
+      ]
+    },
+    {
+      "file": "backend/cmd/crawler/main.go",
+      "must_contain": [
+        "DATABASE_URL not set",
+        "REDIS_URL not set",
+        "ValidatePostgresTLSForProduction(\"DATABASE_URL\"",
+        "ValidateRedisTLSForProduction(\"REDIS_URL\""
+      ]
+    },
+    {
+      "file": "backend/cmd/notifier/main.go",
+      "must_contain": [
+        "DATABASE_URL not set",
+        "REDIS_URL not set",
+        "telegram bot token not set",
+        "ValidatePostgresTLSForProduction(\"DATABASE_URL\"",
+        "ValidateRedisTLSForProduction(\"REDIS_URL\"",
+        "ValidateSecret(tokenSource, token, 20)"
+      ]
+    },
+    {
+      "file": "ai-service/src/ai_service/util/runtime_env.py",
+      "must_contain": [
+        "REDIS_URL not set",
+        "LLM_PROVIDER not set",
+        "LLM_PROVIDER must be 'gemini'"
+      ]
+    },
+    {
+      "file": "ai-service/cmd/consumer/main.py",
+      "must_contain": [
+        "require_env",
+        "resolve_redis_url"
+      ]
+    },
+    {
+      "file": "ai-service/cmd/ac_consumer/main.py",
+      "must_contain": [
+        "require_env",
+        "resolve_redis_url",
+        "resolve_llm_provider",
+        "GEMINI_API_KEY not set (required when LLM_PROVIDER=gemini)"
+      ]
+    },
+    {
+      "file": "ai-service/cmd/user_embed_consumer/main.py",
+      "must_contain": [
+        "require_env",
+        "resolve_redis_url"
+      ]
+    },
+    {
+      "file": "ai-service/cmd/user_rematch_consumer/main.py",
+      "must_contain": [
+        "require_env",
+        "resolve_redis_url"
+      ]
+    },
+    {
+      "file": "telegram-bot/main.py",
+      "must_contain": [
+        "TELEGRAM_BOT_TOKEN",
+        "API_AUTH_TOKEN",
+        "API_USER_HMAC_SECRET",
+        "BOT_MODE must be polling or webhook",
+        "WEBHOOK_URL",
+        "WEBHOOK_SECRET_TOKEN",
+        "API_URL not set in production",
+        "_validate_api_url_for_production"
+      ]
+    }
+  ]
+}

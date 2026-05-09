@@ -1,6 +1,9 @@
 -- Site Parser for Freelance: Initial schema
 -- Idempotent: safe to run multiple times
 
+-- Serialize migration across multiple containers (api/crawler/notifier).
+SELECT pg_advisory_lock(20260216, 1);
+
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- Проекты (raw + extracted)
@@ -45,6 +48,10 @@ CREATE TABLE IF NOT EXISTS users (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_telegram_id ON users(telegram_id);
 
+-- HNSW для matching: find_users_for_job (cosine similarity)
+CREATE INDEX IF NOT EXISTS idx_users_embedding_vector ON users
+    USING hnsw (embedding vector_cosine_ops);
+
 -- История уведомлений (дедупликация + аналитика)
 CREATE TABLE IF NOT EXISTS notifications (
     id BIGSERIAL PRIMARY KEY,
@@ -54,3 +61,8 @@ CREATE TABLE IF NOT EXISTS notifications (
     sent_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(user_id, job_id)
 );
+
+-- SentRecently + CountToday: WHERE user_id = $1 AND sent_at > ...
+CREATE INDEX IF NOT EXISTS idx_notifications_user_sent ON notifications(user_id, sent_at DESC);
+
+SELECT pg_advisory_unlock(20260216, 1);

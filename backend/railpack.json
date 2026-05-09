@@ -1,0 +1,16 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "provider": "golang",
+  "steps": {
+    "build": {
+      "commands": [
+        "go build -o api ./cmd/api",
+        "go build -o crawler ./cmd/crawler",
+        "go build -o notifier ./cmd/notifier"
+      ]
+    }
+  },
+  "deploy": {
+    "startCommand": "./scripts/railway-start.sh"
+  }
+}

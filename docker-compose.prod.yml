@@ -1,0 +1,461 @@
+x-ai-cache-volumes: &ai-cache-volumes
+  - ai-hf-cache:/tmp/hf
+  - ai-transformers-cache:/tmp/transformers
+  - ai-torch-cache:/tmp/torch
+  - ai-xdg-cache:/tmp/.cache
+
+services:
+  backend-migrate:
+    image: ${BACKEND_IMAGE:?set_BACKEND_IMAGE_in_.env.production}
+    command: ["true"]
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
+      # DATABASE_MIGRATE_URL — optional dedicated DSN for migrations when you want to
+      # separate migration access from the main runtime connection.
+      DATABASE_MIGRATE_URL: ${DATABASE_MIGRATE_URL:-}
+      RUN_MIGRATIONS: "1"
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /home/app:mode=0700,size=16m
+    deploy:
+      resources:
+        limits:
+          memory: 128m
+          cpus: '0.5'
+        reservations:
+          memory: 32m
+    restart: "no"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  backend-api:
+    image: ${BACKEND_IMAGE:?set_BACKEND_IMAGE_in_.env.production}
+    command: ["./api"]
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
+      REDIS_URL: ${REDIS_URL:?set_REDIS_URL_in_.env.production}
+      API_ADDR: ${API_ADDR:-:8443}
+      API_TLS_CERT_FILE: ${API_TLS_CERT_FILE:-/run/secrets/api_tls_cert.pem}
+      API_TLS_KEY_FILE: ${API_TLS_KEY_FILE:-/run/secrets/api_tls_key.pem}
+      RUN_MIGRATIONS: "0"
+    ports:
+      - "${API_BIND_IP:-127.0.0.1}:${API_PORT:-8443}:8443"
+    volumes:
+      - "${API_TLS_CERT_HOST_PATH:?set_API_TLS_CERT_HOST_PATH}:/run/secrets/api_tls_cert.pem:ro"
+      - "${API_TLS_KEY_HOST_PATH:?set_API_TLS_KEY_HOST_PATH}:/run/secrets/api_tls_key.pem:ro"
+    deploy:
+      resources:
+        limits:
+          memory: ${API_MEM_LIMIT:-512m}
+          cpus: '1.0'
+        reservations:
+          memory: 128m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /home/app:mode=0700,size=16m
+    healthcheck:
+      test: ["CMD", "curl", "-fsk", "https://127.0.0.1:8443/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+    depends_on:
+      backend-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  browser-service:
+    image: ${BROWSER_SERVICE_IMAGE:?set_BROWSER_SERVICE_IMAGE_in_.env.production}
+    environment:
+      BROWSER_TIMEOUT_MS: ${BROWSER_TIMEOUT_MS:-60000}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits:
+          memory: ${BROWSER_MEM_LIMIT:-1g}
+          cpus: '1.0'
+        reservations:
+          memory: 256m
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=256m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  backend-crawler:
+    image: ${BACKEND_IMAGE:?set_BACKEND_IMAGE_in_.env.production}
+    command: ["./crawler"]
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
+      REDIS_URL: ${REDIS_URL:?set_REDIS_URL_in_.env.production}
+      RUN_MIGRATIONS: "0"
+      CRAWLER_HEALTH_ADDR: ":8081"
+      BROWSER_SERVICE_URL: http://browser-service:8090
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8081/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /home/app:mode=0700,size=16m
+    deploy:
+      resources:
+        limits:
+          memory: ${CRAWLER_MEM_LIMIT:-512m}
+          cpus: '1.0'
+        reservations:
+          memory: 128m
+    depends_on:
+      backend-migrate:
+        condition: service_completed_successfully
+      browser-service:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  backend-notifier:
+    image: ${BACKEND_IMAGE:?set_BACKEND_IMAGE_in_.env.production}
+    command: ["./notifier"]
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
+      REDIS_URL: ${REDIS_URL:?set_REDIS_URL_in_.env.production}
+      RUN_MIGRATIONS: "0"
+      NOTIFIER_HEALTH_ADDR: ":8082"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8082/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /home/app:mode=0700,size=16m
+    deploy:
+      resources:
+        limits:
+          memory: ${NOTIFIER_MEM_LIMIT:-256m}
+          cpus: '0.5'
+        reservations:
+          memory: 64m
+    depends_on:
+      backend-migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  ai-service:
+    image: ${AI_IMAGE:?set_AI_IMAGE_in_.env.production}
+    command: ["python", "cmd/consumer/main.py"]
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
+      REDIS_URL: ${REDIS_URL:?set_REDIS_URL_in_.env.production}
+      EMBEDDING_REQUIRE_LOCAL: "${EMBEDDING_REQUIRE_LOCAL:-1}"
+      AI_READY_FILE: /tmp/ai-consumer-ready
+      AI_METRICS_BIND: ${AI_METRICS_BIND:-0.0.0.0}
+      AI_CONSUMER_METRICS_PORT: ${AI_CONSUMER_METRICS_PORT:-9108}
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/ai-consumer-ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: ${AI_MEM_LIMIT:-2g}
+          cpus: '1.0'
+        reservations:
+          memory: 512m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes: *ai-cache-volumes
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+      - /home/app:mode=0700,size=64m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  ai-user-embed:
+    image: ${AI_IMAGE:?set_AI_IMAGE_in_.env.production}
+    command: ["python", "cmd/user_embed_consumer/main.py"]
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
+      REDIS_URL: ${REDIS_URL:?set_REDIS_URL_in_.env.production}
+      EMBEDDING_REQUIRE_LOCAL: "${EMBEDDING_REQUIRE_LOCAL:-1}"
+      AI_READY_FILE: /tmp/ai-user-embed-ready
+      AI_METRICS_BIND: ${AI_METRICS_BIND:-0.0.0.0}
+      AI_USER_EMBED_METRICS_PORT: ${AI_USER_EMBED_METRICS_PORT:-9110}
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/ai-user-embed-ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: ${AI_MEM_LIMIT:-2g}
+          cpus: '1.0'
+        reservations:
+          memory: 512m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes: *ai-cache-volumes
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+      - /home/app:mode=0700,size=64m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  ai-user-rematch:
+    image: ${AI_IMAGE:?set_AI_IMAGE_in_.env.production}
+    command: ["python", "cmd/user_rematch_consumer/main.py"]
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
+      REDIS_URL: ${REDIS_URL:?set_REDIS_URL_in_.env.production}
+      AI_READY_FILE: /tmp/ai-user-rematch-ready
+      AI_USER_REMATCH_HEALTH_PORT: ${AI_USER_REMATCH_HEALTH_PORT:-8092}
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/ai-user-rematch-ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: ${AI_MEM_LIMIT:-2g}
+          cpus: '1.0'
+        reservations:
+          memory: 256m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes: *ai-cache-volumes
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+      - /home/app:mode=0700,size=64m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  ai-ac-consumer:
+    image: ${AI_IMAGE:?set_AI_IMAGE_in_.env.production}
+    command: ["python", "cmd/ac_consumer/main.py"]
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      DATABASE_URL: ${DATABASE_URL:?set_DATABASE_URL_in_.env.production}
+      REDIS_URL: ${REDIS_URL:?set_REDIS_URL_in_.env.production}
+      AI_READY_FILE: /tmp/ai-ac-consumer-ready
+      AI_METRICS_BIND: ${AI_METRICS_BIND:-0.0.0.0}
+      AI_AC_CONSUMER_METRICS_PORT: ${AI_AC_CONSUMER_METRICS_PORT:-9109}
+    healthcheck:
+      test: ["CMD-SHELL", "test -f /tmp/ai-ac-consumer-ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 90s
+    deploy:
+      resources:
+        limits:
+          memory: ${AI_MEM_LIMIT:-2g}
+          cpus: '1.0'
+        reservations:
+          memory: 512m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    volumes: *ai-cache-volumes
+    tmpfs:
+      - /tmp:mode=1777,size=512m
+      - /home/app:mode=0700,size=64m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  telegram-bot:
+    image: ${TELEGRAM_BOT_IMAGE:?set_TELEGRAM_BOT_IMAGE_in_.env.production}
+    env_file:
+      - .env.production
+    environment:
+      APP_ENV: production
+      API_URL: ${API_URL:?set_HTTPS_API_URL_in_.env.production}
+      BOT_MODE: ${BOT_MODE:?set_BOT_MODE_in_.env.production}
+      WEBHOOK_URL: ${WEBHOOK_URL:?set_WEBHOOK_URL_in_.env.production}
+      WEBHOOK_SECRET_TOKEN: ${WEBHOOK_SECRET_TOKEN:?set_WEBHOOK_SECRET_TOKEN_in_.env.production}
+      PORT: ${BOT_PORT:-8080}
+      TELEGRAM_HEARTBEAT_FILE: /tmp/telegram-bot-heartbeat
+      TELEGRAM_HEARTBEAT_MAX_AGE_SEC: ${TELEGRAM_HEARTBEAT_MAX_AGE_SEC:-90}
+    ports:
+      - "${BOT_BIND_IP:-127.0.0.1}:${BOT_PORT:-8080}:8080"
+    depends_on:
+      backend-api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >
+          import os, sys, time;
+          p=os.getenv("TELEGRAM_HEARTBEAT_FILE","/tmp/telegram-bot-heartbeat");
+          m=float(os.getenv("TELEGRAM_HEARTBEAT_MAX_AGE_SEC","90"));
+          now=time.time();
+          ok=os.path.exists(p) and (now-os.path.getmtime(p) <= m);
+          sys.exit(0 if ok else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 40s
+    deploy:
+      resources:
+        limits:
+          memory: ${BOT_MEM_LIMIT:-256m}
+          cpus: '0.5'
+        reservations:
+          memory: 64m
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    tmpfs:
+      - /tmp:mode=1777,size=32m
+      - /home/app:mode=0700,size=16m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  pgadmin:
+    image: dpage/pgadmin4:9
+    profiles:
+      - admin
+    env_file:
+      - .env.production
+    environment:
+      PGADMIN_DEFAULT_EMAIL: ${PGADMIN_EMAIL:-admin@example.com}
+      PGADMIN_DEFAULT_PASSWORD: ${PGADMIN_PASSWORD:?set_PGADMIN_PASSWORD}
+      PGADMIN_LISTEN_PORT: 80
+    ports:
+      - "127.0.0.1:5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    deploy:
+      resources:
+        limits:
+          memory: ${PGADMIN_MEM_LIMIT:-256m}
+          cpus: '0.5'
+        reservations:
+          memory: 64m
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  ai-hf-cache:
+  ai-transformers-cache:
+  ai-torch-cache:
+  ai-xdg-cache:
+  pgadmin_data:

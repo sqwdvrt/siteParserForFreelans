@@ -1,0 +1,169 @@
+name: Backup Restore Test
+
+# Verifies that backup_postgres.sh produces a valid dump and
+# restore_postgres.sh can recover the database from it.
+# Runs weekly (Sunday 03:00 UTC) and on-demand.
+# Fails the run if the restored data does not match the original.
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"
+  workflow_dispatch:
+
+jobs:
+  backup-restore-smoke:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: site_parser
+          POSTGRES_PASSWORD: site_parser_test
+          POSTGRES_DB: site_parser
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U site_parser -d site_parser"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      DATABASE_URL: postgres://site_parser:site_parser_test@localhost:55432/site_parser?sslmode=disable
+      BACKUP_DIR: /tmp/pg-backup-test
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install postgresql-client
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends postgresql-client
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install psycopg2
+        run: python -m pip install psycopg2-binary
+
+      - name: Check migration filenames
+        run: ./scripts/check_migration_filenames.sh
+
+      - name: Apply all migrations
+        env:
+          MIGRATION_RETRY_ATTEMPTS: "30"
+          MIGRATION_RETRY_DELAY_SEC: "2"
+        run: bash ./scripts/apply_migrations.sh
+
+      - name: Insert sentinel data
+        run: |
+          python - <<'PY'
+          import os
+          import psycopg2
+
+          dsn = os.environ["DATABASE_URL"]
+          with psycopg2.connect(dsn) as conn:
+              with conn.cursor() as cur:
+                  # Insert a job row that we will verify after restore
+                  cur.execute("""
+                      INSERT INTO jobs (source, url, title, raw_html)
+                      VALUES ('backup_test', 'https://backup-restore-sentinel.test/1',
+                              'Backup-Restore Sentinel Job', '<html>sentinel</html>')
+                      ON CONFLICT DO NOTHING
+                  """)
+                  # Insert a user row
+                  cur.execute("""
+                      INSERT INTO users (telegram_id, description)
+                      VALUES (9999999999, 'backup-restore sentinel user')
+                      ON CONFLICT DO NOTHING
+                  """)
+              conn.commit()
+          print("sentinel data inserted")
+          PY
+
+      - name: Run backup script
+        run: bash ./scripts/backup_postgres.sh
+
+      - name: Verify dump and checksum files were created
+        run: |
+          set -euo pipefail
+          dump_count=$(find "$BACKUP_DIR" -name '*.dump' | wc -l)
+          sum_count=$(find  "$BACKUP_DIR" -name '*.sha256' | wc -l)
+          echo "dump files:     ${dump_count}"
+          echo "checksum files: ${sum_count}"
+          if [[ "$dump_count" -lt 1 ]]; then
+            echo "ERROR: no .dump file produced" >&2; exit 1
+          fi
+          if [[ "$sum_count" -lt 1 ]]; then
+            echo "ERROR: no .sha256 file produced" >&2; exit 1
+          fi
+
+      - name: Verify checksum integrity
+        run: |
+          set -euo pipefail
+          cd "$BACKUP_DIR"
+          for sumfile in *.sha256; do
+            echo "verifying $sumfile"
+            sha256sum --check "$sumfile"
+          done
+
+      - name: Run restore script (restores into the same database)
+        run: |
+          set -euo pipefail
+          dump_file=$(find "$BACKUP_DIR" -name '*.dump' | sort | tail -n1)
+          echo "restoring from: $dump_file"
+          bash ./scripts/restore_postgres.sh "$dump_file"
+
+      - name: Verify sentinel data survived restore
+        run: |
+          python - <<'PY'
+          import os, sys
+          import psycopg2
+
+          dsn = os.environ["DATABASE_URL"]
+          errors = []
+
+          with psycopg2.connect(dsn) as conn:
+              with conn.cursor() as cur:
+                  # Check sentinel job
+                  cur.execute(
+                      "SELECT COUNT(*) FROM jobs WHERE source = 'backup_test' "
+                      "AND url = 'https://backup-restore-sentinel.test/1'"
+                  )
+                  job_count = cur.fetchone()[0]
+                  if job_count != 1:
+                      errors.append(f"expected 1 sentinel job, got {job_count}")
+
+                  # Check sentinel user
+                  cur.execute(
+                      "SELECT COUNT(*) FROM users WHERE telegram_id = 9999999999 "
+                      "AND description = 'backup-restore sentinel user'"
+                  )
+                  user_count = cur.fetchone()[0]
+                  if user_count != 1:
+                      errors.append(f"expected 1 sentinel user, got {user_count}")
+
+                  # Verify schema integrity: all expected tables present
+                  expected_tables = [
+                      "jobs", "job_embeddings", "users", "notifications",
+                      "pending_ac_jobs",
+                  ]
+                  cur.execute(
+                      "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+                  )
+                  existing = {row[0] for row in cur.fetchall()}
+                  for t in expected_tables:
+                      if t not in existing:
+                          errors.append(f"table '{t}' missing after restore")
+
+          if errors:
+              for e in errors:
+                  print(f"FAIL: {e}", file=sys.stderr)
+              sys.exit(1)
+
+          print("restore verification passed: sentinel data intact, schema complete")
+          PY
