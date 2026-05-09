@@ -6,7 +6,7 @@ cd "$ROOT_DIR"
 PY_USER_BASE="${ROOT_DIR}/.pyuserbase"
 
 PYTHON_BIN="${PYTHON_BIN:-}"
-GO_TOOLCHAIN="${GO_TOOLCHAIN:-go1.25.9}"
+GO_TOOLCHAIN="${GO_TOOLCHAIN:-go1.25.10}"
 GO_GOMODCACHE="${GO_GOMODCACHE:-${ROOT_DIR}/backend/.gomodcache-${GO_TOOLCHAIN}}"
 GO_GOCACHE="${GO_GOCACHE:-${ROOT_DIR}/backend/.gocache-${GO_TOOLCHAIN}}"
 PY_MODE="local"
@@ -22,8 +22,8 @@ PIP_AUDIT_IGNORE_ARGS=(
 
 echo "[security] Validating pinned baseline versions"
 
-if ! grep -qE '^toolchain go1\.25\.9$' backend/go.mod; then
-  echo "ERROR: backend/go.mod must contain 'toolchain go1.25.9'"
+if ! grep -qE '^toolchain go1\.25\.10$' backend/go.mod; then
+  echo "ERROR: backend/go.mod must contain 'toolchain go1.25.10'"
   exit 1
 fi
 
@@ -120,8 +120,8 @@ if [[ ! -f telegram-bot/requirements.txt ]]; then
   exit 1
 fi
 
-if ! grep -qiE '^python-dotenv==1\.2\.1$' telegram-bot/requirements.txt; then
-  echo "ERROR: telegram-bot/requirements.txt must pin python-dotenv==1.2.1"
+if ! grep -qiE '^python-dotenv==1\.2\.2$' telegram-bot/requirements.txt; then
+  echo "ERROR: telegram-bot/requirements.txt must pin python-dotenv==1.2.2"
   exit 1
 fi
 

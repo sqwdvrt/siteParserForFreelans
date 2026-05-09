@@ -75,7 +75,7 @@ jobs:
       - name: Run baseline checks
         env:
           PYTHON_BIN: python3.11
-          GO_TOOLCHAIN: go1.25.9
+          GO_TOOLCHAIN: go1.25.10
           SECURITY_BASELINE_SKIP_PIP_AUDIT: "1"
         run: ./scripts/security_baseline_check.sh
 

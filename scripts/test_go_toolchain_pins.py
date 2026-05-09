@@ -5,11 +5,11 @@ from pathlib import Path
 
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-EXPECTED_GO_VERSION = "1.25.9"
+EXPECTED_GO_VERSION = "1.25.10"
 EXPECTED_GO_TOOLCHAIN = f"go{EXPECTED_GO_VERSION}"
 EXPECTED_GOLANG_IMAGE = (
-    "golang:1.25.9-alpine3.22@"
-    "sha256:2c16ac01b3d038ca2ed421d66cea489e3cb670c251b4f8bbcfad2ebfb75f884c"
+    "golang:1.25.10-alpine3.22@"
+    "sha256:26b4d7113039cd51356bd7930ecafd1031d2975dc3b6940ec8ed09457e17cf95"
 )
 
 
@@ -21,6 +21,10 @@ class GoToolchainPinsTest(unittest.TestCase):
     def test_backend_builder_image_uses_patched_go_digest(self) -> None:
         dockerfile = (ROOT_DIR / "backend" / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn(f"FROM {EXPECTED_GOLANG_IMAGE} AS builder", dockerfile)
+
+    def test_backend_go_mod_pins_fixed_x_net_release(self) -> None:
+        go_mod = (ROOT_DIR / "backend" / "go.mod").read_text(encoding="utf-8")
+        self.assertIn("golang.org/x/net v0.53.0 // indirect", go_mod)
 
     def test_go_scripts_default_to_patched_toolchain(self) -> None:
         expected_occurrences = {
@@ -39,12 +43,12 @@ class GoToolchainPinsTest(unittest.TestCase):
     def test_ci_workflows_pin_patched_go_toolchain(self) -> None:
         workflow_expectations = {
             ".github/workflows/security-baseline.yml": [
-                'GO_TOOLCHAIN: go1.25.9',
+                'GO_TOOLCHAIN: go1.25.10',
             ],
             ".github/workflows/full-check.yml": [
-                'GO_TOOLCHAIN: go1.25.9',
-                'backend/.gomodcache-go1.25.9',
-                'backend/.gocache-go1.25.9',
+                'GO_TOOLCHAIN: go1.25.10',
+                'backend/.gomodcache-go1.25.10',
+                'backend/.gocache-go1.25.10',
             ],
         }
 
