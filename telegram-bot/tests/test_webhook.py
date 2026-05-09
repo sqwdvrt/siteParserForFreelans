@@ -355,6 +355,54 @@ def test_run_webhook_updates_heartbeat_while_idle(bot, monkeypatch):
     assert heartbeat_touched.is_set()
 
 
+def test_run_webhook_starts_configured_inbox_worker_pool(bot, monkeypatch):
+    handlers: dict[int, object] = {}
+    worker_shards: list[int] = []
+
+    class FakeServer:
+        def __init__(self, server_address, handler_cls) -> None:
+            self.server_address = server_address
+            self.handler_cls = handler_cls
+
+        def serve_forever(self) -> None:
+            handlers[bot.signal.SIGTERM](bot.signal.SIGTERM, None)
+
+        def shutdown(self) -> None:
+            return None
+
+        def server_close(self) -> None:
+            return None
+
+    def _worker(stop_event, token, api_url, api_auth_token, api_user_hmac_secret, *, shard_id, shard_count, timeout_sec=1):
+        _ = stop_event
+        _ = token
+        _ = api_url
+        _ = api_auth_token
+        _ = api_user_hmac_secret
+        _ = shard_count
+        _ = timeout_sec
+        worker_shards.append(shard_id)
+
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_WORKERS", "4")
+    monkeypatch.setattr(bot, "set_webhook", lambda *args, **kwargs: True)
+    monkeypatch.setattr(bot.signal, "signal", lambda sig, handler: handlers.__setitem__(sig, handler))
+    monkeypatch.setattr(bot, "_run_webhook_inbox_worker", _worker)
+
+    bot.run_webhook(
+        "bot-token",
+        "https://bot.example.com/webhook",
+        "0123456789abcdef0123456789abcdef",
+        "https://api.example.com",
+        "api-token",
+        "0123456789abcdef0123456789abcdef",
+        port=8080,
+        max_connections=40,
+        server_factory=FakeServer,
+    )
+
+    assert sorted(worker_shards) == [0, 1, 2, 3]
+
+
 def test_set_webhook_rejects_non_ok_response(bot, monkeypatch):
     monkeypatch.setattr(bot, "_http_post", lambda *args, **kwargs: (200, {"ok": False, "description": "bad webhook"}))
 

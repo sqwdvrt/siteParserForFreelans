@@ -88,6 +88,8 @@ DEFAULT_POLLING_ACTIVE_WEBHOOK_POLICY = "standby"
 POLLING_STANDBY_SLEEP_SEC = 30.0
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_MAX_BODY_BYTES = 1_048_576
+DEFAULT_WEBHOOK_WORKERS = 4
+MAX_WEBHOOK_WORKERS = 32
 DEFAULT_METRICS_BIND = "0.0.0.0"
 DEFAULT_METRICS_PORT = 9107
 
@@ -559,33 +561,40 @@ class _RedisStateStore:
         self._client.delete(self._key("processed-update", update_id))
         _METRICS.inc("telegram_bot_state_store_operations_total", operation="forget_update_id", result="ok")
 
-    def enqueue_webhook_update(self, update_id: int, payload: str) -> str:
+    def enqueue_webhook_update(self, update_id: int, payload: str, *, shard_id: int = 0) -> str:
         state_key = self._key("processed-update", update_id)
         payload_key = self._key("webhook-payload", update_id)
-        queue_key = self._key("webhook-inbox", 0)
+        queue_key = self._key("webhook-inbox", shard_id)
         existing = str(self._client.get(state_key) or "").strip().lower()
         if existing in {_UPDATE_DONE, _UPDATE_QUEUED, _UPDATE_PROCESSING, _UPDATE_INFLIGHT}:
             _METRICS.inc(
                 "telegram_bot_state_store_operations_total",
                 operation="enqueue_webhook_update",
                 result="duplicate",
+                shard=str(shard_id),
             )
             return "duplicate"
         self._client.set(payload_key, payload, ex=self._processed_update_ttl_sec)
-        self._client.rpush(queue_key, str(update_id))
+        self._client.lpush(queue_key, str(update_id))
         self._client.set(state_key, _UPDATE_QUEUED, ex=self._processed_update_ttl_sec)
-        _METRICS.inc("telegram_bot_state_store_operations_total", operation="enqueue_webhook_update", result="enqueued")
+        _METRICS.inc(
+            "telegram_bot_state_store_operations_total",
+            operation="enqueue_webhook_update",
+            result="enqueued",
+            shard=str(shard_id),
+        )
         return "enqueued"
 
-    def claim_next_webhook_update(self, timeout_sec: int) -> tuple[int, str] | None:
-        queue_key = self._key("webhook-inbox", 0)
-        processing_key = self._key("webhook-processing", 0)
+    def claim_next_webhook_update(self, timeout_sec: int, *, shard_id: int = 0) -> tuple[int, str] | None:
+        queue_key = self._key("webhook-inbox", shard_id)
+        processing_key = self._key("webhook-processing", shard_id)
         raw_update_id = self._client.brpoplpush(queue_key, processing_key, timeout=max(0, int(timeout_sec)))
         if raw_update_id is None:
             _METRICS.inc(
                 "telegram_bot_state_store_operations_total",
                 operation="claim_next_webhook_update",
                 result="empty",
+                shard=str(shard_id),
             )
             return None
         update_id = int(raw_update_id)
@@ -597,6 +606,7 @@ class _RedisStateStore:
                 "telegram_bot_state_store_operations_total",
                 operation="claim_next_webhook_update",
                 result="missing_payload",
+                shard=str(shard_id),
             )
             return None
         self._client.set(
@@ -608,24 +618,35 @@ class _RedisStateStore:
             "telegram_bot_state_store_operations_total",
             operation="claim_next_webhook_update",
             result="claimed",
+            shard=str(shard_id),
         )
         return update_id, str(payload)
 
-    def ack_webhook_update(self, update_id: int) -> None:
-        self._client.lrem(self._key("webhook-processing", 0), 0, str(update_id))
+    def ack_webhook_update(self, update_id: int, *, shard_id: int = 0) -> None:
+        self._client.lrem(self._key("webhook-processing", shard_id), 0, str(update_id))
         self._client.delete(self._key("webhook-payload", update_id))
         self._client.set(self._key("processed-update", update_id), _UPDATE_DONE, ex=self._processed_update_ttl_sec)
-        _METRICS.inc("telegram_bot_state_store_operations_total", operation="ack_webhook_update", result="ok")
+        _METRICS.inc(
+            "telegram_bot_state_store_operations_total",
+            operation="ack_webhook_update",
+            result="ok",
+            shard=str(shard_id),
+        )
 
-    def requeue_webhook_update(self, update_id: int) -> None:
-        self._client.lrem(self._key("webhook-processing", 0), 0, str(update_id))
-        self._client.lpush(self._key("webhook-inbox", 0), str(update_id))
+    def requeue_webhook_update(self, update_id: int, *, shard_id: int = 0) -> None:
+        self._client.lrem(self._key("webhook-processing", shard_id), 0, str(update_id))
+        self._client.rpush(self._key("webhook-inbox", shard_id), str(update_id))
         self._client.set(self._key("processed-update", update_id), _UPDATE_QUEUED, ex=self._processed_update_ttl_sec)
-        _METRICS.inc("telegram_bot_state_store_operations_total", operation="requeue_webhook_update", result="ok")
+        _METRICS.inc(
+            "telegram_bot_state_store_operations_total",
+            operation="requeue_webhook_update",
+            result="ok",
+            shard=str(shard_id),
+        )
 
-    def recover_webhook_processing(self) -> int:
-        processing_key = self._key("webhook-processing", 0)
-        pending_key = self._key("webhook-inbox", 0)
+    def recover_webhook_processing(self, *, shard_id: int = 0) -> int:
+        processing_key = self._key("webhook-processing", shard_id)
+        pending_key = self._key("webhook-inbox", shard_id)
         update_ids = [str(raw) for raw in self._client.lrange(processing_key, 0, -1)]
         recovered = 0
         for raw_update_id in update_ids:
@@ -639,7 +660,7 @@ class _RedisStateStore:
                 self._client.delete(self._key("processed-update", update_id))
                 continue
             self._client.lrem(processing_key, 0, raw_update_id)
-            self._client.lpush(pending_key, raw_update_id)
+            self._client.rpush(pending_key, raw_update_id)
             self._client.set(
                 self._key("processed-update", update_id),
                 _UPDATE_QUEUED,
@@ -650,6 +671,7 @@ class _RedisStateStore:
             "telegram_bot_state_store_operations_total",
             operation="recover_webhook_processing",
             result="ok" if recovered else "noop",
+            shard=str(shard_id),
         )
         return recovered
 
@@ -675,6 +697,16 @@ class _RedisStateStore:
 
 
 _STATE_STORE: _RedisStateStore | None = None
+_CURRENT_WEBHOOK_WORKER_COUNT = DEFAULT_WEBHOOK_WORKERS
+
+
+def _webhook_worker_count() -> int:
+    return _read_bounded_int_env(
+        "TELEGRAM_WEBHOOK_WORKERS",
+        DEFAULT_WEBHOOK_WORKERS,
+        min_value=1,
+        max_value=MAX_WEBHOOK_WORKERS,
+    )
 
 
 def _validate_redis_url_for_production(redis_url: str) -> None:
@@ -3589,6 +3621,32 @@ def _extract_update_id(update: dict) -> int | None:
     return update_id
 
 
+def _extract_webhook_update_telegram_id(update: dict) -> int | None:
+    raw = None
+    message = update.get("message")
+    if isinstance(message, dict):
+        raw = (message.get("from") or {}).get("id")
+    if raw is None:
+        callback = update.get("callback_query")
+        if isinstance(callback, dict):
+            raw = (callback.get("from") or {}).get("id")
+    try:
+        telegram_id = int(raw)
+    except (TypeError, ValueError):
+        return None
+    if telegram_id <= 0:
+        return None
+    return telegram_id
+
+
+def _webhook_update_shard(update: dict, *, worker_count: int) -> int:
+    safe_worker_count = max(1, int(worker_count))
+    telegram_id = _extract_webhook_update_telegram_id(update)
+    if telegram_id is None:
+        return 0
+    return telegram_id % safe_worker_count
+
+
 def _profile_missing_start_or_backend_message() -> str:
     return (
         "Не удалось подготовить обновление профиля. "
@@ -4209,6 +4267,8 @@ def _enqueue_webhook_update(
     api_url: str,
     api_auth_token: str,
     api_user_hmac_secret: str,
+    *,
+    worker_count: int | None = None,
 ) -> bool:
     _ = token
     _ = api_url
@@ -4223,7 +4283,9 @@ def _enqueue_webhook_update(
         return False
     try:
         payload = json.dumps(update, ensure_ascii=False, separators=(",", ":"))
-        result = _STATE_STORE.enqueue_webhook_update(update_id, payload)
+        shard_count = worker_count if worker_count is not None else _CURRENT_WEBHOOK_WORKER_COUNT
+        shard_id = _webhook_update_shard(update, worker_count=shard_count)
+        result = _STATE_STORE.enqueue_webhook_update(update_id, payload, shard_id=shard_id)
     except Exception as e:
         logger.error("webhook enqueue failed: update_id=%s err=%s", update_id, _exception_name(e), exc_info=True)
         return False
@@ -4242,11 +4304,12 @@ def _process_one_webhook_inbox_update(
     api_auth_token: str,
     api_user_hmac_secret: str,
     *,
+    shard_id: int = 0,
     timeout_sec: int = 1,
 ) -> bool:
     if _STATE_STORE is None:
         return False
-    claimed = _STATE_STORE.claim_next_webhook_update(timeout_sec)
+    claimed = _STATE_STORE.claim_next_webhook_update(timeout_sec, shard_id=shard_id)
     if claimed is None:
         return False
     update_id, raw_payload = claimed
@@ -4254,7 +4317,7 @@ def _process_one_webhook_inbox_update(
         update = json.loads(raw_payload)
     except json.JSONDecodeError:
         logger.error("webhook inbox payload invalid json: update_id=%s", update_id)
-        _STATE_STORE.ack_webhook_update(update_id)
+        _STATE_STORE.ack_webhook_update(update_id, shard_id=shard_id)
         _forget_update_id(update_id)
         return True
 
@@ -4269,9 +4332,9 @@ def _process_one_webhook_inbox_update(
     )
     if processed_ok:
         _complete_update_id(update_id)
-        _STATE_STORE.ack_webhook_update(update_id)
+        _STATE_STORE.ack_webhook_update(update_id, shard_id=shard_id)
     else:
-        _STATE_STORE.requeue_webhook_update(update_id)
+        _STATE_STORE.requeue_webhook_update(update_id, shard_id=shard_id)
         _set_processed_update_state(update_id, _UPDATE_INFLIGHT, now_monotonic=time.monotonic())
     return True
 
@@ -4283,14 +4346,16 @@ def _run_webhook_inbox_worker(
     api_auth_token: str,
     api_user_hmac_secret: str,
     *,
+    shard_id: int = 0,
+    shard_count: int = 1,
     timeout_sec: int = 1,
 ) -> None:
     if _STATE_STORE is None:
         logger.error("webhook inbox worker unavailable: Redis state store is not configured")
         return
-    recovered = _STATE_STORE.recover_webhook_processing()
+    recovered = _STATE_STORE.recover_webhook_processing(shard_id=shard_id)
     if recovered > 0:
-        logger.warning("webhook inbox recovered stuck updates: count=%d", recovered)
+        logger.warning("webhook inbox recovered stuck updates: shard=%d/%d count=%d", shard_id, shard_count, recovered)
     while not stop_event.is_set():
         try:
             handled = _process_one_webhook_inbox_update(
@@ -4298,6 +4363,7 @@ def _run_webhook_inbox_worker(
                 api_url,
                 api_auth_token,
                 api_user_hmac_secret,
+                shard_id=shard_id,
                 timeout_sec=timeout_sec,
             )
         except Exception as e:
@@ -4355,6 +4421,9 @@ def run_webhook(
     max_connections: int = 40,
     server_factory=ThreadingHTTPServer,
 ) -> None:
+    global _CURRENT_WEBHOOK_WORKER_COUNT
+    worker_count = _webhook_worker_count()
+    _CURRENT_WEBHOOK_WORKER_COUNT = worker_count
     _WebhookHandler.secret_token = webhook_secret
     _WebhookHandler.bot_token = token
     _WebhookHandler.api_url = api_url
@@ -4392,13 +4461,18 @@ def run_webhook(
 
     heartbeat_thread = threading.Thread(target=_heartbeat_loop, daemon=True, name="telegram-webhook-heartbeat")
     heartbeat_thread.start()
-    worker_thread = threading.Thread(
-        target=_run_webhook_inbox_worker,
-        args=(stop_event, token, api_url, api_auth_token, api_user_hmac_secret),
-        daemon=True,
-        name="telegram-webhook-inbox-worker",
-    )
-    worker_thread.start()
+    worker_threads: list[threading.Thread] = []
+    for shard_id in range(worker_count):
+        worker_thread = threading.Thread(
+            target=_run_webhook_inbox_worker,
+            args=(stop_event, token, api_url, api_auth_token, api_user_hmac_secret),
+            kwargs={"shard_id": shard_id, "shard_count": worker_count},
+            daemon=True,
+            name=f"telegram-webhook-inbox-worker-{shard_id}",
+        )
+        worker_thread.start()
+        worker_threads.append(worker_thread)
+    logger.info("webhook inbox workers started: count=%d", worker_count)
     server_thread = threading.Thread(target=server.serve_forever, daemon=True, name="telegram-webhook-server")
     server_thread.start()
 
@@ -4410,7 +4484,8 @@ def run_webhook(
         except Exception:
             pass
         server_thread.join(timeout=5)
-        worker_thread.join(timeout=5)
+        for worker_thread in worker_threads:
+            worker_thread.join(timeout=5)
         heartbeat_thread.join(timeout=5)
         try:
             server.server_close()
@@ -4423,7 +4498,8 @@ def run_webhook(
     finally:
         stop_event.set()
         heartbeat_thread.join(timeout=5)
-        worker_thread.join(timeout=5)
+        for worker_thread in worker_threads:
+            worker_thread.join(timeout=5)
         try:
             server.server_close()
         except Exception:

@@ -134,6 +134,29 @@ def test_claim_next_webhook_update_returns_enqueued_payload(bot):
     assert claimed == (101, payload)
 
 
+def test_claim_next_webhook_update_preserves_fifo_order_within_shard(bot):
+    store = _build_store(bot)
+    first = json.dumps({"update_id": 101, "message": {"from": {"id": 42}, "text": "/start"}})
+    second = json.dumps({"update_id": 102, "message": {"from": {"id": 42}, "text": "/help"}})
+    store.enqueue_webhook_update(101, first, shard_id=2)
+    store.enqueue_webhook_update(102, second, shard_id=2)
+
+    assert store.claim_next_webhook_update(shard_id=2, timeout_sec=0) == (101, first)
+    assert store.claim_next_webhook_update(shard_id=2, timeout_sec=0) == (102, second)
+
+
+def test_enqueue_webhook_update_routes_different_shards(bot):
+    store = _build_store(bot)
+    payload_one = json.dumps({"update_id": 101})
+    payload_two = json.dumps({"update_id": 102})
+
+    store.enqueue_webhook_update(101, payload_one, shard_id=1)
+    store.enqueue_webhook_update(102, payload_two, shard_id=3)
+
+    assert store._client.lists["telegram-bot-test:webhook-inbox:1"] == ["101"]
+    assert store._client.lists["telegram-bot-test:webhook-inbox:3"] == ["102"]
+
+
 def test_recover_webhook_processing_requeues_stuck_updates(bot):
     store = _build_store(bot)
     payload = json.dumps({"update_id": 101, "message": {"text": "/start"}})
@@ -145,6 +168,19 @@ def test_recover_webhook_processing_requeues_stuck_updates(bot):
 
     assert recovered == 1
     assert claimed_again == (101, payload)
+
+
+def test_extract_webhook_update_telegram_id_supports_messages_and_callbacks(bot):
+    assert bot._extract_webhook_update_telegram_id({"message": {"from": {"id": 42}}}) == 42
+    assert bot._extract_webhook_update_telegram_id({"callback_query": {"from": {"id": 77}}}) == 77
+    assert bot._extract_webhook_update_telegram_id({"message": {"from": {"id": "bad"}}}) is None
+
+
+def test_webhook_update_shard_preserves_user_order(bot):
+    first = {"update_id": 101, "message": {"from": {"id": 42}, "text": "/start"}}
+    second = {"update_id": 102, "message": {"from": {"id": 42}, "text": "/help"}}
+
+    assert bot._webhook_update_shard(first, worker_count=4) == bot._webhook_update_shard(second, worker_count=4)
 
 
 def test_process_one_webhook_inbox_update_marks_done(bot, monkeypatch):
