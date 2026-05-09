@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import shlex
 import subprocess
 import sys
@@ -246,15 +247,17 @@ def collect_runtime_image_drift(env: dict[str, str], containers: list[dict[str, 
     return drifts
 
 
-def is_mixed_live_topology(containers: list[dict[str, str]]) -> bool:
-    return find_container_by_suffix(containers, "backend-api-1") is not None and any(
-        container["name"].startswith("current-") for container in containers
-    )
+def extract_missing_compose_service(gate: subprocess.CompletedProcess[str]) -> str | None:
+    details = f"{gate.stdout}\n{gate.stderr}"
+    match = re.search(r"container for service '([^']+)' not found", details)
+    return match.group(1) if match else None
 
 
 def should_fallback_to_live_gate(gate: subprocess.CompletedProcess[str], containers: list[dict[str, str]]) -> bool:
-    details = f"{gate.stdout}\n{gate.stderr}".lower()
-    return gate.returncode != 0 and "container for service" in details and "not found" in details and is_mixed_live_topology(containers)
+    if gate.returncode == 0:
+        return False
+    missing_service = extract_missing_compose_service(gate)
+    return missing_service is not None and find_container_for_service(containers, missing_service) is not None
 
 
 def curl_http_code(
@@ -321,14 +324,14 @@ def evaluate_live_production_gate(env: dict[str, str], containers: list[dict[str
             data="",
         )
     details = {
-        "mode": "mixed live topology",
+        "mode": "live container fallback",
         "api_container": find_container_by_suffix(containers, "backend-api-1")["name"],
         "healthz": healthz,
         "readyz": readyz,
         "webhook": webhook or "skipped",
     }
     ok = healthz == "200" and readyz == "200" and webhook == "400"
-    return ok, "mixed live topology fallback passed" if ok else "mixed live topology fallback failed", details
+    return ok, "live container fallback passed" if ok else "live container fallback failed", details
 
 
 def derive_overall_status(report: dict[str, Any]) -> str:

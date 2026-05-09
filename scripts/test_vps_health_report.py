@@ -181,9 +181,97 @@ class VpsHealthReportTest(unittest.TestCase):
 
         checks = {check["name"]: check for check in report["checks"]}
         self.assertEqual(checks["production_gate"]["status"], "OK")
-        self.assertIn("mixed live topology", checks["production_gate"]["summary"])
+        self.assertIn("live container fallback", checks["production_gate"]["summary"])
         self.assertEqual(checks["backend_notifier"]["status"], "OK")
         self.assertEqual(report["overall_status"], "WARN")
+
+    def test_collect_report_falls_back_when_symlinked_release_changes_compose_project_name(self) -> None:
+        module = load_module()
+
+        def fake_run_command(args, **kwargs):
+            command = args[0]
+            if command == "uptime":
+                return subprocess.CompletedProcess(args, 0, " 19:41:01 up 31 days,  7:14, 10 users,  load average: 0.63, 0.55, 0.45\n", "")
+            if command == "df":
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    "Filesystem 1024-blocks Used Available Capacity Mounted on\n/dev/sda1 50331648 25000000 25331648 50% /\n",
+                    "",
+                )
+            if command == "free":
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    "               total        used        free      shared  buff/cache   available\nMem:            3915        1200         900         142        1815        2500\nSwap:           2047         100        1947\n",
+                    "",
+                )
+            if command == "bash":
+                return subprocess.CompletedProcess(
+                    args,
+                    1,
+                    "",
+                    'time="2026-05-09T09:16:02Z" level=warning msg="project has been loaded without an explicit name from a symlink. Using name \\"current\\""\n'
+                    "ERROR: container for service 'backend-api' not found\n",
+                )
+            if command == "docker" and args[1:3] == ["ps", "--format"]:
+                return subprocess.CompletedProcess(
+                    args,
+                    0,
+                    "siteparserforfreelans-backend-api-1\tUp 25 seconds (healthy)\n"
+                    "siteparserforfreelans-backend-crawler-1\tUp 25 seconds (healthy)\n"
+                    "siteparserforfreelans-backend-notifier-1\tUp 25 seconds (healthy)\n"
+                    "siteparserforfreelans-telegram-bot-1\tUp 19 seconds (healthy)\n"
+                    "siteparserforfreelans-ai-service-1\tUp About a minute (healthy)\n",
+                    "",
+                )
+            if command == "docker" and args[1] == "inspect":
+                return subprocess.CompletedProcess(args, 0, "restart_count=0 started=2026-04-15T19:40:43Z\n", "")
+            if command == "curl":
+                url = args[-1]
+                if url.endswith("/healthz"):
+                    return subprocess.CompletedProcess(args, 0, "200", "")
+                if url.endswith("/readyz"):
+                    return subprocess.CompletedProcess(args, 0, "200", "")
+                if url == "https://example.invalid/webhook":
+                    return subprocess.CompletedProcess(args, 0, "400", "")
+                raise AssertionError(f"unexpected curl url: {url}")
+            raise AssertionError(f"unexpected command: {args}")
+
+        def fake_load_json_from_url(base_url, path, query=None):
+            if path == "/api/v1/alerts":
+                return {"data": {"alerts": []}}
+            if path == "/api/v1/targets":
+                return {"data": {"activeTargets": [{"labels": {"job": "backend-api"}, "scrapePool": "backend-api", "health": "up"}]}}
+            if path == "/api/v1/query":
+                return {"data": {"result": []}}
+            raise AssertionError(f"unexpected path: {path}")
+
+        module.run_command = fake_run_command
+        module.load_json_from_url = fake_load_json_from_url
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            repo_root = Path(tmp_dir)
+            (repo_root / ".env.production").write_text(
+                "API_PORT=8443\nWEBHOOK_URL=https://example.invalid/webhook\nWEBHOOK_SECRET_TOKEN=test-token\n",
+                encoding="utf-8",
+            )
+            args = Namespace(
+                repo_root=str(repo_root),
+                env_file=".env.production",
+                prometheus_url="http://127.0.0.1:9090",
+                disk_warn_percent=80,
+                disk_fail_percent=90,
+                swap_warn_mb=512,
+                memory_available_warn_mb=1024,
+            )
+
+            report = module.collect_report(args)
+
+        checks = {check["name"]: check for check in report["checks"]}
+        self.assertEqual(checks["production_gate"]["status"], "OK")
+        self.assertIn("live container fallback", checks["production_gate"]["summary"])
+        self.assertEqual(report["overall_status"], "OK")
 
     def test_derive_overall_status_prefers_fail_then_warn(self) -> None:
         module = load_module()
