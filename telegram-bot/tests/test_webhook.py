@@ -373,7 +373,17 @@ def test_run_webhook_starts_configured_inbox_worker_pool(bot, monkeypatch):
         def server_close(self) -> None:
             return None
 
-    def _worker(stop_event, token, api_url, api_auth_token, api_user_hmac_secret, *, shard_id, shard_count, timeout_sec=1):
+    def _worker(
+        stop_event,
+        token,
+        api_url,
+        api_auth_token,
+        api_user_hmac_secret,
+        *,
+        shard_id,
+        shard_count,
+        timeout_sec=1,
+    ):
         _ = stop_event
         _ = token
         _ = api_url
