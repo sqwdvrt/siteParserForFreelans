@@ -344,6 +344,41 @@ groups:
           summary: "High PostgreSQL connection count"
           description: "Active PostgreSQL backends are above 80 for 10 minutes."
 
+      - alert: SiteParserDiskSpaceHigh
+        expr: (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/"} / node_filesystem_size_bytes{job="node-exporter",mountpoint="/"}) < 0.15
+        for: 5m
+        labels:
+          severity: warning
+          service: host
+        annotations:
+          summary: "VPS disk space low"
+          description: >
+            Available disk on / is {{ $value | humanizePercentage }}.
+            Clean up Docker layers or logs.
+
+      - alert: SiteParserDiskSpaceCritical
+        expr: (node_filesystem_avail_bytes{job="node-exporter",mountpoint="/"} / node_filesystem_size_bytes{job="node-exporter",mountpoint="/"}) < 0.05
+        for: 1m
+        labels:
+          severity: critical
+          service: host
+        annotations:
+          summary: "VPS disk space critically low"
+          description: >
+            Available disk on / is {{ $value | humanizePercentage }}. Immediate action required.
+
+      - alert: SiteParserHighMemoryPressure
+        expr: node_memory_MemAvailable_bytes{job="node-exporter"} / node_memory_MemTotal_bytes{job="node-exporter"} < 0.10
+        for: 5m
+        labels:
+          severity: warning
+          service: host
+        annotations:
+          summary: "VPS memory pressure high"
+          description: >
+            Available memory is {{ $value | humanizePercentage }} of total.
+            Consider restarting AI services or adding swap.
+
   - name: siteparser-queues
     rules:
       # Queue metrics rely on redis-exporter --check-keys for:
