@@ -344,6 +344,30 @@ groups:
           summary: "High PostgreSQL connection count"
           description: "Active PostgreSQL backends are above 80 for 10 minutes."
 
+      - alert: SiteParserTLSCertExpiringSoon
+        expr: (probe_ssl_earliest_cert_expiry{job="blackbox"} - time()) / 86400 < 30
+        for: 1h
+        labels:
+          severity: warning
+          service: ingress
+        annotations:
+          summary: "TLS certificate expiring soon"
+          description: >
+            TLS certificate for {{ $labels.instance }} expires in
+            {{ $value | printf "%.0f" }} days. Renew via certbot.
+
+      - alert: SiteParserTLSCertCritical
+        expr: (probe_ssl_earliest_cert_expiry{job="blackbox"} - time()) / 86400 < 7
+        for: 15m
+        labels:
+          severity: critical
+          service: ingress
+        annotations:
+          summary: "TLS certificate expiring critically soon"
+          description: >
+            TLS certificate for {{ $labels.instance }} expires in
+            {{ $value | printf "%.0f" }} days. Immediate renewal required.
+
   - name: siteparser-queues
     rules:
       # Queue metrics rely on redis-exporter --check-keys for:
